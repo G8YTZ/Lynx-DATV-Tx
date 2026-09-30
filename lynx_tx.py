@@ -500,7 +500,7 @@ def build_pipeline() -> str:
         # rates looks very close to lossless, and why a 4K test card
         # is the best thing this transmitter can show.
         video_in = (f"filesrc location={mpath} ! decodebin ! "
-                    f"imagefreeze ! videoconvert ! videoscale ! "
+                    f"imagefreeze "
                     f"videorate ! "
                     f"video/x-raw,format=NV12,width={w},height={h},"
                     f"framerate={fps}/1")
@@ -515,11 +515,31 @@ def build_pipeline() -> str:
         # file is - 24fps from a Resolve export, 10-bit, HDR from a
         # phone - so the encoder always sees what it was configured
         # for.
-        video_in = (f"filesrc location={mpath} ! decodebin name=dec "
-                    f"dec. ! queue max-size-time=2000000000 max-size-bytes=0 max-size-buffers=0 ! videoconvert ! videoscale ! "
-                    f"videorate ! "
-                    f"video/x-raw,format=NV12,width={w},height={h},"
-                    f"framerate={fps}/1")
+        video_in = (# mppvideodec is the RK3588's hardware decoder. decodebin
+                    # finds a software one and spends 130% of a core
+                    # decoding 4K HEVC while the VPU that could do it
+                    # for nothing sits idle - and the encoder, sharing
+                    # the machine, glitches.
+                    f"filesrc location={mpath} ! qtdemux name=dec "
+                    # Nothing between the decoder and the queue.
+                    # videoconvert, videoscale and videorate together
+                    # cost about 65% of a core at 4K - measured - and
+                    # do nothing for a file already at the encoder's
+                    # format and rate. A file that differs will play
+                    # at the wrong speed rather than juddering, which
+                    # is the honest trade until the rate is read from
+                    # the file and the encoder set to match.
+                    f"dec.video_0 ! h265parse ! mppvideodec ! "
+                    f"queue max-size-time=2000000000 max-size-bytes=0 "
+                    # NV16 straight out of the decoder, which is
+                    # exactly what v4l2src gives the encoder on the
+                    # camera path - and why that path has never
+                    # glitched. videoconvert at 4K moves 12 MB per
+                    # frame through the CPU 25 times a second, which
+                    # is 135% of a core doing work that need not
+                    # happen at all.
+                    f"max-size-buffers=0 ! "
+                    f"video/x-raw,format=NV16")
 
     # -- encode and mux --------------------------------------------
     # header-mode=each-idr and config-interval=-1 together repeat the
@@ -553,7 +573,7 @@ def build_pipeline() -> str:
         # dec. is the decodebin above: one file, one read, two
         # branches, and nothing for them to drift against.
         parts.append(
-            f" dec. ! queue max-size-time=5000000000 max-size-bytes=0 max-size-buffers=0 leaky=no ! audioconvert ! audioresample ! "
+            f" dec.audio_0 ! queue max-size-time=5000000000 max-size-bytes=0 max-size-buffers=0 leaky=no ! decodebin ! audioconvert ! audioresample ! "
             f"audio/x-raw,rate=48000,channels=2 ! "
             f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! mux.")
     parts.append(" mpegtsmux name=mux ! fdsink fd=1")
@@ -592,9 +612,12 @@ def start_tx() -> dict:
         # Whatever the source is, make sure it is actually being fed.
         # Starting the encoder against a loopback nothing is writing to
         # gives a pipeline that opens and then sits there.
-        src = config["source"]
-        if src["kind"] != "camera" and feeder_proc is None:
-            start_feeder(src["kind"], src["file"])
+        # No feeder: media is decoded in the encoder pipeline now.
+        # The loopback and its feeder remain for anything external
+        # that wants to write video in - Lynx-Deck included - but
+        # nothing here writes to it, and a feeder left running
+        # software-decoded 4K at three cores for no purpose.
+        stop_feeder()
         write_libre_settings()
         # The board's watcher restarts the modulator on the settings
         # change; give it a moment to be listening before the stream
@@ -754,7 +777,7 @@ def api_source(req: SourceUpdate):
     # The feeder first, so the loopback has a format before the encoder
     # opens it - the other order is a race that looks like the media
     # source simply not working.
-    start_feeder(req.kind, req.file)
+    stop_feeder()
     if tx_running():
         start_tx()
     return {"success": True, "source": config["source"]}
