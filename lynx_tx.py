@@ -592,7 +592,7 @@ def build_pipeline() -> str:
     if want_audio:
         streamids += " -streamid 1:257"
     parts.append(
-        f" | ffmpeg -loglevel warning -analyzeduration 4000000 -probesize 8000000 "
+        f" | ffmpeg -loglevel warning -analyzeduration 500000 -probesize 2000000 -fflags nobuffer "
         f"-f mpegts -i - -c copy -f mpegts -muxrate {rate} "
         f'-metadata service_provider="{config["provider"]}" '
         f'-metadata service_name="{config["callsign"]}" ' 
