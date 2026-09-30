@@ -82,6 +82,20 @@ CONFIG_PATH = APP_DIR / "config" / "lynx_tx.yaml"
 # about one applies to both.
 MEDIA_DIR = Path("/srv/lynxdeck/media")
 
+# Where media is written and the encoder reads it from. A v4l2
+# loopback, so anything that can write video to a device can be a
+# source - this application's own feeder today, Lynx-Deck tomorrow,
+# and neither has to know about the other.
+#
+# Created by: modprobe v4l2loopback video_nr=10 max_width=3840 \
+#             max_height=2160
+#
+# Deliberately WITHOUT exclusive_caps: with it set, ffmpeg's format
+# probe fails on a device nothing has written to yet, which reads as
+# "ioctl(VIDIOC_G_FMT): Invalid argument" and took an evening to
+# attribute correctly.
+LOOPBACK_DEVICE = "/dev/video10"
+
 VIDEO_EXT = {".mp4", ".mkv", ".ts", ".m4v", ".mov"}
 STILL_EXT = {".png", ".jpg", ".jpeg", ".bmp"}
 
@@ -301,6 +315,8 @@ def hdmi_format() -> dict:
     asking the operator, and beats assuming.
     """
     try:
+        # Always the camera's own device: this answers "what is plugged
+        # in", which is worth knowing even while media is playing.
         r = subprocess.run(
             ["v4l2-ctl", "-d", config["video_device"], "--get-fmt-video"],
             capture_output=True, text=True, timeout=4)
@@ -312,6 +328,87 @@ def hdmi_format() -> dict:
         return {"width": w, "height": h} if w else {}
     except Exception:
         return {}
+
+
+feeder_proc: Optional[subprocess.Popen] = None
+
+
+def stop_feeder():
+    """Stop whatever is writing to the loopback."""
+    global feeder_proc
+    if feeder_proc is not None:
+        try:
+            os.killpg(os.getpgid(feeder_proc.pid), signal.SIGTERM)
+            feeder_proc.wait(timeout=4)
+        except Exception:
+            try:
+                os.killpg(os.getpgid(feeder_proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        feeder_proc = None
+
+
+def start_feeder(kind: str, filename: str):
+    """Write a file into the loopback, forever.
+
+    ffmpeg rather than anything cleverer: it decodes every format these
+    files come in, converts and scales in one pass, and paces itself
+    with -re so the loopback receives at real time rather than as fast
+    as the disk can read.
+
+    The format filter is not optional. A 10-bit file - which a Resolve
+    export or an iPhone recording will be, whatever anybody remembers -
+    written to a loopback expecting 8-bit fails outright, and a frame
+    rate that disagrees with the encoder's produces a picture that
+    plays at the wrong speed.
+    """
+    global feeder_proc
+    stop_feeder()
+    if kind == "camera":
+        return
+
+    path = MEDIA_DIR / filename
+    if not path.exists():
+        print(f"[feeder] {path} is not there")
+        return
+
+    enc = config["encoder"]
+    size = f"{enc['width']}x{enc['height']}"
+    fps = enc["fps"]
+
+    if kind == "still":
+        # -loop 1 turns one image into an endless stream. A still at
+        # these rates is very nearly lossless: the bits all go into one
+        # picture and almost nothing changes afterwards, which is why a
+        # 4K test card looks better than 4K video at the same bitrate.
+        src = ["-re", "-loop", "1", "-i", str(path)]
+    else:
+        # -stream_loop -1 repeats the file without anything noticing
+        # the join.
+        src = ["-re", "-stream_loop", "-1", "-i", str(path)]
+
+    cmd = (["ffmpeg", "-loglevel", "warning"] + src +
+           ["-vf", f"format=yuv420p,scale={size},fps={fps}",
+            "-f", "v4l2", LOOPBACK_DEVICE])
+
+    # stdin from /dev/null, and -nostdin: without either, ffmpeg
+    # tries to read the terminal, gets suspended the moment it is
+    # backgrounded, and writes nothing at all. Which looks exactly
+    # like the feeder not starting.
+    cmd.insert(1, "-nostdin")
+    feeder_proc = subprocess.Popen(
+        cmd, preexec_fn=os.setsid, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=None)
+    print(f"[feeder] {kind}: {filename} -> {LOOPBACK_DEVICE}")
+    # The loopback has no format until something writes one, and the
+    # encoder's v4l2src fails on a device that has none. A moment here
+    # saves a race that looks like the media source not working.
+    # Four seconds, not one: at 4K ffmpeg spends a while opening the
+    # file and scaling the first frame before it writes anything, and
+    # an encoder that opens the loopback before then finds no format
+    # and exits. Generous because the cost is a slow source change and
+    # the alternative is a transmitter that quits.
+    time.sleep(4.0)
 
 
 def media_files() -> list:
@@ -355,38 +452,74 @@ def build_pipeline() -> str:
     # kept full, and an encoder allowed to fill the pipe exactly will
     # starve it on every keyframe. 8% is enough to ride a GOP at these
     # rates and small enough not to waste the channel.
-    audio_bps = enc["audio_bitrate"] + 8000 if enc["audio"] else 0
+    audio_bps = (enc["audio_bitrate"] + 8000
+                 if enc["audio"] and src["kind"] != "still" else 0)
     psi_bps = 12000
     video_bps = int((rate - audio_bps - psi_bps) * 0.92)
 
     w, h, fps = enc["width"], enc["height"], enc["fps"]
 
     # -- the source ------------------------------------------------
+    #
+    # Always a v4l2 device. The camera is one; everything else arrives
+    # through the loopback, written by the feeder above. That keeps the
+    # encoder pipeline identical whatever is playing, and means a
+    # source change is a feeder restart rather than a different
+    # pipeline that has to be got right separately.
     if src["kind"] == "camera":
+        device = config["video_device"]
         fmt = hdmi_format()
         if fmt.get("width"):
             w, h = fmt["width"], fmt["height"]
-        video_in = (f"v4l2src device={config['video_device']} ! "
-                    f"video/x-raw,format=NV16,width={w},height={h},"
-                    f"framerate={fps}/1")
-    elif src["kind"] == "still":
-        path = MEDIA_DIR / src["file"]
-        # imagefreeze turns one decoded frame into an endless stream.
-        # A still at this bitrate is very nearly lossless - all the
-        # bits go into one picture and almost nothing changes after -
-        # which is why a 4K test card looks better than 4K video does.
-        video_in = (f"filesrc location={path} ! decodebin ! imagefreeze ! "
-                    f"videoconvert ! videoscale ! "
-                    f"video/x-raw,format=NV16,width={w},height={h} ! "
-                    f"videorate ! video/x-raw,framerate={fps}/1")
+        # NV16 is what the HDMI receiver gives; asking for anything
+        # else makes GStreamer insert a converter that runs in
+        # software at 4K.
+        caps = (f"video/x-raw,format=NV16,width={w},height={h},"
+                f"framerate={fps}/1")
     else:
-        path = MEDIA_DIR / src["file"]
-        # multifilesrc with loop=true rather than filesrc: it starts
-        # again at the end without anything having to notice.
-        video_in = (f"multifilesrc location={path} loop=true ! "
-                    f"decodebin ! videoconvert ! videoscale ! "
-                    f"video/x-raw,format=NV16,width={w},height={h} ! "
-                    f"videorate ! video/x-raw,framerate={fps}/1")
+        device = None
+        # The feeder writes yuv420p, so that is what comes out.
+        # No framerate in the caps. A loopback does not advertise one,
+        # and asking for it makes v4l2src fail negotiation silently -
+        # the pipeline opens, gets EOS immediately, and the whole
+        # transmitter exits a few seconds later with nothing anywhere
+        # saying why. The feeder paces at the right rate already.
+        caps = f"video/x-raw,format=I420,width={w},height={h}"
+
+    # videoconvert between the loopback and the encoder: mpph265enc
+    # takes NV12 or NV16, and the feeder writes I420. Without it the
+    # pipeline fails to negotiate and stops with nothing more useful
+    # than "not-negotiated (-4)".
+    if src["kind"] == "camera":
+        video_in = f"v4l2src device={device} ! {caps}"
+    elif src["kind"] == "still":
+        mpath = MEDIA_DIR / src["file"]
+        # imagefreeze turns one decoded frame into an endless stream.
+        # Nothing changes after the first picture, so almost the whole
+        # channel becomes stuffing - which is why a still at these
+        # rates looks very close to lossless, and why a 4K test card
+        # is the best thing this transmitter can show.
+        video_in = (f"filesrc location={mpath} ! decodebin ! "
+                    f"imagefreeze ! videoconvert ! videoscale ! "
+                    f"videorate ! "
+                    f"video/x-raw,format=NV12,width={w},height={h},"
+                    f"framerate={fps}/1")
+    else:
+        mpath = MEDIA_DIR / src["file"]
+        # One decodebin, named, so the audio branch below can take its
+        # stream from the same read. Two separate reads of one file
+        # have nothing holding them together and drifted twenty
+        # seconds apart within a minute.
+        #
+        # videorate and videoscale between them absorb whatever the
+        # file is - 24fps from a Resolve export, 10-bit, HDR from a
+        # phone - so the encoder always sees what it was configured
+        # for.
+        video_in = (f"filesrc location={mpath} ! decodebin name=dec "
+                    f"dec. ! queue max-size-time=2000000000 max-size-bytes=0 max-size-buffers=0 ! videoconvert ! videoscale ! "
+                    f"videorate ! "
+                    f"video/x-raw,format=NV12,width={w},height={h},"
+                    f"framerate={fps}/1")
 
     # -- encode and mux --------------------------------------------
     # header-mode=each-idr and config-interval=-1 together repeat the
@@ -398,16 +531,36 @@ def build_pipeline() -> str:
         f"mpph265enc rc-mode=cbr bps={video_bps} gop={enc['gop']} "
         f"header-mode=each-idr ! h265parse config-interval=-1 ! mux."
     ]
-    if enc["audio"]:
+    # Audio follows video.
+    #
+    # The camera's audio arrives on the HDMI receiver's ALSA device; a
+    # video file carries its own. A still has none at all, and encoding
+    # silence against a video clock that has no natural rate produces
+    # exactly the drift it sounds like.
+    #
+    # The file is read a second time here rather than being carried
+    # through the loopback with the video, because this kernel has no
+    # snd-aloop to carry it. A decode of an already-open local file is
+    # cheap, and the alternative is a named pipe arrangement that wants
+    # designing rather than bolting on.
+    want_audio = enc["audio"] and src["kind"] != "still"
+    if want_audio and src["kind"] == "camera":
         parts.append(
             f" alsasrc device={config['audio_device']} ! "
             f"audio/x-raw,rate=48000,channels=2 ! audioconvert ! "
+            f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! mux.")
+    elif want_audio:
+        # dec. is the decodebin above: one file, one read, two
+        # branches, and nothing for them to drift against.
+        parts.append(
+            f" dec. ! queue max-size-time=5000000000 max-size-bytes=0 max-size-buffers=0 leaky=no ! audioconvert ! audioresample ! "
+            f"audio/x-raw,rate=48000,channels=2 ! "
             f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! mux.")
     parts.append(" mpegtsmux name=mux ! fdsink fd=1")
 
     # -- remux to the exact rate, on the right PIDs -----------------
     streamids = "-streamid 0:256"
-    if enc["audio"]:
+    if want_audio:
         streamids += " -streamid 1:257"
     parts.append(
         f" | ffmpeg -loglevel warning -analyzeduration 1000000 "
@@ -436,6 +589,12 @@ def start_tx() -> dict:
     global tx_proc, tx_started_at, tx_last_command
     with tx_lock:
         stop_tx_locked()
+        # Whatever the source is, make sure it is actually being fed.
+        # Starting the encoder against a loopback nothing is writing to
+        # gives a pipeline that opens and then sits there.
+        src = config["source"]
+        if src["kind"] != "camera" and feeder_proc is None:
+            start_feeder(src["kind"], src["file"])
         write_libre_settings()
         # The board's watcher restarts the modulator on the settings
         # change; give it a moment to be listening before the stream
@@ -465,8 +624,13 @@ def stop_tx_locked():
         tx_proc = None
     # Belt and braces: the shell pipeline can outlive its process
     # group if a stage has re-parented.
-    for name in ("gst-launch-1.0", "ffmpeg", "tsp"):
-        subprocess.run(["pkill", "-f", name], capture_output=True)
+    # NOT a bare pkill for ffmpeg: the feeder writing the loopback is
+    # an ffmpeg too, and killing it leaves the encoder opening a device
+    # nothing is writing - which is exactly the failure this whole
+    # arrangement kept producing. Match the remux stage specifically.
+    for pattern in ("gst-launch-1.0", "ffmpeg.*-f mpegts",
+                    "tsp --realtime"):
+        subprocess.run(["pkill", "-f", pattern], capture_output=True)
 
 
 def stop_tx() -> dict:
@@ -587,6 +751,10 @@ def api_source(req: SourceUpdate):
         raise HTTPException(400, "kind must be camera, video or still")
     config["source"] = {"kind": req.kind, "file": req.file}
     save_config(config)
+    # The feeder first, so the loopback has a format before the encoder
+    # opens it - the other order is a race that looks like the media
+    # source simply not working.
+    start_feeder(req.kind, req.file)
     if tx_running():
         start_tx()
     return {"success": True, "source": config["source"]}
