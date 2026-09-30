@@ -573,7 +573,16 @@ def build_pipeline() -> str:
         # dec. is the decodebin above: one file, one read, two
         # branches, and nothing for them to drift against.
         parts.append(
-            f" dec.audio_0 ! queue max-size-time=5000000000 max-size-bytes=0 max-size-buffers=0 leaky=no ! decodebin ! audioconvert ! audioresample ! "
+            # A separate decodebin on the same file for audio.
+        # dec.audio_0 was a static link to a pad qtdemux only
+        # creates once it has found the audio stream, and
+        # gst-launch cannot wait for that the way an
+        # application can: the video pad appears first, the
+        # audio one never links, and the muxer waits for ever
+        # at 0% CPU producing nothing and saying nothing.
+        f" filesrc location={MEDIA_DIR / src['file']} ! decodebin ! "
+        f"queue max-size-time=5000000000 max-size-bytes=0 "
+        f"max-size-buffers=0 leaky=no ! audioconvert ! audioresample ! "
             f"audio/x-raw,rate=48000,channels=2 ! "
             f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! mux.")
     parts.append(" mpegtsmux name=mux ! fdsink fd=1")
@@ -583,7 +592,7 @@ def build_pipeline() -> str:
     if want_audio:
         streamids += " -streamid 1:257"
     parts.append(
-        f" | ffmpeg -loglevel warning -analyzeduration 1000000 "
+        f" | ffmpeg -loglevel warning -analyzeduration 4000000 -probesize 8000000 "
         f"-f mpegts -i - -c copy -f mpegts -muxrate {rate} "
         f'-metadata service_provider="{config["provider"]}" '
         f'-metadata service_name="{config["callsign"]}" ' 
@@ -598,7 +607,7 @@ def build_pipeline() -> str:
     # A small buffer: enough to smooth a GOP, not enough to add
     # noticeable delay. TSDuck's default held about 45 seconds.
     parts.append(
-        f" | tsp --realtime --buffer-size-mb 0.05 -I file - "
+        f" | tsp --realtime --buffer-size-mb 1 -I file - "
         f"-P regulate --bitrate {paced} "
         f"-O ip {config['libre']['host']}:8282")
 
