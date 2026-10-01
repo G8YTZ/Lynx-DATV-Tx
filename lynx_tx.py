@@ -477,7 +477,7 @@ def build_pipeline() -> str:
         caps = (f"video/x-raw,format=NV16,width={w},height={h},"
                 f"framerate={fps}/1")
     else:
-        device = None
+        device = LOOPBACK_DEVICE
         # The feeder writes yuv420p, so that is what comes out.
         # No framerate in the caps. A loopback does not advertise one,
         # and asking for it makes v4l2src fail negotiation silently -
@@ -492,54 +492,9 @@ def build_pipeline() -> str:
     # than "not-negotiated (-4)".
     if src["kind"] == "camera":
         video_in = f"v4l2src device={device} ! {caps}"
-    elif src["kind"] == "still":
-        mpath = MEDIA_DIR / src["file"]
-        # imagefreeze turns one decoded frame into an endless stream.
-        # Nothing changes after the first picture, so almost the whole
-        # channel becomes stuffing - which is why a still at these
-        # rates looks very close to lossless, and why a 4K test card
-        # is the best thing this transmitter can show.
-        video_in = (f"filesrc location={mpath} ! decodebin ! "
-                    f"imagefreeze "
-                    f"videorate ! "
-                    f"video/x-raw,format=NV12,width={w},height={h},"
-                    f"framerate={fps}/1")
     else:
-        mpath = MEDIA_DIR / src["file"]
-        # One decodebin, named, so the audio branch below can take its
-        # stream from the same read. Two separate reads of one file
-        # have nothing holding them together and drifted twenty
-        # seconds apart within a minute.
-        #
-        # videorate and videoscale between them absorb whatever the
-        # file is - 24fps from a Resolve export, 10-bit, HDR from a
-        # phone - so the encoder always sees what it was configured
-        # for.
-        video_in = (# mppvideodec is the RK3588's hardware decoder. decodebin
-                    # finds a software one and spends 130% of a core
-                    # decoding 4K HEVC while the VPU that could do it
-                    # for nothing sits idle - and the encoder, sharing
-                    # the machine, glitches.
-                    f"filesrc location={mpath} ! qtdemux name=dec "
-                    # Nothing between the decoder and the queue.
-                    # videoconvert, videoscale and videorate together
-                    # cost about 65% of a core at 4K - measured - and
-                    # do nothing for a file already at the encoder's
-                    # format and rate. A file that differs will play
-                    # at the wrong speed rather than juddering, which
-                    # is the honest trade until the rate is read from
-                    # the file and the encoder set to match.
-                    f"dec.video_0 ! h265parse ! mppvideodec ! "
-                    f"queue max-size-time=2000000000 max-size-bytes=0 "
-                    # NV16 straight out of the decoder, which is
-                    # exactly what v4l2src gives the encoder on the
-                    # camera path - and why that path has never
-                    # glitched. videoconvert at 4K moves 12 MB per
-                    # frame through the CPU 25 times a second, which
-                    # is 135% of a core doing work that need not
-                    # happen at all.
-                    f"max-size-buffers=0 ! "
-                    f"video/x-raw,format=NV16")
+        video_in = (f"v4l2src device={device} ! {caps} ! "
+                    f"videoconvert ! video/x-raw,format=NV12")
 
     # -- encode and mux --------------------------------------------
     # header-mode=each-idr and config-interval=-1 together repeat the
@@ -570,19 +525,10 @@ def build_pipeline() -> str:
             f"audio/x-raw,rate=48000,channels=2 ! audioconvert ! "
             f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! mux.")
     elif want_audio:
-        # dec. is the decodebin above: one file, one read, two
-        # branches, and nothing for them to drift against.
+        apath = MEDIA_DIR / src["file"]
         parts.append(
-            # A separate decodebin on the same file for audio.
-        # dec.audio_0 was a static link to a pad qtdemux only
-        # creates once it has found the audio stream, and
-        # gst-launch cannot wait for that the way an
-        # application can: the video pad appears first, the
-        # audio one never links, and the muxer waits for ever
-        # at 0% CPU producing nothing and saying nothing.
-        f" filesrc location={MEDIA_DIR / src['file']} ! decodebin ! "
-        f"queue max-size-time=5000000000 max-size-bytes=0 "
-        f"max-size-buffers=0 leaky=no ! audioconvert ! audioresample ! "
+            f" filesrc location={apath} ! decodebin ! "
+            f"audioconvert ! audioresample ! "
             f"audio/x-raw,rate=48000,channels=2 ! "
             f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! mux.")
     parts.append(" mpegtsmux name=mux ! fdsink fd=1")
@@ -592,7 +538,7 @@ def build_pipeline() -> str:
     if want_audio:
         streamids += " -streamid 1:257"
     parts.append(
-        f" | ffmpeg -loglevel warning -analyzeduration 500000 -probesize 2000000 -fflags nobuffer "
+        f" | ffmpeg -loglevel warning -analyzeduration 1000000 "
         f"-f mpegts -i - -c copy -f mpegts -muxrate {rate} "
         f'-metadata service_provider="{config["provider"]}" '
         f'-metadata service_name="{config["callsign"]}" ' 
@@ -607,7 +553,7 @@ def build_pipeline() -> str:
     # A small buffer: enough to smooth a GOP, not enough to add
     # noticeable delay. TSDuck's default held about 45 seconds.
     parts.append(
-        f" | tsp --realtime --buffer-size-mb 1 -I file - "
+        f" | tsp --realtime --buffer-size-mb 0.05 -I file - "
         f"-P regulate --bitrate {paced} "
         f"-O ip {config['libre']['host']}:8282")
 
@@ -621,12 +567,9 @@ def start_tx() -> dict:
         # Whatever the source is, make sure it is actually being fed.
         # Starting the encoder against a loopback nothing is writing to
         # gives a pipeline that opens and then sits there.
-        # No feeder: media is decoded in the encoder pipeline now.
-        # The loopback and its feeder remain for anything external
-        # that wants to write video in - Lynx-Deck included - but
-        # nothing here writes to it, and a feeder left running
-        # software-decoded 4K at three cores for no purpose.
-        stop_feeder()
+        src = config["source"]
+        if src["kind"] != "camera" and feeder_proc is None:
+            start_feeder(src["kind"], src["file"])
         write_libre_settings()
         # The board's watcher restarts the modulator on the settings
         # change; give it a moment to be listening before the stream
@@ -786,7 +729,7 @@ def api_source(req: SourceUpdate):
     # The feeder first, so the loopback has a format before the encoder
     # opens it - the other order is a race that looks like the media
     # source simply not working.
-    stop_feeder()
+    start_feeder(req.kind, req.file)
     if tx_running():
         start_tx()
     return {"success": True, "source": config["source"]}
@@ -950,30 +893,39 @@ PAGE = """<!DOCTYPE html>
       <div class="card">
         <div class="card-header">&#x1F39E;&#xFE0F; Encoder</div>
         <div class="card-body">
-          <div class="row g-2 mb-2">
-            <div class="col-4">
-              <label class="small text-muted">Picture</label>
-              <select class="form-select form-select-sm bg-dark text-light border-secondary"
-                      id="e-format" onchange="saveEnc()">
-                <option value="3840x2160">4K UHD</option>
-                <option value="1920x1080">1080p FHD</option>
-                <option value="1280x720">720p HD</option>
-                <option value="1024x576">576p SD</option>
-              </select>
-            </div>
-            <div class="col-4">
-              <label class="small text-muted">Frame rate</label>
-              <select class="form-select form-select-sm bg-dark text-light border-secondary"
-                      id="e-fps" onchange="saveEnc()">
-                <option value="25">25</option>
-                <option value="50">50</option>
-              </select>
+          <!-- Camera: shown, not chosen. v4l2src hands the HDMI
+               input straight to the encoder with no scaler between
+               them, which is why this path costs 44% of a core where
+               a converted one costs 135%. A control that is silently
+               overwritten is worse than no control at all. -->
+          <div id="camera-format" style="display:none">
+            <label class="small text-muted">Picture</label>
+            <div class="status-value mb-2" id="camera-format-value">&mdash;</div>
+            <div class="text-muted small mb-3">
+              Resolution and frame rate both follow the HDMI input,
+              which takes its format from whatever is plugged in. The
+              receiver reports its resolution but not its timings,
+              which is why only the one figure appears here.
             </div>
           </div>
-          <div class="text-muted small mb-2">
-            With the camera these follow the HDMI input, which takes its
-            format from whatever is plugged in.
+
+          <div id="media-format">
+            <label class="small text-muted">Picture</label>
+            <select class="form-select form-select-sm bg-dark text-light border-secondary mb-2"
+                    id="e-format" onchange="saveEnc()">
+              <option value="3840x2160">4K UHD &mdash; 3840&times;2160</option>
+              <option value="1920x1080">1080p FHD &mdash; 1920&times;1080</option>
+              <option value="1280x720">720p HD &mdash; 1280&times;720</option>
+              <option value="1024x576">576p SD &mdash; 1024&times;576</option>
+            </select>
+            <label class="small text-muted">Frame rate</label>
+            <select class="form-select form-select-sm bg-dark text-light border-secondary mb-2"
+                    id="e-fps" onchange="saveEnc()">
+              <option value="25">25</option>
+              <option value="50">50</option>
+            </select>
           </div>
+
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="e-audio"
                    onchange="saveEnc()">
@@ -1104,6 +1056,19 @@ async function poll() {
     'btn ' + (cfg.config.source.kind === 'camera' ? 'btn-primary' : 'btn-outline-light');
   document.getElementById('src-media').className =
     'btn ' + (cfg.config.source.kind !== 'camera' ? 'btn-primary' : 'btn-outline-light');
+
+  // Which of the two appears. The format controls only mean
+  // anything for media, where the file is genuinely scaled on the
+  // way in; with the camera the HDMI input decides and the page
+  // should say so rather than pretend otherwise.
+  const isCam = cfg.config.source.kind === 'camera';
+  document.getElementById('camera-format').style.display = isCam ? '' : 'none';
+  document.getElementById('media-format').style.display = isCam ? 'none' : '';
+  if (isCam) {
+    const hf = cfg.hdmi || {};
+    document.getElementById('camera-format-value').textContent =
+      hf.width ? hf.width + '\u00d7' + hf.height : 'nothing detected';
+  }
 
   document.getElementById('sr-warning').hidden =
     cfg.config.modulation.symbol_rate_ks <= 2000;
