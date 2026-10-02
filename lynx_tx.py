@@ -58,6 +58,7 @@ Justin Cockett, G8YTZ
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -307,6 +308,29 @@ tx_started_at = 0.0
 tx_last_command = ""
 
 
+def hdmi_framerate(device: str) -> Optional[str]:
+    """The HDMI input's real frame rate as a GStreamer fraction.
+
+    The receiver does not enforce a framerate in caps: ask for 50/1
+    and v4l2src agrees, then delivers 25. The encoder believes the
+    caps, so take the truth from the DV timings instead.
+    """
+    try:
+        out = subprocess.run(
+            ["v4l2-ctl", "-d", device, "--query-dv-timings"],
+            capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return None
+    m = re.search(r"\(([\d.]+) frames per second\)", out)
+    if not m:
+        return None
+    f = float(m.group(1))
+    for nominal in (24, 30, 60):        # 23.98, 29.97, 59.94
+        if abs(f - nominal * 1000 / 1001) < 0.01:
+            return f"{nominal * 1000}/1001"
+    return f"{round(f)}/1"
+
+
 def hdmi_format() -> dict:
     """What the capture is actually being given.
 
@@ -474,8 +498,9 @@ def build_pipeline() -> str:
         # NV16 is what the HDMI receiver gives; asking for anything
         # else makes GStreamer insert a converter that runs in
         # software at 4K.
+        framerate = hdmi_framerate(device) or f"{fps}/1"
         caps = (f"video/x-raw,format=NV16,width={w},height={h},"
-                f"framerate={fps}/1")
+                f"framerate={framerate}")
     else:
         device = LOOPBACK_DEVICE
         # The feeder writes yuv420p, so that is what comes out.
@@ -504,7 +529,7 @@ def build_pipeline() -> str:
     parts = [
         f"gst-launch-1.0 -e -q {video_in} ! "
         f"mpph265enc rc-mode=cbr bps={video_bps} gop={enc['gop']} "
-        f"header-mode=each-idr ! h265parse config-interval=-1 ! mux."
+        f"header-mode=each-idr ! h265parse config-interval=-1 ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux."
     ]
     # Audio follows video.
     #
@@ -523,14 +548,14 @@ def build_pipeline() -> str:
         parts.append(
             f" alsasrc device={config['audio_device']} ! "
             f"audio/x-raw,rate=48000,channels=2 ! audioconvert ! "
-            f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! mux.")
+            f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux.")
     elif want_audio:
         apath = MEDIA_DIR / src["file"]
         parts.append(
             f" filesrc location={apath} ! decodebin ! "
             f"audioconvert ! audioresample ! "
             f"audio/x-raw,rate=48000,channels=2 ! "
-            f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! mux.")
+            f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux.")
     parts.append(" mpegtsmux name=mux ! fdsink fd=1")
 
     # -- remux to the exact rate, on the right PIDs -----------------
@@ -539,7 +564,7 @@ def build_pipeline() -> str:
         streamids += " -streamid 1:257"
     parts.append(
         f" | ffmpeg -loglevel warning -analyzeduration 1000000 "
-        f"-f mpegts -i - -c copy -f mpegts -muxrate {rate} "
+        f"-f mpegts -i - -map 0:v:0 -map '0:a:0?' -c copy -f mpegts -muxrate {rate} "
         f'-metadata service_provider="{config["provider"]}" '
         f'-metadata service_name="{config["callsign"]}" ' 
         f"{streamids} -max_delay 400000 -pat_period 0.200 pipe:1")
@@ -579,7 +604,7 @@ def start_tx() -> dict:
         tx_last_command = cmd
         tx_proc = subprocess.Popen(
             cmd, shell=True, preexec_fn=os.setsid,
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            stdout=subprocess.DEVNULL, stderr=open("/tmp/lynx-tx-pipeline.log", "ab"))
         tx_started_at = time.time()
         print(f"[tx] started: {cmd[:120]}...")
         return {"success": True}
