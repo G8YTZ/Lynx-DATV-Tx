@@ -760,7 +760,8 @@ def build_pipeline() -> str:
     # starve it on every keyframe. 8% is enough to ride a GOP at these
     # rates and small enough not to waste the channel.
     audio_bps = (enc["audio_bitrate"] + 8000
-                 if enc["audio"] and src["kind"] != "still" else 0)
+                 if config.get("use_switcher", True) or
+                 (enc["audio"] and src["kind"] != "still") else 0)
     psi_bps = 12000
     video_bps = int((rate - audio_bps - psi_bps) * 0.92)
 
@@ -866,39 +867,68 @@ def build_pipeline() -> str:
     # parameter sets at every keyframe. A decoder joining mid-stream
     # has everything it needs within one GOP rather than waiting for a
     # sequence header that may never come again.
-    parts = [
-        (reader if src["kind"] == "video" else "") +
-        f"gst-launch-1.0 -e -q {video_in} ! "
-        f"mpph265enc rc-mode=cbr bps={video_bps} gop={enc['gop']} "
-        f"header-mode=each-idr ! h265parse config-interval=-1 ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux."
-    ]
-    # Audio follows video.
-    #
-    # The camera's audio arrives on the HDMI receiver's ALSA device; a
-    # video file carries its own. A still has none at all, and encoding
-    # silence against a video clock that has no natural rate produces
-    # exactly the drift it sounds like.
-    #
-    # The file is read a second time here rather than being carried
-    # through the loopback with the video, because this kernel has no
-    # snd-aloop to carry it. A decode of an already-open local file is
-    # cheap, and the alternative is a named pipe arrangement that wants
-    # designing rather than bolting on.
-    want_audio = enc["audio"] and src["kind"] != "still"
-    if want_audio and src["kind"] == "camera":
-        parts.append(
-            f" alsasrc device={config['audio_device']} ! "
-            f"audio/x-raw,rate=48000,channels=2 ! audioconvert ! "
-            f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux.")
-    elif want_audio and src["kind"] == "video" and not media_audio:
-        want_audio = False          # the file has no sound to send
-    elif want_audio:
-        parts.append(
-            f" td. ! {media_audio} ! "
-            f"audioconvert ! audioresample ! "
-            f"audio/x-raw,rate=48000,channels=2 ! "
-            f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux.")
-    parts.append(" mpegtsmux name=mux ! fdsink fd=1")
+    if config.get("use_switcher", True):
+        # The normal mode: an ATEM-style programme bus, Camera | Media,
+        # cut cleanly in front of one encoder that never stops
+        # (switcher.py, beside this file). It writes the programme
+        # transport stream to stdout, so from here on the chain is the
+        # same as for any source: the remux with our IDs, the NIT, the
+        # pacing, the LibreSDR. "use_switcher: false" in the config falls
+        # back to the single-source modes below.
+        #
+        # Programme size follows the HDMI input, or UHD with no signal
+        # (the Camera input shows colour bars until one arrives).
+        fmt = hdmi_format()
+        w, h = (fmt["width"], fmt["height"]) if fmt.get("width") else (3840, 2160)
+        clip = src.get("file") or ""
+        if clip and not (MEDIA_DIR / clip).is_file():
+            clip = ""
+        start = src.get("program") or ("med" if src["kind"] in ("video", "still") and clip else "cam")
+        parts = [
+            f"python3 {shlex.quote(str(APP_DIR / 'switcher.py'))} "
+            f"--media-dir {shlex.quote(str(MEDIA_DIR))} "
+            + (f"--media {shlex.quote(clip)} " if clip else "")
+            + f"--start {start} --bps {video_bps} "
+            f"--gop {enc['gop']} --audio-bitrate {enc['audio_bitrate']} "
+            f"--width {w} --height {h} "
+            f"--video-device {shlex.quote(config['video_device'])} "
+            f"--audio-device {shlex.quote(config['audio_device'])}"
+        ]
+        want_audio = True
+    else:
+        parts = [
+            (reader if src["kind"] == "video" else "") +
+            f"gst-launch-1.0 -e -q {video_in} ! "
+            f"mpph265enc rc-mode=cbr bps={video_bps} gop={enc['gop']} "
+            f"header-mode=each-idr ! h265parse config-interval=-1 ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux."
+        ]
+        # Audio follows video.
+        #
+        # The camera's audio arrives on the HDMI receiver's ALSA device; a
+        # video file carries its own. A still has none at all, and encoding
+        # silence against a video clock that has no natural rate produces
+        # exactly the drift it sounds like.
+        #
+        # The file is read a second time here rather than being carried
+        # through the loopback with the video, because this kernel has no
+        # snd-aloop to carry it. A decode of an already-open local file is
+        # cheap, and the alternative is a named pipe arrangement that wants
+        # designing rather than bolting on.
+        want_audio = enc["audio"] and src["kind"] != "still"
+        if want_audio and src["kind"] == "camera":
+            parts.append(
+                f" alsasrc device={config['audio_device']} ! "
+                f"audio/x-raw,rate=48000,channels=2 ! audioconvert ! "
+                f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux.")
+        elif want_audio and src["kind"] == "video" and not media_audio:
+            want_audio = False          # the file has no sound to send
+        elif want_audio:
+            parts.append(
+                f" td. ! {media_audio} ! "
+                f"audioconvert ! audioresample ! "
+                f"audio/x-raw,rate=48000,channels=2 ! "
+                f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux.")
+        parts.append(" mpegtsmux name=mux ! fdsink fd=1")
 
     # -- remux to the exact rate, with our IDs and PIDs ------------
     # The maps make the output order fixed - video first, audio second
@@ -993,7 +1023,7 @@ def stop_tx_locked():
     # nothing is writing - which is exactly the failure this whole
     # arrangement kept producing. Match the remux stage specifically.
     for pattern in ("gst-launch-1.0", "ffmpeg.*-f mpegts",
-                    "tsp --realtime"):
+                    "tsp --realtime", "switcher.py"):
         subprocess.run(["pkill", "-f", pattern], capture_output=True)
 
 
@@ -1053,6 +1083,9 @@ def api_status():
         "ts_bitrate": theoretical,
         "libre": libre_status(),
         "libre_patch": libre_patch,
+        "switcher": (switcher_call("GET", "/status")
+                     if tx_running() and config.get("use_switcher", True) else None),
+        "use_switcher": config.get("use_switcher", True),
         "nit": nit_status,
     }
 
@@ -1160,10 +1193,56 @@ def api_encoder(req: EncoderUpdate):
     return {"success": True, "config": config["encoder"]}
 
 
+SWITCHER_URL = "http://127.0.0.1:8090"
+
+
+def switcher_call(method: str, path: str) -> Optional[dict]:
+    """Talk to the running switcher; None if it is not running."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(SWITCHER_URL + path, method=method)
+        with urllib.request.urlopen(req, timeout=0.5) as r:
+            return json.loads(r.read() or b"{}")
+    except Exception:
+        return None
+
+
+class TakeRequest(BaseModel):
+    src: str
+
+
+@app.post("/api/switcher/take")
+def api_switcher_take(req: TakeRequest):
+    """The programme bus. On air: a clean cut. Off air: what starts."""
+    if req.src not in ("cam", "med"):
+        raise HTTPException(400, "src must be cam or med")
+    config["source"]["program"] = req.src
+    save_config(config)
+    live = tx_running() and switcher_call("POST", f"/take?src={req.src}") is not None
+    return {"success": True, "live": live}
+
+
+class LoadRequest(BaseModel):
+    file: str
+
+
+@app.post("/api/switcher/load")
+def api_switcher_load(req: LoadRequest):
+    """The media player. On air it changes what the Media input carries."""
+    n = _media_name(req.file)
+    if not (MEDIA_DIR / n).is_file():
+        raise HTTPException(404, "no such file")
+    config["source"]["file"] = n
+    save_config(config)
+    from urllib.parse import quote
+    live = tx_running() and switcher_call("POST", f"/load?file={quote(n)}") is not None
+    return {"success": True, "live": live}
+
+
 @app.post("/api/source")
 def api_source(req: SourceUpdate):
-    if req.kind not in ("camera", "video", "still"):
-        raise HTTPException(400, "kind must be camera, video or still")
+    if req.kind not in ("camera", "video", "still", "switcher"):
+        raise HTTPException(400, "kind must be camera, video, still or switcher")
     config["source"] = {"kind": req.kind, "file": req.file}
     save_config(config)
     # The feeder first, so the loopback has a format before the encoder
@@ -1245,25 +1324,30 @@ PAGE = """<!DOCTYPE html>
           </table>
           <div class="small mt-2" id="libre-patch">LibreSDR script: checking&hellip;</div>
           <button class="btn btn-sm btn-outline-light mt-2" onclick="checkLibre()">Check LibreSDR</button>
+          <a href="/monitor" class="btn btn-sm btn-outline-light mt-2 ms-1">&#x1F4C8; TX monitor</a>
         </div>
       </div>
 
       <div class="card">
         <div class="card-header">&#x1F3A5; Source</div>
         <div class="card-body">
-          <div class="btn-group w-100 mb-2" role="group">
-            <button class="btn btn-outline-light" id="src-camera"
-                    onclick="setSource('camera','')">Camera</button>
-            <button class="btn btn-outline-light" id="src-media"
-                    onclick="showMedia()">Media</button>
+          <div class="small text-muted mb-1">Programme</div>
+          <div class="d-flex gap-2 mb-1">
+            <button class="btn btn-lg btn-outline-light flex-fill" id="pgm-cam"
+                    onclick="takeSrc('cam')">&#x1F4F9; Camera</button>
+            <button class="btn btn-lg btn-outline-light flex-fill" id="pgm-med"
+                    onclick="takeSrc('med')">&#x1F39E;&#xFE0F; Media</button>
           </div>
-          <div class="text-muted small mb-2" id="hdmi-info">—</div>
+          <div class="small mb-1" id="pgm-info">&mdash;</div>
+          <div class="text-muted small mb-2" id="hdmi-info">&mdash;</div>
+          <div class="small text-muted mb-1">Media player &mdash; click a clip to load it</div>
           <div id="media-list"></div>
           <a href="/media" class="btn btn-sm btn-outline-light w-100 mt-2">&#x1F4C1; Manage media &mdash; upload, check, delete</a>
           <div class="text-muted small mt-2">
+            Cuts are clean &mdash; the carrier stays up. Loading a clip while
+            Media is on air changes the picture straight away, like a HyperDeck
+            on an ATEM. Off air, these choose what starts at key-up.
             Files live in /srv/lynxdeck/media, shared with Lynx-Deck.
-            Changing source restarts the chain, so the carrier drops for
-            a second or two.
           </div>
         </div>
       </div>
@@ -1517,6 +1601,16 @@ async function setSource(kind, file) {
   poll();
 }
 
+async function takeSrc(src) {
+  await api('POST', '/api/switcher/take', {src});
+  setTimeout(poll, 200);
+}
+
+async function loadMedia(file) {
+  await api('POST', '/api/switcher/load', {file});
+  setTimeout(poll, 400);
+}
+
 function showMedia() {
   const el = document.getElementById('media-list');
   if (!cfg) return;
@@ -1525,10 +1619,12 @@ function showMedia() {
     el.innerHTML = '<div class="text-muted small">Nothing in /srv/lynxdeck/media</div>';
     return;
   }
+  const loaded = cfg.config.source.file;
   el.innerHTML = files.map(f =>
-    `<button class="btn btn-sm btn-outline-light w-100 mb-1 text-start"
-             onclick="setSource('${f.kind}','${f.name}')">
+    `<button class="btn btn-sm ${f.name === loaded ? 'btn-light' : 'btn-outline-light'} w-100 mb-1 text-start"
+             onclick="loadMedia('${f.name}')">
        ${f.kind === 'still' ? '&#x1F5BC;&#xFE0F;' : '&#x1F3AC;'} ${f.name}
+       ${f.name === loaded ? '<span class="float-end small">loaded</span>' : ''}
      </button>`).join('');
 }
 
@@ -1649,16 +1745,32 @@ async function poll() {
     ? `HDMI in: ${h.width}\\u00d7${h.height}`
     : 'HDMI in: nothing detected';
 
-  document.getElementById('src-camera').className =
-    'btn ' + (cfg.config.source.kind === 'camera' ? 'btn-primary' : 'btn-outline-light');
-  document.getElementById('src-media').className =
-    'btn ' + (cfg.config.source.kind !== 'camera' ? 'btn-primary' : 'btn-outline-light');
+  // Programme bus: red = on air, blue = what starts at key-up.
+  const SW = cfg.switcher, onAir = !!(cfg.transmitting && SW);
+  const pgm = onAir ? SW.on : (cfg.config.source.program ||
+              (cfg.config.source.kind === 'camera' ? 'cam' : 'med'));
+  for (const b of ['cam', 'med'])
+    document.getElementById('pgm-' + b).className = 'btn btn-lg flex-fill ' +
+      (b === pgm ? (onAir ? 'btn-danger' : 'btn-primary') : 'btn-outline-light');
+  const pi = document.getElementById('pgm-info');
+  if (onAir) {
+    let t = 'ON AIR: ' + (SW.on === 'cam' ? 'Camera' : 'Media');
+    if (SW.camera === 'bars') t += ' \u00b7 no HDMI signal \u2014 Camera shows colour bars';
+    if ((SW.media_state || '').startsWith('error')) t += ' \u00b7 media ' + SW.media_state;
+    pi.textContent = t; pi.style.color = '#f87171';
+  } else {
+    pi.textContent = cfg.transmitting ? 'Single-source mode' : 'Off air \u2014 starts on ' +
+      (pgm === 'cam' ? 'Camera' : 'Media');
+    pi.style.color = '#9fb3d1';
+  }
+  showMedia();
 
   // Which of the two appears. The format controls only mean
   // anything for media, where the file is genuinely scaled on the
   // way in; with the camera the HDMI input decides and the page
   // should say so rather than pretend otherwise.
-  const isCam = cfg.config.source.kind === 'camera';
+  // In switcher mode the programme follows the HDMI input, as the camera does.
+  const isCam = cfg.use_switcher || cfg.config.source.kind === 'camera';
   document.getElementById('camera-format').style.display = isCam ? '' : 'none';
   document.getElementById('media-format').style.display = isCam ? 'none' : '';
   if (isCam) {
@@ -1695,7 +1807,6 @@ async function poll() {
     document.getElementById('e-fps').value = e.fps;
     document.getElementById('e-audio').checked = e.audio;
     document.getElementById('e-abr').value = e.audio_bitrate;
-    if (cfg.config.source.kind !== 'camera') showMedia();
     firstLoad = false;
   }
 }
@@ -1938,6 +2049,15 @@ def api_media_delete(name: str):
 @app.get("/media", response_class=HTMLResponse)
 def media_page():
     return MEDIA_PAGE
+
+
+# The TX monitor: a live spectrum from the LibreSDR's own receiver
+# (tx_monitor.py, beside this file). Optional - Lynx-Tx runs without it.
+try:
+    import tx_monitor
+    tx_monitor.install(app, lambda: config)
+except Exception as e:
+    print(f"[monitor] not available: {e}")
 
 
 @app.get("/", response_class=HTMLResponse)
