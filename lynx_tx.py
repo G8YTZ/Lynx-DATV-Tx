@@ -80,7 +80,9 @@ from typing import Optional
 
 import yaml
 from xml.sax.saxutils import quoteattr
-from fastapi import FastAPI, HTTPException, Response
+import json
+from urllib.parse import unquote
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
@@ -666,6 +668,71 @@ def media_files() -> list:
     return out
 
 
+_probe_cache: dict = {}
+
+
+def probe_media(path: Path) -> dict:
+    """What a file actually is - not what its name says.
+
+    "Ayo4k.MOV" turned out to be 1080p HLG at 30 fps, and an iPhone file
+    carries its thumbnail as a second "video" stream; both are things to
+    know before putting a file on air. Cached by size and time, because
+    ffprobe on a 6 GB file is not free.
+    """
+    st = path.stat()
+    key = (path.name, st.st_size, int(st.st_mtime))
+    if key in _probe_cache:
+        return _probe_cache[key]
+    info = {"ok": False}
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "stream=codec_type,codec_name,profile,width,height,r_frame_rate,"
+             "pix_fmt,color_transfer:stream_disposition=attached_pic:"
+             "format=duration", "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=30)
+        d = json.loads(r.stdout or "{}")
+        streams = d.get("streams", [])
+        video = [x for x in streams if x.get("codec_type") == "video"
+                 and not (x.get("disposition") or {}).get("attached_pic")]
+        audio = [x for x in streams if x.get("codec_type") == "audio"]
+        if video:
+            v = video[0]
+            num, _, den = (v.get("r_frame_rate") or "0/1").partition("/")
+            fps = float(num) / float(den or 1) if float(den or 1) else 0.0
+            tr = v.get("color_transfer", "")
+            info = {
+                "ok": True,
+                "codec": v.get("codec_name", ""),
+                "profile": v.get("profile", ""),
+                "width": v.get("width", 0), "height": v.get("height", 0),
+                "fps": round(fps, 3),
+                "bits": 10 if "10" in (v.get("pix_fmt") or "") else 8,
+                "hdr": {"arib-std-b67": "HLG", "smpte2084": "PQ"}.get(tr, ""),
+                "audio": audio[0].get("codec_name", "") if audio else "",
+                "duration": float((d.get("format") or {}).get("duration") or 0),
+            }
+    except Exception as e:
+        info = {"ok": False, "error": str(e)}
+    _probe_cache[key] = info
+    return info
+
+
+def _media_name(name: str) -> str:
+    """A bare file name with an extension we play - nothing else."""
+    n = unquote(name).strip()
+    if not n or n.startswith(".") or "/" in n or "\\" in n:
+        raise HTTPException(400, "bad file name")
+    if Path(n).suffix.lower() not in VIDEO_EXT | STILL_EXT:
+        raise HTTPException(400, "not a video or still this can play")
+    return n
+
+
+def _on_air_file() -> str:
+    src = config["source"]
+    return src["file"] if src["kind"] != "camera" and tx_running() else ""
+
+
 def build_pipeline() -> str:
     """The whole chain as one shell command.
 
@@ -733,6 +800,25 @@ def build_pipeline() -> str:
     # than "not-negotiated (-4)".
     if src["kind"] == "camera":
         video_in = f"v4l2src device={device} ! {caps}"
+    elif src["kind"] == "still":
+        # A still never changes, so it is decoded, converted and scaled
+        # ONCE, and imagefreeze hands the encoder that same frame 25
+        # times a second - no feeder, no loopback, next to no CPU. The
+        # old route had ffmpeg decode the whole 4K PNG again for every
+        # frame, in software, which no 4K still could keep up with.
+        # videoscale letterboxes rather than stretches an odd shape.
+        still = MEDIA_DIR / src["file"]
+        # The picture's own size, not the encoder default: a 4K test
+        # card goes out as 4K. Rounded down to even numbers, which the
+        # encoder needs, and capped at UHD.
+        info = probe_media(still) if still.exists() else {}
+        if info.get("width") and info.get("height"):
+            w = min(int(info["width"]), 3840) // 2 * 2
+            h = min(int(info["height"]), 2160) // 2 * 2
+        video_in = (f"filesrc location={shlex.quote(str(still))} ! decodebin ! "
+                    f"videoconvert ! videoscale ! "
+                    f"video/x-raw,format=NV12,width={w},height={h},pixel-aspect-ratio=1/1 ! "
+                    f"imagefreeze is-live=true ! video/x-raw,framerate=25/1")
     else:
         video_in = (f"v4l2src device={device} ! {caps} ! "
                     f"videoconvert ! video/x-raw,format=NV12")
@@ -829,7 +915,9 @@ def start_tx() -> dict:
         # Starting the encoder against a loopback nothing is writing to
         # gives a pipeline that opens and then sits there.
         src = config["source"]
-        if src["kind"] != "camera" and feeder_proc is None:
+        # Only video still goes through the feeder; a still is read
+        # straight from its file (see build_pipeline).
+        if src["kind"] == "video" and feeder_proc is None:
             start_feeder(src["kind"], src["file"])
         write_libre_settings()
         # The board's watcher restarts the modulator on the settings
@@ -1041,7 +1129,10 @@ def api_source(req: SourceUpdate):
     # The feeder first, so the loopback has a format before the encoder
     # opens it - the other order is a race that looks like the media
     # source simply not working.
-    start_feeder(req.kind, req.file)
+    if req.kind == "video":
+        start_feeder(req.kind, req.file)
+    else:
+        stop_feeder()
     if tx_running():
         start_tx()
     return {"success": True, "source": config["source"]}
@@ -1131,6 +1222,7 @@ PAGE = """<!DOCTYPE html>
           </div>
           <div class="text-muted small mb-2" id="hdmi-info">—</div>
           <div id="media-list"></div>
+          <a href="/media" class="btn btn-sm btn-outline-light w-100 mt-2">&#x1F4C1; Manage media &mdash; upload, check, delete</a>
           <div class="text-muted small mt-2">
             Files live in /srv/lynxdeck/media, shared with Lynx-Deck.
             Changing source restarts the chain, so the carrier drops for
@@ -1576,6 +1668,239 @@ setInterval(poll, 2000);
 </script>
 </body></html>
 """
+
+
+MEDIA_PAGE = """<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lynx-Tx - Media</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; }
+  .card { background: #16213e; border: 1px solid #0f3460; }
+  .card-header { background: #0f3460; color: #fff; font-weight: 600; }
+  .table { --bs-table-bg: transparent; --bs-table-color: #e0e0e0; }
+  .text-muted { color: #9fb3d1 !important; }
+  .mono { font-family: monospace; }
+  .ok { color: #4ade80; } .warn { color: #e8a33d; }
+  #drop { border: 2px dashed #3a4a63; border-radius: 8px; padding: 1.5em;
+          text-align: center; color: #9fb3d1; cursor: pointer; }
+  #drop.over { border-color: #4ade80; color: #e0e0e0; }
+  .progress { background: #0f3460; height: 1.2em; }
+</style>
+</head><body>
+<div class="container-fluid py-3">
+
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+    <h4 class="mb-0 me-3">&#x1F4C1; Lynx-Tx &mdash; Media</h4>
+    <a href="/" class="btn btn-sm btn-outline-light">&larr; Back to the transmitter</a>
+    <span class="ms-auto text-muted small" id="disk">&mdash;</span>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header">&#x2B06;&#xFE0F; Upload</div>
+    <div class="card-body">
+      <div id="drop" onclick="document.getElementById('pick').click()">
+        Drop videos or stills here, or click to choose.<br>
+        <span class="small">Large masters are fine &mdash; they stream straight to disk.</span>
+      </div>
+      <input type="file" id="pick" multiple hidden
+             accept=".mp4,.mov,.mkv,.ts,.m4v,.png,.jpg,.jpeg,.bmp">
+      <div id="uploads" class="mt-2"></div>
+      <div class="text-muted small mt-2">
+        House standard for anything going on air: <b>3840&times;2160 at 25 fps,
+        standard range (Rec.709)</b>. Files that differ are marked below &mdash;
+        they will still play, but a different frame rate judders and HDR
+        looks flat on most receivers.
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">&#x1F39E;&#xFE0F; Library</div>
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead><tr class="text-muted small">
+            <th>File</th><th>Picture</th><th>Rate</th><th>Codec</th>
+            <th>Range</th><th>Audio</th><th>Length</th><th>Size</th><th></th>
+          </tr></thead>
+          <tbody id="lib"><tr><td colspan="9" class="text-muted">Loading&hellip;</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function gb(b) { return (b / 1e9).toFixed(b >= 1e10 ? 0 : 1) + ' GB'; }
+function hms(t) {
+  if (!t) return '&mdash;';
+  t = Math.round(t);
+  const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0');
+}
+function esc(x) { const d = document.createElement('div'); d.textContent = x; return d.innerHTML; }
+
+async function load() {
+  const r = await fetch('/api/media'); const j = await r.json();
+  document.getElementById('disk').textContent =
+    gb(j.free) + ' free of ' + gb(j.total);
+  const rows = j.files.map(f => {
+    const i = f.info || {};
+    const onAir = f.name === j.on_air;
+    if (!i.ok) {
+      return `<tr><td class="mono">${esc(f.name)}</td>
+        <td colspan="6" class="warn">Could not read this file</td>
+        <td>${gb(f.size)}</td><td>${delBtn(f.name, onAir)}</td></tr>`;
+    }
+    const is4k = i.width === 3840 && i.height === 2160;
+    const still = f.kind === 'still';
+    const rateOk = still || Math.abs(i.fps - 25) < 0.01;
+    return `<tr>
+      <td class="mono">${still ? '&#x1F5BC;&#xFE0F;' : '&#x1F3AC;'} ${esc(f.name)}
+        ${onAir ? '<span class="badge bg-danger ms-1">ON AIR</span>' : ''}</td>
+      <td class="${is4k ? 'ok' : 'warn'}">${i.width}&times;${i.height}</td>
+      <td class="${rateOk ? 'ok' : 'warn'}">${still ? 'still' : i.fps + ' fps'}</td>
+      <td>${esc(i.codec)}${still ? '' : ' ' + i.bits + '-bit'}</td>
+      <td class="${i.hdr ? 'warn' : 'ok'}">${i.hdr ? 'HDR ' + i.hdr : 'SDR'}</td>
+      <td>${esc(i.audio || (still ? '&mdash;' : 'none'))}</td>
+      <td>${still ? '&mdash;' : hms(i.duration)}</td>
+      <td>${gb(f.size)}</td>
+      <td>${delBtn(f.name, onAir)}</td></tr>`;
+  });
+  document.getElementById('lib').innerHTML = rows.join('') ||
+    '<tr><td colspan="9" class="text-muted">No media yet.</td></tr>';
+}
+
+function delBtn(name, onAir) {
+  return onAir ? '' :
+    `<button class="btn btn-sm btn-outline-danger"
+       onclick="del('${encodeURIComponent(name)}')">Delete</button>`;
+}
+
+async function del(enc) {
+  const name = decodeURIComponent(enc);
+  if (!confirm('Delete ' + name + '? This cannot be undone.')) return;
+  const r = await fetch('/api/media/' + enc, {method: 'DELETE'});
+  if (!r.ok) alert((await r.json()).detail || 'Not deleted');
+  load();
+}
+
+function upload(file) {
+  return new Promise(resolve => {
+    const box = document.createElement('div');
+    box.className = 'mb-2';
+    box.innerHTML = `<div class="small mono">${esc(file.name)} &mdash;
+        <span class="pct">0%</span></div>
+      <div class="progress"><div class="progress-bar bg-success" style="width:0%"></div></div>`;
+    document.getElementById('uploads').appendChild(box);
+    const bar = box.querySelector('.progress-bar'), pct = box.querySelector('.pct');
+    const x = new XMLHttpRequest();
+    x.open('PUT', '/api/media/upload?name=' + encodeURIComponent(file.name));
+    x.upload.onprogress = e => {
+      if (!e.lengthComputable) return;
+      const p = Math.floor(e.loaded / e.total * 100);
+      bar.style.width = p + '%'; pct.textContent = p + '%';
+    };
+    x.onload = () => {
+      if (x.status === 200) { pct.textContent = 'done'; }
+      else {
+        let msg = 'failed';
+        try { msg = JSON.parse(x.responseText).detail || msg; } catch (e) {}
+        pct.textContent = msg; bar.classList.replace('bg-success', 'bg-danger');
+      }
+      load(); resolve();
+    };
+    x.onerror = () => { pct.textContent = 'connection lost';
+      bar.classList.replace('bg-success', 'bg-danger'); resolve(); };
+    x.send(file);
+  });
+}
+
+async function uploadAll(files) {
+  for (const f of files) await upload(f);   // one at a time, so the disk is not fighting itself
+}
+
+const drop = document.getElementById('drop');
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over');
+  uploadAll([...e.dataTransfer.files]); });
+document.getElementById('pick').addEventListener('change', e => uploadAll([...e.target.files]));
+load();
+</script>
+</body></html>
+"""
+
+@app.get("/api/media")
+def api_media():
+    """Every playable file, with what it actually contains."""
+    files = []
+    if MEDIA_DIR.exists():
+        for p in sorted(MEDIA_DIR.iterdir()):
+            ext = p.suffix.lower()
+            if not p.is_file() or ext not in VIDEO_EXT | STILL_EXT:
+                continue
+            files.append({"name": p.name, "size": p.stat().st_size,
+                          "kind": "still" if ext in STILL_EXT else "video",
+                          "info": probe_media(p)})
+    du = shutil.disk_usage(MEDIA_DIR if MEDIA_DIR.exists() else "/")
+    return {"files": files, "free": du.free, "total": du.total,
+            "on_air": _on_air_file()}
+
+
+@app.put("/api/media/upload")
+async def api_media_upload(request: Request, name: str):
+    """Stream a file straight to disk.
+
+    The body is the file itself, not a form, so a 6 GB master needs no
+    extra library and never sits in memory. Written beside the real name
+    and renamed at the end, so a half-finished upload can never be put
+    on air.
+    """
+    n = _media_name(name)
+    if n == _on_air_file():
+        raise HTTPException(409, "that file is on air - stop or change source first")
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    length = int(request.headers.get("content-length") or 0)
+    free = shutil.disk_usage(MEDIA_DIR).free
+    if length and length > free - 1_000_000_000:
+        raise HTTPException(507, "not enough disk space (keeping 1 GB spare)")
+    part = MEDIA_DIR / f".{n}.part"
+    written = 0
+    try:
+        with open(part, "wb") as f:
+            async for chunk in request.stream():
+                f.write(chunk)
+                written += len(chunk)
+        if length and written != length:
+            raise HTTPException(400, "upload incomplete")
+        os.replace(part, MEDIA_DIR / n)
+    finally:
+        if part.exists():
+            part.unlink()
+    print(f"[media] uploaded {n} ({written} bytes)")
+    return {"success": True, "name": n, "size": written}
+
+
+@app.delete("/api/media/{name}")
+def api_media_delete(name: str):
+    n = _media_name(name)
+    if n == _on_air_file():
+        raise HTTPException(409, "that file is on air - stop or change source first")
+    p = MEDIA_DIR / n
+    if not p.exists():
+        raise HTTPException(404, "no such file")
+    p.unlink()
+    print(f"[media] deleted {n}")
+    return {"success": True}
+
+
+@app.get("/media", response_class=HTMLResponse)
+def media_page():
+    return MEDIA_PAGE
 
 
 @app.get("/", response_class=HTMLResponse)
