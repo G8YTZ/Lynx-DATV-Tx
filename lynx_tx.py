@@ -765,6 +765,8 @@ def build_pipeline() -> str:
     video_bps = int((rate - audio_bps - psi_bps) * 0.92)
 
     w, h, fps = enc["width"], enc["height"], enc["fps"]
+    reader = ""
+    media_audio = None
 
     # -- the source ------------------------------------------------
     #
@@ -819,6 +821,42 @@ def build_pipeline() -> str:
                     f"videoconvert ! videoscale ! "
                     f"video/x-raw,format=NV12,width={w},height={h},pixel-aspect-ratio=1/1 ! "
                     f"imagefreeze is-live=true ! video/x-raw,framerate=25/1")
+    elif src["kind"] == "video":
+        # ffmpeg reads the file and repackages it as a transport stream -
+        # no decoding (-c copy) - at real speed (-re), looping for ever
+        # with timestamps that carry on across the join (-stream_loop).
+        # GStreamer decodes that in hardware (mppvideodec, about 12x real
+        # time for 4K HEVC) and feeds the encoder. Sound comes from the
+        # same stream, so it cannot drift; the old route read the file
+        # twice and the two copies wandered apart.
+        #
+        # Each branch starts with its parser, straight after the demuxer:
+        # the parser only accepts its own kind of stream, so the video
+        # branch always gets the video and the audio branch the audio.
+        media = MEDIA_DIR / src["file"]
+        info = probe_media(media) if media.exists() else {}
+        if not info.get("ok"):
+            raise HTTPException(400, f"{src['file']}: cannot read this file")
+        parser = {"hevc": "h265parse", "h264": "h264parse"}.get(info["codec"])
+        if not parser:
+            raise HTTPException(400, f"{src['file']}: {info['codec']} cannot be "
+                                     "decoded in hardware - export it as H.265 or H.264")
+        if info.get("bits") == 10:
+            raise HTTPException(400, f"{src['file']}: 10-bit - export it as "
+                                     "8-bit (H.265 Main), the house standard")
+        media_audio = {
+            "aac": "aacparse ! queue ! avdec_aac",
+            "mp3": "mpegaudioparse ! queue ! avdec_mp3",
+            "ac3": "ac3parse ! queue ! avdec_ac3",
+            "eac3": "ac3parse ! queue ! avdec_eac3",
+        }.get(info.get("audio", ""))
+        reader = (f"ffmpeg -nostdin -loglevel warning -re -stream_loop -1 "
+                  f"-i {shlex.quote(str(media))} -map 0:v:0 "
+                  f"{'-map 0:a:0 ' if media_audio else ''}"
+                  f"-c copy -f mpegts - | ")
+        video_in = (f"fdsrc ! tsdemux name=td td. ! {parser} ! "
+                    f"queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! "
+                    f"mppvideodec ! video/x-raw,format=NV12")
     else:
         video_in = (f"v4l2src device={device} ! {caps} ! "
                     f"videoconvert ! video/x-raw,format=NV12")
@@ -829,6 +867,7 @@ def build_pipeline() -> str:
     # has everything it needs within one GOP rather than waiting for a
     # sequence header that may never come again.
     parts = [
+        (reader if src["kind"] == "video" else "") +
         f"gst-launch-1.0 -e -q {video_in} ! "
         f"mpph265enc rc-mode=cbr bps={video_bps} gop={enc['gop']} "
         f"header-mode=each-idr ! h265parse config-interval=-1 ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux."
@@ -851,10 +890,11 @@ def build_pipeline() -> str:
             f" alsasrc device={config['audio_device']} ! "
             f"audio/x-raw,rate=48000,channels=2 ! audioconvert ! "
             f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux.")
+    elif want_audio and src["kind"] == "video" and not media_audio:
+        want_audio = False          # the file has no sound to send
     elif want_audio:
-        apath = MEDIA_DIR / src["file"]
         parts.append(
-            f" filesrc location={apath} ! decodebin ! "
+            f" td. ! {media_audio} ! "
             f"audioconvert ! audioresample ! "
             f"audio/x-raw,rate=48000,channels=2 ! "
             f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux.")
@@ -915,10 +955,10 @@ def start_tx() -> dict:
         # Starting the encoder against a loopback nothing is writing to
         # gives a pipeline that opens and then sits there.
         src = config["source"]
-        # Only video still goes through the feeder; a still is read
-        # straight from its file (see build_pipeline).
-        if src["kind"] == "video" and feeder_proc is None:
-            start_feeder(src["kind"], src["file"])
+        # Nothing uses the old loopback feeder any more: stills are
+        # frozen in GStreamer and video is read by ffmpeg inside the
+        # pipeline (see build_pipeline). Stop any left from before.
+        stop_feeder()
         write_libre_settings()
         # The board's watcher restarts the modulator on the settings
         # change; give it a moment to be listening before the stream
@@ -1129,10 +1169,7 @@ def api_source(req: SourceUpdate):
     # The feeder first, so the loopback has a format before the encoder
     # opens it - the other order is a race that looks like the media
     # source simply not working.
-    if req.kind == "video":
-        start_feeder(req.kind, req.file)
-    else:
-        stop_feeder()
+    stop_feeder()
     if tx_running():
         start_tx()
     return {"success": True, "source": config["source"]}
