@@ -21,10 +21,10 @@ without it:
   mpph265enc   the RK3588's hardware encoder. 4K25 HEVC at 23% of one
                core, where a Pi would be doing it in software.
 
-  ffmpeg       remuxes to an exact constant rate and puts video on PID
-               256, which is what the firmware's tables expect.
-               GStreamer's muxer numbers it 0x41, and the firmware's
-               own pcrextract looks for 256 and finds nothing.
+  ffmpeg       remuxes to an exact constant rate, on the PIDs and with
+               the IDs set in the Identity card. GStreamer's muxer
+               numbers video 0x41 and chooses its own IDs; nothing
+               downstream should have to live with that.
 
   tsp          paces the output. Without it the stream arrives in
                bursts, the modulator's buffer drains between them, and
@@ -44,6 +44,16 @@ Cortex-A9 manages speed=0.549x - about half real time - so it falls
 progressively behind until the input buffer overruns and the modulator
 restarts. Doing the same work here costs nothing and runs at 651x.
 
+Service information
+-------------------
+This end owns every table a receiver reads: PAT, PMT and SDT from
+ffmpeg, the NIT (network name, delivery parameters, LCN) built here and
+injected by tsp. The LibreSDR's own SDT rewrite is removed by
+ensure_libre_patched(), because it hard-codes service ID 1 and cuts
+names at the first space. A TV remembers a channel by the triplet
+original network ID / transport stream ID / service ID - change any of
+those and every viewer has to rescan, whatever the names say.
+
 Symbol rate
 -----------
 Around 2 MS/s is the practical ceiling in Standard-Mode: above it the
@@ -59,6 +69,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -68,6 +79,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from xml.sax.saxutils import quoteattr
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -105,7 +117,9 @@ DEFAULT_CONFIG = {
     "provider": "HD",
     "libre": {"host": "192.168.0.172", "user": "root"},
     "video_device": "/dev/video0",
-    "audio_device": "hw:3,0",
+    # By name, not number: the HDMI receiver's card number moves
+    # between boots (it has been 2, 3 and 4).
+    "audio_device": "hw:CARD=rockchiphdmiin,DEV=0",
     "modulation": {
         "frequency_mhz": 437.0,
         "symbol_rate_ks": 1000,
@@ -128,6 +142,24 @@ DEFAULT_CONFIG = {
         "video_share": 0.70,
     },
     "source": {"kind": "camera", "file": ""},
+    # DVB service information. Network > multiplex > provider > service.
+    # The triplet original_network_id / ts_id / service_id is what a TV
+    # stores; the names are only what it displays.
+    "identity": {
+        "network_name": "Amateur DATV",
+        "network_id": 0xFF01,           # 0xFF01-0xFFFF: private use
+        "original_network_id": 0xFF01,
+        "ts_id": 1,                     # one per carrier, not per site
+        "service_id": 1,                # unique across the network
+        "service_type": "digital_tv",
+        "nit": True,
+        "lcn": 1,
+        "lcn_visible": True,
+        "pmt_pid": 0x100,
+        "video_pid": 0x101,             # PCR travels here too
+        "audio_pid": 0x102,
+        "polarization": "horizontal",
+    },
 }
 
 
@@ -298,6 +330,190 @@ def libre_status() -> dict:
         "underflows": _int(1),
         "modulator_running": bool(_int(2)),
     }
+
+
+# ── Keeping the LibreSDR's script compatible ─────────────────
+#
+# DL1JM's /opt/udpts.sh rewrites the SDT on its way to the modulator
+# ("tsp -P sdt -n $CALL -p $MESSAGE -i -s 1"). That hard-codes service
+# ID 1, cuts names at the first space, and prepends the firmware
+# version to the provider. This end owns the service information, so
+# the rewrite is removed; and the board's PCR monitor is pointed at the
+# PID the PCR actually travels on.
+#
+# Rules, not a copy of his script: nothing of DL1JM's is redistributed,
+# a replacement board fixes itself, and a firmware that has changed
+# those lines is simply left alone. The script runs as a long-lived
+# bash loop that keeps the copy it loaded at boot, so a change only
+# takes effect after a reboot - done here, and only when idle.
+
+UDPTS = "/opt/udpts.sh"
+_SDT_STAGE = re.compile(
+    r' -P sdt -n (?:"\$CALL"|\$CALL) -p (?:"\$MESSAGE"|\$MESSAGE) -i -s \d+')
+_PCR_PID = re.compile(r'(-P pcrextract\b[^|\n]*?--pid )(\d+)')
+_LIVE_LINE = re.compile(r'^tsp .*-I ip 0\.0\.0\.0:8282.*pluto_dvb', re.M)
+
+libre_lock = threading.Lock()
+libre_patch = {"state": "unknown", "detail": "Not checked yet", "at": 0}
+
+
+def libre_ssh_full(cmd: str, stdin: Optional[str] = None,
+                   timeout: int = 15) -> tuple:
+    """As libre_ssh, but with the return code and stderr - needed to
+    tell 'unreachable' from 'refuses our key'."""
+    lib = config["libre"]
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+             f"{lib['user']}@{lib['host']}", cmd],
+            input=stdin, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout, r.stderr
+    except Exception as e:
+        return 255, "", str(e)
+
+
+def patch_udpts(text: str) -> str:
+    """The rules. Idempotent: applying them twice changes nothing."""
+    text = _SDT_STAGE.sub("", text)
+    pid = str(config["identity"]["video_pid"])
+    text = _PCR_PID.sub(lambda m: m.group(1) + pid, text)
+    return text
+
+
+def _set_libre(state: str, detail: str):
+    libre_patch.update(state=state, detail=detail, at=int(time.time()))
+    print(f"[libre-patch] {state}: {detail}")
+
+
+def ensure_libre_patched(apply: bool = True) -> dict:
+    """Check the board's script and, if allowed, correct it and reboot.
+
+    Never while transmitting: a reboot mid-over is worse than a stale
+    table. A needed change found then is reported as pending and made
+    on the next idle check.
+    """
+    with libre_lock:
+        rc, text, err = libre_ssh_full(f"cat {UDPTS}")
+        host = config["libre"]["host"]
+        if rc == 255:
+            if "Permission denied" in err:
+                _set_libre("unpaired",
+                           f"The LibreSDR refuses this ROCK's key. Pair it "
+                           f"once from the ROCK: ssh-copy-id root@{host}")
+            else:
+                _set_libre("unreachable", f"No answer from {host}")
+            return dict(libre_patch)
+        if rc != 0 or "pluto_dvb" not in text or not _LIVE_LINE.search(text):
+            _set_libre("unrecognised",
+                       f"{UDPTS} is not the script these rules know - "
+                       "left untouched")
+            return dict(libre_patch)
+
+        new = patch_udpts(text)
+        if new == text:
+            _set_libre("ok", "Script compatible")
+            return dict(libre_patch)
+        if not apply or tx_running():
+            _set_libre("pending", "Script needs updating - will apply "
+                                  "when the transmitter is idle")
+            return dict(libre_patch)
+
+        # Write beside it, syntax-check, keep the first original we
+        # ever saw, then move into place.
+        rc, _, err = libre_ssh_full(
+            f"cat > {UDPTS}.lynx-new && bash -n {UDPTS}.lynx-new && "
+            f"( [ -e {UDPTS}.orig-lynx ] || cp -p {UDPTS} {UDPTS}.orig-lynx ) && "
+            f"chmod 755 {UDPTS}.lynx-new && mv {UDPTS}.lynx-new {UDPTS}",
+            stdin=new)
+        if rc != 0:
+            _set_libre("error", f"Could not update the script: {err.strip()}")
+            return dict(libre_patch)
+        rc, check, _ = libre_ssh_full(f"cat {UDPTS}")
+        if rc != 0 or patch_udpts(check) != check:
+            _set_libre("error", "Update did not verify - check the board")
+            return dict(libre_patch)
+        libre_ssh_full("nohup sh -c 'sleep 1; reboot' >/dev/null 2>&1 &",
+                       timeout=8)
+        _set_libre("rebooting", "Script updated - LibreSDR rebooting "
+                                "(about a minute)")
+        return dict(libre_patch)
+
+
+def libre_patch_watch():
+    """Check at start-up and every ten minutes, so a board swapped on
+    site is corrected without anyone remembering to ask."""
+    time.sleep(5)
+    while True:
+        try:
+            ensure_libre_patched(apply=True)
+        except Exception as e:
+            _set_libre("error", str(e))
+        time.sleep(600)
+
+
+# ── The network information table ─────────────────────────────
+
+NIT_DIR = APP_DIR / "run"
+_SERVICE_TYPE_CODE = {
+    "digital_tv": 0x01,
+    "advanced_codec_digital_hdtv": 0x19,
+    "hevc_digital_hdtv": 0x1F,
+}
+_NIT_MODULATION = {"QPSK": "QPSK", "8PSK": "8PSK", "16APSK": "16-QAM",
+                   "32APSK": "auto"}
+nit_status = {"ok": False, "detail": "Not built yet"}
+
+
+def build_nit() -> Optional[Path]:
+    """The NIT as TSDuck XML, compiled to a section file for tsp.
+
+    Carries the network name, the carrier's own delivery parameters
+    (taken from the Modulation card, so it can never disagree with
+    what is on air) and the LCN. Returns None if disabled or if the
+    table will not compile - better no NIT than a broken one.
+    """
+    ident = config["identity"]
+    if not ident.get("nit", True):
+        nit_status.update(ok=False, detail="Disabled")
+        return None
+    m = config["modulation"]
+    stype = _SERVICE_TYPE_CODE.get(ident["service_type"], 0x01)
+    sid = ident["service_id"]
+    lcn = ""
+    if ident.get("lcn"):
+        lcn = (f'      <private_data_specifier_descriptor private_data_specifier="EACEM"/>\n'
+               f'      <eacem_logical_channel_number_descriptor>\n'
+               f'        <service service_id="{sid}" logical_channel_number="{int(ident["lcn"])}" '
+               f'visible_service="{"true" if ident.get("lcn_visible", True) else "false"}"/>\n'
+               f'      </eacem_logical_channel_number_descriptor>\n')
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n<tsduck>\n'
+        f'  <NIT version="0" current="true" network_id="{ident["network_id"]}" actual="true">\n'
+        f'    <network_name_descriptor network_name={quoteattr(ident["network_name"])}/>\n'
+        f'    <transport_stream transport_stream_id="{ident["ts_id"]}" '
+        f'original_network_id="{ident["original_network_id"]}">\n'
+        f'      <service_list_descriptor>\n'
+        f'        <service service_id="{sid}" service_type="{stype}"/>\n'
+        f'      </service_list_descriptor>\n'
+        f'      <satellite_delivery_system_descriptor '
+        f'frequency="{int(round(m["frequency_mhz"] * 1e6))}" orbital_position="0.0" '
+        f'west_east_flag="east" polarization="{ident.get("polarization", "horizontal")}" '
+        f'roll_off="{m["rolloff"]}" modulation_system="DVB-S2" '
+        f'modulation_type="{_NIT_MODULATION.get(m["constellation"].upper(), "auto")}" '
+        f'symbol_rate="{int(m["symbol_rate_ks"]) * 1000}" FEC_inner="{m["fec"]}"/>\n'
+        f'{lcn}'
+        f'    </transport_stream>\n  </NIT>\n</tsduck>\n')
+    NIT_DIR.mkdir(parents=True, exist_ok=True)
+    src, out = NIT_DIR / "nit.xml", NIT_DIR / "nit.bin"
+    src.write_text(xml)
+    r = subprocess.run(["tstabcomp", str(src), "-o", str(out)],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not out.exists():
+        nit_status.update(ok=False, detail=(r.stderr or "tstabcomp failed").strip())
+        print(f"[nit] not sent: {nit_status['detail']}")
+        return None
+    nit_status.update(ok=True, detail=f"{out.stat().st_size} bytes")
+    return out
 
 
 # ── The pipeline ──────────────────────────────────────────────
@@ -558,15 +774,24 @@ def build_pipeline() -> str:
             f"avenc_aac bitrate={enc['audio_bitrate']} ! aacparse ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux.")
     parts.append(" mpegtsmux name=mux ! fdsink fd=1")
 
-    # -- remux to the exact rate, on the right PIDs -----------------
-    streamids = "-streamid 0:256"
+    # -- remux to the exact rate, with our IDs and PIDs ------------
+    # The maps make the output order fixed - video first, audio second
+    # - whatever order mpegtsmux delivered them in, so the streamids
+    # always land on the right stream.
+    ident = config["identity"]
+    streamids = f"-streamid 0:{ident['video_pid']}"
     if want_audio:
-        streamids += " -streamid 1:257"
+        streamids += f" -streamid 1:{ident['audio_pid']}"
     parts.append(
         f" | ffmpeg -loglevel warning -analyzeduration 1000000 "
         f"-f mpegts -i - -map 0:v:0 -map '0:a:0?' -c copy -f mpegts -muxrate {rate} "
-        f'-metadata service_provider="{config["provider"]}" '
-        f'-metadata service_name="{config["callsign"]}" ' 
+        f"-metadata service_provider={shlex.quote(config['provider'])} "
+        f"-metadata service_name={shlex.quote(config['callsign'])} "
+        f"-mpegts_original_network_id {ident['original_network_id']} "
+        f"-mpegts_transport_stream_id {ident['ts_id']} "
+        f"-mpegts_service_id {ident['service_id']} "
+        f"-mpegts_service_type {ident['service_type']} "
+        f"-mpegts_pmt_start_pid {ident['pmt_pid']} "
         f"{streamids} -max_delay 400000 -pat_period 0.200 pipe:1")
 
     # -- pace it ---------------------------------------------------
@@ -577,9 +802,20 @@ def build_pipeline() -> str:
     paced = int(rate * 1.006)
     # A small buffer: enough to smooth a GOP, not enough to add
     # noticeable delay. TSDuck's default held about 45 seconds.
+    #
+    # The NIT rides in place of stuffing packets, so the rate does not
+    # move: about two a second, well inside DVB's 10 s maximum. The PAT
+    # gains its pointer to PID 0x10 here too - ffmpeg's has none.
+    nit_stage = ""
+    nit = build_nit()
+    if nit:
+        every = max(10, int(rate / 1504 * 0.5))
+        nit_stage = (f"-P pat --nit 0x10 "
+                     f"-P inject {nit} --pid 0x10 --stuffing "
+                     f"--inter-packet {every} ")
     parts.append(
         f" | tsp --realtime --buffer-size-mb 0.05 -I file - "
-        f"-P regulate --bitrate {paced} "
+        f"{nit_stage}-P regulate --bitrate {paced} "
         f"-O ip {config['libre']['host']}:8282")
 
     return "".join(parts)
@@ -688,6 +924,8 @@ def api_status():
         "media": media_files(),
         "ts_bitrate": theoretical,
         "libre": libre_status(),
+        "libre_patch": libre_patch,
+        "nit": nit_status,
     }
 
 
@@ -702,25 +940,74 @@ def api_stop():
 
 
 class IdentUpdate(BaseModel):
-    callsign: str
-    provider: str
+    callsign: Optional[str] = None
+    provider: Optional[str] = None
+    network_name: Optional[str] = None
+    network_id: Optional[int] = None
+    original_network_id: Optional[int] = None
+    ts_id: Optional[int] = None
+    service_id: Optional[int] = None
+    service_type: Optional[str] = None
+    nit: Optional[bool] = None
+    lcn: Optional[int] = None
+    lcn_visible: Optional[bool] = None
+    pmt_pid: Optional[int] = None
+    video_pid: Optional[int] = None
+    audio_pid: Optional[int] = None
+
+
+def _check_identity(ident: dict):
+    """Refuse values that would make an invalid or ambiguous stream."""
+    for k in ("network_id", "original_network_id", "ts_id"):
+        if not 0 <= int(ident[k]) <= 0xFFFF:
+            raise HTTPException(400, f"{k} must be 0-65535")
+    if not 1 <= int(ident["service_id"]) <= 0xFFFF:
+        raise HTTPException(400, "service_id must be 1-65535")
+    if ident["service_type"] not in _SERVICE_TYPE_CODE:
+        raise HTTPException(400, "unknown service_type")
+    pids = [int(ident[k]) for k in ("pmt_pid", "video_pid", "audio_pid")]
+    if any(not 0x20 <= v <= 0x1FFE for v in pids):
+        raise HTTPException(400, "PIDs must be 0x0020-0x1FFE")
+    if len(set(pids)) != 3:
+        raise HTTPException(400, "PMT, video and audio PIDs must differ")
+    if ident.get("lcn") and not 1 <= int(ident["lcn"]) <= 1023:
+        raise HTTPException(400, "LCN must be 1-1023")
 
 
 @app.post("/api/ident")
 def api_ident(req: IdentUpdate):
-    """Callsign and provider - what a receiver shows for this service.
+    """Everything a receiver reads about who and what this is.
 
-    Written into the transport stream by ffmpeg as service_name and
-    service_provider, and into the modulator's own settings so its SDT
-    agrees. Both, because they are two different tables and a receiver
-    may read either.
+    Names go into the SDT via ffmpeg; the network name, delivery
+    parameters and LCN into the NIT; the IDs into all of them. The
+    LibreSDR no longer rewrites any of it (see ensure_libre_patched).
     """
-    config["callsign"] = req.callsign or "NOCALL"
-    config["provider"] = req.provider
+    d = req.model_dump()
+    ident = dict(config["identity"])
+    for k, v in d.items():
+        if v is None or k in ("callsign", "provider"):
+            continue
+        ident[k] = v.strip() if isinstance(v, str) else v
+    _check_identity(ident)
+    old_video_pid = config["identity"]["video_pid"]
+    config["identity"] = ident
+    if d["callsign"] is not None:
+        config["callsign"] = d["callsign"].strip() or "NOCALL"
+    if d["provider"] is not None:
+        config["provider"] = d["provider"].strip()
     save_config(config)
     if tx_running():
         start_tx()
-    return {"success": True}
+    elif ident["video_pid"] != old_video_pid:
+        # The board's PCR monitor follows the video PID.
+        threading.Thread(target=ensure_libre_patched, daemon=True).start()
+    return {"success": True, "identity": ident}
+
+
+@app.post("/api/libre/check")
+def api_libre_check():
+    """Check the LibreSDR's script now; correct it if idle."""
+    return ensure_libre_patched(apply=True)
 
 
 @app.post("/api/modulation")
@@ -828,6 +1115,8 @@ PAGE = """<!DOCTYPE html>
             <tr><td class="text-muted">On air for</td>
                 <td class="status-value text-end" id="s-up">—</td></tr>
           </table>
+          <div class="small mt-2" id="libre-patch">LibreSDR script: checking&hellip;</div>
+          <button class="btn btn-sm btn-outline-light mt-2" onclick="checkLibre()">Check LibreSDR</button>
         </div>
       </div>
 
@@ -855,17 +1144,6 @@ PAGE = """<!DOCTYPE html>
       <div class="card">
         <div class="card-header">&#x1F4FB; Modulation</div>
         <div class="card-body">
-          <label class="small text-muted">Service name (callsign)</label>
-          <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
-                 id="m-call" maxlength="16" onchange="saveIdent()">
-          <label class="small text-muted">Provider name (multiplex)</label>
-          <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary mb-1"
-                 id="m-prov" maxlength="16" onchange="saveIdent()">
-          <div class="text-muted small mb-2">
-            What a receiver shows as the multiplex. The firmware
-            prepends its own version by default; /opt/udpts.sh on the
-            LibreSDR has been edited so it does not.
-          </div>
           <label class="small text-muted">Frequency (MHz)</label>
           <input type="number" step="0.001" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
                  id="m-freq" onchange="saveMod()">
@@ -974,6 +1252,122 @@ PAGE = """<!DOCTYPE html>
     </div>
 
   </div>
+
+  <div class="row g-3 mt-1">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">&#x1F3F7;&#xFE0F; Identity &mdash; what receivers are told</div>
+        <div class="card-body">
+          <div class="small mb-3" style="color:#e8a33d">
+            A TV remembers a channel by three numbers &mdash; <b>Original network ID</b>,
+            <b>Transport stream ID</b> and <b>Service ID</b>. Change any of them and every
+            viewer has to rescan. The names are only what it displays. Hierarchy:
+            network &rarr; multiplex (carrier) &rarr; provider &rarr; service.
+          </div>
+          <div class="row g-3">
+            <div class="col-md-4">
+              <label class="small text-muted">Service name</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="i-call" maxlength="32" onchange="saveIdent()">
+              <div class="text-muted small">The channel viewers see, e.g. <i>GB3OO HD</i>.
+                One per programme. Carried in the SDT.</div>
+            </div>
+            <div class="col-md-4">
+              <label class="small text-muted">Provider name</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="i-prov" maxlength="32" onchange="saveIdent()">
+              <div class="text-muted small">Who makes the service, e.g. <i>GB3OO Folkestone</i>.
+                In the SDT; many TVs only show it in channel info.</div>
+            </div>
+            <div class="col-md-4">
+              <label class="small text-muted">Network name</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="i-netname" maxlength="32" onchange="saveIdent()">
+              <div class="text-muted small">The whole family of repeaters, e.g.
+                <i>Kent DATV Repeaters</i> &mdash; the same on every site. In the NIT;
+                what most TVs show as the network.</div>
+            </div>
+
+            <div class="col-md-3">
+              <label class="small text-muted">Network ID</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="i-netid" onchange="saveIdent()">
+              <div class="text-muted small">Identifies the network in the NIT. Same on every
+                site. 0xFF01&ndash;0xFFFF are for private use and never clash with a broadcaster.</div>
+            </div>
+            <div class="col-md-3">
+              <label class="small text-muted">Original network ID <span style="color:#e8a33d">&#9679;</span></label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="i-onid" onchange="saveIdent()">
+              <div class="text-muted small">Who originated the stream &mdash; normally the same as
+                Network ID. Part of the triplet.</div>
+            </div>
+            <div class="col-md-3">
+              <label class="small text-muted">Transport stream ID <span style="color:#e8a33d">&#9679;</span></label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="i-tsid" onchange="saveIdent()">
+              <div class="text-muted small">One per carrier (multiplex), not per site: a second
+                mux on the same site gets its own. Part of the triplet.</div>
+            </div>
+            <div class="col-md-3">
+              <label class="small text-muted">Service ID <span style="color:#e8a33d">&#9679;</span></label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="i-sid" onchange="saveIdent()">
+              <div class="text-muted small">One per programme, unique across the whole network.
+                Part of the triplet. Also called Program ID.</div>
+            </div>
+
+            <div class="col-md-3">
+              <label class="small text-muted">Service type</label>
+              <select class="form-select form-select-sm bg-dark text-light border-secondary"
+                      id="i-stype" onchange="saveIdent()">
+                <option value="digital_tv">Digital TV (0x01)</option>
+                <option value="advanced_codec_digital_hdtv">Advanced codec HD (0x19)</option>
+                <option value="hevc_digital_hdtv">HEVC HD/UHD (0x1F)</option>
+              </select>
+              <div class="text-muted small">How the service is labelled. Most sets accept 0x01;
+                a few only play HEVC labelled 0x1F.</div>
+            </div>
+            <div class="col-md-3">
+              <label class="small text-muted">Logical channel number</label>
+              <input type="number" min="0" max="1023"
+                     class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="i-lcn" onchange="saveIdent()">
+              <div class="form-check form-switch mt-1">
+                <input class="form-check-input" type="checkbox" id="i-lcnvis" onchange="saveIdent()">
+                <label class="form-check-label small" for="i-lcnvis">Visible</label>
+              </div>
+              <div class="text-muted small">Position in the TV's channel list. In the NIT (EACEM
+                descriptor). 0 sends none.</div>
+            </div>
+            <div class="col-md-3">
+              <label class="small text-muted">PIDs &mdash; PMT / video / audio</label>
+              <div class="d-flex gap-1">
+                <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                       id="i-pmt" onchange="saveIdent()">
+                <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                       id="i-vpid" onchange="saveIdent()">
+                <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                       id="i-apid" onchange="saveIdent()">
+              </div>
+              <div class="text-muted small">Where each stream sits inside the multiplex. House
+                standard 0x100 / 0x101 / 0x102. The PCR travels on the video PID.</div>
+            </div>
+            <div class="col-md-3">
+              <div class="form-check form-switch mt-4">
+                <input class="form-check-input" type="checkbox" id="i-nit" onchange="saveIdent()">
+                <label class="form-check-label small" for="i-nit">Send NIT</label>
+              </div>
+              <div class="text-muted small">Network name, the carrier's own tuning parameters
+                (from Modulation) and the LCN.</div>
+              <div class="small mt-1" id="i-nit-status">&mdash;</div>
+            </div>
+          </div>
+          <div class="small mt-2" style="color:#f87171" id="i-error"></div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1009,11 +1403,60 @@ function showMedia() {
      </button>`).join('');
 }
 
+function hex4(v) { return '0x' + Number(v).toString(16).toUpperCase().padStart(4, '0'); }
+function num(id) {
+  // Accepts 0x-prefixed hex or decimal.
+  const v = document.getElementById(id).value.trim();
+  return /^0x/i.test(v) ? parseInt(v, 16) : parseInt(v, 10);
+}
+
 async function saveIdent() {
-  await api('POST', '/api/ident', {
-    callsign: document.getElementById('m-call').value.trim(),
-    provider: document.getElementById('m-prov').value.trim()
-  });
+  const r = await fetch('/api/ident', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      callsign: document.getElementById('i-call').value.trim(),
+      provider: document.getElementById('i-prov').value.trim(),
+      network_name: document.getElementById('i-netname').value.trim(),
+      network_id: num('i-netid'),
+      original_network_id: num('i-onid'),
+      ts_id: num('i-tsid'),
+      service_id: num('i-sid'),
+      service_type: document.getElementById('i-stype').value,
+      lcn: num('i-lcn') || 0,
+      lcn_visible: document.getElementById('i-lcnvis').checked,
+      nit: document.getElementById('i-nit').checked,
+      pmt_pid: num('i-pmt'),
+      video_pid: num('i-vpid'),
+      audio_pid: num('i-apid'),
+    })});
+  const j = await r.json();
+  document.getElementById('i-error').textContent = r.ok ? '' : (j.detail || 'Not saved');
+  if (r.ok) fillIdent(j.identity, null);
+  poll();
+}
+
+function fillIdent(i, c) {
+  if (c) {
+    document.getElementById('i-call').value = c.callsign;
+    document.getElementById('i-prov').value = c.provider;
+  }
+  document.getElementById('i-netname').value = i.network_name;
+  document.getElementById('i-netid').value = hex4(i.network_id);
+  document.getElementById('i-onid').value = hex4(i.original_network_id);
+  document.getElementById('i-tsid').value = hex4(i.ts_id);
+  document.getElementById('i-sid').value = hex4(i.service_id);
+  document.getElementById('i-stype').value = i.service_type;
+  document.getElementById('i-lcn').value = i.lcn;
+  document.getElementById('i-lcnvis').checked = i.lcn_visible;
+  document.getElementById('i-nit').checked = i.nit;
+  document.getElementById('i-pmt').value = hex4(i.pmt_pid);
+  document.getElementById('i-vpid').value = hex4(i.video_pid);
+  document.getElementById('i-apid').value = hex4(i.audio_pid);
+}
+
+async function checkLibre() {
+  document.getElementById('libre-patch').textContent = 'LibreSDR script: checking\u2026';
+  await api('POST', '/api/libre/check');
   poll();
 }
 
@@ -1095,13 +1538,23 @@ async function poll() {
       hf.width ? hf.width + '\u00d7' + hf.height : 'nothing detected';
   }
 
+  const LP = cfg.libre_patch || {};
+  const lp = document.getElementById('libre-patch');
+  const lpColour = {ok: '#4ade80', rebooting: '#e8a33d', pending: '#e8a33d',
+                    unknown: '#9fb3d1'}[LP.state] || '#f87171';
+  lp.textContent = 'LibreSDR script: ' + (LP.detail || '\u2014');
+  lp.style.color = lpColour;
+  const N = cfg.nit || {};
+  const ns = document.getElementById('i-nit-status');
+  ns.textContent = 'Last build: ' + (N.detail || '\u2014');
+  ns.style.color = N.ok ? '#4ade80' : '#9fb3d1';
+
   document.getElementById('sr-warning').hidden =
     cfg.config.modulation.symbol_rate_ks <= 2000;
 
   if (firstLoad) {
     const m = cfg.config.modulation, e = cfg.config.encoder;
-    document.getElementById('m-call').value = cfg.config.callsign;
-    document.getElementById('m-prov').value = cfg.config.provider;
+    fillIdent(cfg.config.identity, cfg.config);
     document.getElementById('m-freq').value = m.frequency_mhz;
     document.getElementById('m-sr').value = m.symbol_rate_ks;
     document.getElementById('m-const').value = m.constellation;
@@ -1135,4 +1588,5 @@ if __name__ == "__main__":
     print(f"    config: {CONFIG_PATH}")
     print(f"    media:  {MEDIA_DIR}")
     print(f"    LibreSDR: {config['libre']['host']}")
+    threading.Thread(target=libre_patch_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")

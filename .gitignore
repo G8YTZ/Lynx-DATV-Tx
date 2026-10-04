@@ -4,3 +4,4 @@ __pycache__/
 *.bak-*
 fix*.py
 patch_*.py
+run/
