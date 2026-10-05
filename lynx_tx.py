@@ -247,6 +247,25 @@ def read_libre_bitrate() -> Optional[int]:
 
 # ── Talking to the LibreSDR ───────────────────────────────────
 
+def libre_host() -> str:
+    """Where the LibreSDR is right now.
+
+    On a direct cable to the ROCK's second port it is always the fixed
+    direct address (the ROCK hands it out by DHCP); anywhere else - a
+    switch, the demo network - it is the configured host, as before. The
+    choice follows the second port's carrier, so plugging the cable in or
+    out is all it takes.
+    """
+    lib = config["libre"]
+    port = lib.get("direct_if", "enP4p65s0")
+    try:
+        if Path(f"/sys/class/net/{port}/carrier").read_text().strip() == "1":
+            return lib.get("direct_host", "192.168.254.2")
+    except OSError:
+        pass
+    return lib["host"]
+
+
 def libre_ssh(cmd: str, timeout: int = 8) -> str:
     """Run a command on the LibreSDR over SSH.
 
@@ -259,7 +278,8 @@ def libre_ssh(cmd: str, timeout: int = 8) -> str:
     try:
         r = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-             f"{lib['user']}@{lib['host']}", cmd],
+             "-o", "StrictHostKeyChecking=accept-new",
+             f"{lib['user']}@{libre_host()}", cmd],
             capture_output=True, text=True, timeout=timeout)
         return r.stdout
     except Exception as e:
@@ -367,7 +387,8 @@ def libre_ssh_full(cmd: str, stdin: Optional[str] = None,
     try:
         r = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-             f"{lib['user']}@{lib['host']}", cmd],
+             "-o", "StrictHostKeyChecking=accept-new",
+             f"{lib['user']}@{libre_host()}", cmd],
             input=stdin, capture_output=True, text=True, timeout=timeout)
         return r.returncode, r.stdout, r.stderr
     except Exception as e:
@@ -396,7 +417,7 @@ def ensure_libre_patched(apply: bool = True) -> dict:
     """
     with libre_lock:
         rc, text, err = libre_ssh_full(f"cat {UDPTS}")
-        host = config["libre"]["host"]
+        host = libre_host()
         if rc == 255:
             if "Permission denied" in err:
                 _set_libre("unpaired",
@@ -972,7 +993,7 @@ def build_pipeline() -> str:
     parts.append(
         f" | tsp --realtime --buffer-size-mb 0.05 -I file - "
         f"{nit_stage}-P regulate --bitrate {paced} "
-        f"-O ip {config['libre']['host']}:8282")
+        f"-O ip {libre_host()}:8282")
 
     return "".join(parts)
 
@@ -2055,7 +2076,7 @@ def media_page():
 # (tx_monitor.py, beside this file). Optional - Lynx-Tx runs without it.
 try:
     import tx_monitor
-    tx_monitor.install(app, lambda: config)
+    tx_monitor.install(app, lambda: {**config, "libre": {**config["libre"], "host": libre_host()}})
 except Exception as e:
     print(f"[monitor] not available: {e}")
 
@@ -2069,6 +2090,6 @@ if __name__ == "__main__":
     print("=== Lynx-Tx ===")
     print(f"    config: {CONFIG_PATH}")
     print(f"    media:  {MEDIA_DIR}")
-    print(f"    LibreSDR: {config['libre']['host']}")
+    print(f"    LibreSDR: {libre_host()}")
     threading.Thread(target=libre_patch_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
