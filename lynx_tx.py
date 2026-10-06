@@ -820,6 +820,21 @@ def build_pipeline() -> str:
     share = (float(enc.get("picture_share_rc", 0.92)) if rate_control == "buffer"
              else float(enc.get("picture_share", 0.85)))
     video_bps = int((rate - audio_bps - psi_bps) * share)
+    # What the picture can really carry, in encoder bits per second - the
+    # rate the hybrid controller models the receiver's buffer draining at.
+    # Counted in 188-byte packets as tsprio sends them: sound (one PES per
+    # 21 ms AAC frame, ~3.5 packets each), PCR-only packets every 35 ms and
+    # tables come first; the picture gets the rest, at 184 payload bytes a
+    # packet, less a PES header and half a packet of stuffing per frame;
+    # then 3% margin. (Taking rate - sound - tables with no overheads, as
+    # first tried, was ~6% optimistic: pictures went up to 0.6 s late.)
+    # Independent of picture_share, so a bigger share means the floor works
+    # harder - not that the controller believes there is more channel.
+    pkts = rate / 1504.0
+    aac_fps = 48000 / 1024.0
+    sound_pkts = aac_fps * ((enc["audio_bitrate"] / 8 / aac_fps + 21) / 184 + 0.6)
+    pic_pkts = pkts - sound_pkts - 1 / 0.035 - 12
+    picture_channel_bps = int((pic_pkts * 184 * 8 - 25 * (20 + 92) * 8) * 0.97)
 
     w, h, fps = enc["width"], enc["height"], enc["fps"]
     reader = ""
@@ -953,6 +968,7 @@ def build_pipeline() -> str:
             + f"--start {start} --bps {video_bps} "
             f"--gop {enc['gop']} --audio-bitrate {enc['audio_bitrate']} --slack {slack} "
             f"--rc {rate_control} "
+            f"--rc-rate {picture_channel_bps} "
             f"--look {float(enc.get('look_ahead', 0.5))} "
             f"--width {w} --height {h} "
             f"--video-device {shlex.quote(config['video_device'])} "

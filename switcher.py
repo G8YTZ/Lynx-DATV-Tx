@@ -83,6 +83,9 @@ ap.add_argument("--slack", type=float, default=0.6,
 ap.add_argument("--rc", choices=("cbr", "buffer", "hybrid"), default="cbr",
                 help="cbr: the encoder's own rate control; buffer: frame-by-frame QP (ratectl.py); "
                      "hybrid: the encoder's rate control, with ratectl.py raising its QP floor")
+ap.add_argument("--rc-rate", type=float, default=0,
+                help="with --rc buffer/hybrid: the picture's real channel rate, b/s "
+                     "(what sound and tables leave); default: --bps")
 ap.add_argument("--look", type=float, default=0.5,
                 help="with --rc buffer/hybrid: look-ahead delay in seconds (0 = react only)")
 ap.add_argument("--buffer-json", default="/tmp/lynx-buffer.json",
@@ -275,7 +278,7 @@ HYBRID = a.rc == "hybrid"
 if a.rc in ("buffer", "hybrid"):
     import numpy as np
     from ratectl import BufferRC
-    rc = BufferRC(a.bps, fps=25.0, slack=a.slack, gop=a.gop, guard=HYBRID,
+    rc = BufferRC(a.rc_rate or a.bps, fps=25.0, slack=a.slack, gop=a.gop, guard=HYBRID,
                   qp_start=34 if HYBRID else 36)
     HORIZON = max(1, int(round(LOOK * 25)))
 
