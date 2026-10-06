@@ -803,7 +803,11 @@ def build_pipeline() -> str:
     slack = float(enc.get("slack", 0.6))
     # 85%: the rest is headroom for the encoder's brief excursions above
     # its cap, so sound and tables always find room in the channel.
-    video_bps = int((rate - audio_bps - psi_bps) * 0.85)
+    # The picture's share of what sound and tables leave (encoder.
+    # picture_share, default 0.85); the rest is fixed headroom for the
+    # encoder's overshoots - steadier than leaning on the trim alone,
+    # which hunted when pushed to react faster.
+    video_bps = int((rate - audio_bps - psi_bps) * float(enc.get("picture_share", 0.85)))
 
     w, h, fps = enc["width"], enc["height"], enc["fps"]
     reader = ""
@@ -985,9 +989,19 @@ def build_pipeline() -> str:
     streamids = f"-streamid 0:{ident['video_pid']}"
     if want_audio:
         streamids += f" -streamid 1:{ident['audio_pid']}"
+    # Sound priority (tsprio.py, beside this file): ffmpeg stops building
+    # the constant-rate stream and tsprio builds it instead, slot by slot -
+    # tables, then sound that is due, then pictures, else nulls - writing
+    # the PCR itself. When the encoder bursts, pictures wait, never sound.
+    # On a burst test with today's method 93-252 of 375 sound blocks
+    # arrived late; through tsprio, none. encoder.sound_priority: false
+    # returns to ffmpeg's own constant-rate muxing.
+    prio = APP_DIR / "tsprio.py"
+    use_prio = bool(enc.get("sound_priority", True)) and prio.exists()
+    muxrate = "" if use_prio else f"-muxrate {rate} "
     parts.append(
         f" | ffmpeg -loglevel warning -analyzeduration 1000000 "
-        f"-f mpegts -i - -map 0:v:0 -map '0:a:0?' -c copy -f mpegts -muxrate {rate} "
+        f"-f mpegts -i - -map 0:v:0 -map '0:a:0?' -c copy -f mpegts {muxrate}"
         f"-metadata service_provider={shlex.quote(config['provider'])} "
         f"-metadata service_name={shlex.quote(config['callsign'])} "
         f"-mpegts_original_network_id {ident['original_network_id']} "
@@ -996,6 +1010,10 @@ def build_pipeline() -> str:
         f"-mpegts_service_type {ident['service_type']} "
         f"-mpegts_pmt_start_pid {ident['pmt_pid']} "
         f"{streamids} -max_delay {int(slack * 1e6)} -pat_period 0.200 pipe:1")
+    if use_prio:
+        parts.append(
+            f" | python3 {shlex.quote(str(prio))} --rate {rate} --slack {slack} "
+            f"--video-pid {ident['video_pid']} --audio-pid {ident['audio_pid']}")
 
     # -- pace it ---------------------------------------------------
     # Deliberately above the modulator's figure. It wants its buffer
@@ -1083,7 +1101,7 @@ def stop_tx_locked():
     # nothing is writing - which is exactly the failure this whole
     # arrangement kept producing. Match the remux stage specifically.
     for pattern in ("gst-launch-1.0", "ffmpeg.*-f mpegts",
-                    "tsp --realtime", "switcher.py"):
+                    "tsp --realtime", "switcher.py", "tsprio.py", "tsbuffer.py"):
         subprocess.run(["pkill", "-f", pattern], capture_output=True)
 
 
@@ -1384,6 +1402,15 @@ PAGE = """<!DOCTYPE html>
                 <td class="status-value text-end" id="s-up">—</td></tr>
           </table>
           <div class="small mt-2" id="buffer-line" style="display:none">Buffer: &mdash;</div>
+          <div id="buffer-graph" style="display:none;margin-top:4px">
+            <div style="position:relative;height:14px;background:#0b0f1d;border:1px solid #0f3460;border-radius:4px;overflow:hidden">
+              <div id="bb-fill" style="height:100%;width:0;background:#4ade80;transition:width .4s"></div>
+              <div id="bb-min" title="lowest in the last minute"
+                   style="position:absolute;top:0;bottom:0;width:2px;background:#fbbf24;left:0"></div>
+            </div>
+            <div id="bb-scale" style="position:relative;height:14px;font-size:.7em;color:#9fb3d1"></div>
+            <canvas id="bb-hist" height="70" style="width:100%;display:block;margin-top:2px;background:#0b0f1d;border:1px solid #0f3460;border-radius:4px"></canvas>
+          </div>
           <div class="small mt-2" id="libre-patch">LibreSDR script: checking&hellip;</div>
           <button class="btn btn-sm btn-outline-light mt-2" onclick="checkLibre()">Check LibreSDR</button>
           <a href="/monitor" class="btn btn-sm btn-outline-light mt-2 ms-1">&#x1F4C8; TX monitor</a>
@@ -1849,6 +1876,7 @@ async function poll() {
   // Buffer: how far ahead of need the pictures are sent. About 2 s at
   // rest; it drains when the encoder overshoots; at zero receivers glitch.
   const bl = document.getElementById('buffer-line'), B = cfg.buffer;
+  drawBuffer(B, Number((cfg.config.encoder || {}).slack) || 0.6);
   bl.style.display = B ? 'block' : 'none';
   if (B) {
     const lo = B.min_60s ?? B.slack;
@@ -1889,6 +1917,63 @@ async function poll() {
 }
 
 poll();
+// Buffer bar and two-minute history. Drawn here in the browser from the
+// once-a-second reading the text line uses: no cost on the ROCK.
+const bufHist = [];
+function drawBuffer(B, target) {
+  const g = document.getElementById('buffer-graph');
+  g.style.display = B ? 'block' : 'none';
+  if (!B) { bufHist.length = 0; return; }
+  const lo = B.min_60s ?? B.slack, top = target * 1.15;
+  const frac = v => Math.max(0, Math.min(1, v / top));
+  const col = v => v <= 0 ? '#f87171' : v < target * 0.5 ? '#fbbf24' : '#4ade80';
+  const step = top <= 0.5 ? 0.1 : top <= 1.2 ? 0.2 : 0.5;              // a round scale
+  const fill = document.getElementById('bb-fill');
+  fill.style.width = (frac(B.slack) * 100) + '%';
+  fill.style.background = col(B.slack);
+  document.getElementById('bb-min').style.left = (frac(lo) * 100) + '%';
+  // The bar's scale: seconds of time in hand, the slack setting marked.
+  const sc = document.getElementById('bb-scale');
+  if (sc.dataset.top !== String(top)) {
+    sc.dataset.top = String(top);
+    let h = '';
+    for (let v = 0; v <= top + 1e-9; v += step) {
+      const pc = frac(v) * 100, align = pc < 3 ? '0' : pc > 97 ? '-100%' : '-50%';
+      h += `<span style="position:absolute;left:${pc}%;transform:translateX(${align})">${v.toFixed(1)}${v === 0 ? ' s' : ''}</span>`;
+    }
+    const tp = frac(target) * 100;
+    h += `<span style="position:absolute;left:${tp}%;top:-17px;height:15px;border-left:2px dashed #e0e0e0" title="the slack setting"></span>`;
+    sc.innerHTML = h;
+  }
+  // The history: one bar per reading, the last two minutes, with its own axes.
+  bufHist.push(B.slack); if (bufHist.length > 60) bufHist.shift();
+  const dpr = devicePixelRatio, c = document.getElementById('bb-hist'),
+        W = c.width = c.clientWidth * dpr, H = c.height = 70 * dpr, x = c.getContext('2d');
+  const L = 34 * dpr, Bm = 14 * dpr, T = 4 * dpr;                       // margins for the labels
+  const bottom = -target * 0.5;                                          // room below zero for late frames
+  const Y = v => T + (top - Math.max(bottom, Math.min(top, v))) / (top - bottom) * (H - T - Bm);
+  x.clearRect(0, 0, W, H);
+  x.font = (10 * dpr) + 'px system-ui'; x.fillStyle = '#9fb3d1'; x.textBaseline = 'middle';
+  x.textAlign = 'right';
+  for (let v = 0; v <= top + 1e-9; v += step) {                          // seconds axis
+    x.fillText(v.toFixed(1), L - 4 * dpr, Y(v));
+    x.strokeStyle = v === 0 ? '#b91c1c' : '#1f2b44'; x.lineWidth = dpr;
+    x.beginPath(); x.moveTo(L, Y(v)); x.lineTo(W, Y(v)); x.stroke();
+  }
+  x.fillText('late', L - 4 * dpr, Y(bottom * 0.6));
+  x.setLineDash([4 * dpr, 4 * dpr]); x.strokeStyle = '#e0e0e0';          // the slack setting
+  x.beginPath(); x.moveTo(L, Y(target)); x.lineTo(W, Y(target)); x.stroke(); x.setLineDash([]);
+  x.textBaseline = 'bottom';                                             // time axis
+  x.textAlign = 'left'; x.fillText('2 min ago', L, H);
+  x.textAlign = 'center'; x.fillText('1 min', L + (W - L) / 2, H);
+  x.textAlign = 'right'; x.fillText('now', W - 2 * dpr, H);
+  const w = (W - L) / 60;
+  bufHist.forEach((v, i) => {
+    const X = W - (bufHist.length - i) * w, y0 = Y(0), y1 = Y(v);
+    x.fillStyle = col(v); x.fillRect(X + w * 0.15, Math.min(y0, y1), w * 0.7, Math.max(1, Math.abs(y1 - y0)));
+  });
+}
+
 setInterval(poll, 2000);
 </script>
 </body></html>

@@ -204,7 +204,7 @@ else:
     # card keyframes in a row at 492-496 kbit, about 0.22 s of channel each.
     # Moving pictures at this bitrate run well above QP 34 anyway.
     encode = (f"mpph265enc name=enc rc-mode=cbr bps={a.bps} bps-max={a.bps} "
-              f"qp-max=51 qp-max-i=51 qp-init=34 qp-min=34 qp-min-i=34 max-reenc=2 gop={a.gop} header-mode=each-idr")
+              f"qp-max=51 qp-max-i=51 qp-init=34 qp-min=34 qp-min-i=34 max-reenc=1 gop={a.gop} header-mode=each-idr")
 sink = f"filesink location={a.out}" if a.out else "fdsink fd=1"
 
 prog = Gst.parse_launch(
@@ -398,7 +398,7 @@ watch(prog, "prog")    # registered before the inputs start
 # Thresholds as fractions of the slack: act at half, harder below a
 # quarter, release above 85%. (Fixed at 1.0/0.5/1.6 s they suited a 2 s
 # slack, but with 0.4 s the trim sat at its floor permanently.)
-TRIM_FLOOR = 0.5
+TRIM_FLOOR = 1.0
 TRIM_LOW, TRIM_VERY_LOW, TRIM_HIGH = 0.5 * a.slack, 0.25 * a.slack, 0.85 * a.slack
 trim = {"f": 1.0, "last_down": 0.0, "last_up": 0.0, "quiet_since": None, "prev": None}
 
