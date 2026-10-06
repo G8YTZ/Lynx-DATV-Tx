@@ -37,7 +37,7 @@ ap.add_argument("--audio-lead", type=float, default=0.12,
 ap.add_argument("--video-pid", type=lambda v: int(v, 0), default=0x101)
 ap.add_argument("--audio-pid", type=lambda v: int(v, 0), default=0x102)
 ap.add_argument("--pcr-every", type=float, default=0.035, help="PCR interval, s")
-ap.add_argument("--pace", type=float, default=1.006,
+ap.add_argument("--pace", type=float, default=1.002,
                 help="never run the stream clock faster than this times real time")
 a = ap.parse_args()
 
@@ -200,8 +200,14 @@ def hold_to_real_time():
     if wall["t"] is None:
         wall["t"], wall["T"] = time.time(), T
         return
-    ahead = (T - wall["T"]) / HZ / a.pace - (time.time() - wall["t"])
-    if ahead > 0.02:
+    now = time.time()
+    ahead = (T - wall["T"]) / HZ / a.pace - (now - wall["t"])
+    if ahead <= 0:
+        # At or behind real time: move the reference here, so the
+        # allowance never builds up. Measured from key-up, 0.6% grew to
+        # seconds of credit over a long run, which one burst could spend.
+        wall["t"], wall["T"] = now, T
+    elif ahead > 0.02:
         flush()
         time.sleep(ahead)
 

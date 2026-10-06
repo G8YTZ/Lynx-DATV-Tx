@@ -998,7 +998,11 @@ def build_pipeline() -> str:
     # returns to ffmpeg's own constant-rate muxing.
     prio = APP_DIR / "tsprio.py"
     use_prio = bool(enc.get("sound_priority", True)) and prio.exists()
-    muxrate = "" if use_prio else f"-muxrate {rate} "
+    # With priority, ffmpeg also passes each piece of sound on at once
+    # (-pes_payload_size 0: every 21 ms) instead of gathering ~107 ms
+    # blocks: sound that sets off 0.1 s behind arrives late whenever a
+    # picture burst has used up the slack.
+    muxrate = "-pes_payload_size 0 " if use_prio else f"-muxrate {rate} "
     parts.append(
         f" | ffmpeg -loglevel warning -analyzeduration 1000000 "
         f"-f mpegts -i - -map 0:v:0 -map '0:a:0?' -c copy -f mpegts {muxrate}"
