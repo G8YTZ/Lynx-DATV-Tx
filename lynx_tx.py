@@ -835,6 +835,15 @@ def build_pipeline() -> str:
     sound_pkts = aac_fps * ((enc["audio_bitrate"] / 8 / aac_fps + 21) / 184 + 0.6)
     pic_pkts = pkts - sound_pkts - 1 / 0.035 - 12
     picture_channel_bps = int((pic_pkts * 184 * 8 - 25 * (20 + 92) * 8) * 0.97)
+    # Hybrid: the encoder's own target must sit INSIDE that channel. With
+    # it set from picture_share it was ~1% above, so the encoder always
+    # wanted more than the channel carries; every frame the floor held back
+    # it then tried to win back (its CBR running "under budget"), and with
+    # the floor at 30 the two controllers fought for minutes on end with
+    # the floor pinned at 43+. Aim the encoder at 97% of the real channel (itself 3% under the true figure)
+    # (encoder.hybrid_aim): the floor is then for bursts only.
+    if rate_control == "hybrid":
+        video_bps = int(picture_channel_bps * float(enc.get("hybrid_aim", 0.97)))
 
     w, h, fps = enc["width"], enc["height"], enc["fps"]
     reader = ""
@@ -966,7 +975,7 @@ def build_pipeline() -> str:
             f"--media-dir {shlex.quote(str(MEDIA_DIR))} "
             + (f"--media {shlex.quote(clip)} " if clip else "")
             + f"--start {start} --bps {video_bps} "
-            f"--gop {enc['gop']} --audio-bitrate {enc['audio_bitrate']} --slack {slack} "
+            f"--gop {enc['gop']} --qp-floor {int(enc.get('qp_floor', 34))} --audio-bitrate {enc['audio_bitrate']} --slack {slack} "
             f"--rc {rate_control} "
             f"--rc-rate {picture_channel_bps} "
             f"--look {float(enc.get('look_ahead', 0.5))} "
