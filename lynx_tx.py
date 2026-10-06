@@ -807,7 +807,13 @@ def build_pipeline() -> str:
     # picture_share, default 0.85); the rest is fixed headroom for the
     # encoder's overshoots - steadier than leaning on the trim alone,
     # which hunted when pushed to react faster.
-    video_bps = int((rate - audio_bps - psi_bps) * float(enc.get("picture_share", 0.85)))
+    # With frame-by-frame rate control (encoder.rate_control: buffer) the
+    # encoder no longer overshoots, so the picture can have far more of the
+    # channel: encoder.picture_share_rc, default 0.92.
+    rate_control = enc.get("rate_control", "cbr")
+    share = (float(enc.get("picture_share_rc", 0.92)) if rate_control == "buffer"
+             else float(enc.get("picture_share", 0.85)))
+    video_bps = int((rate - audio_bps - psi_bps) * share)
 
     w, h, fps = enc["width"], enc["height"], enc["fps"]
     reader = ""
@@ -940,6 +946,7 @@ def build_pipeline() -> str:
             + (f"--media {shlex.quote(clip)} " if clip else "")
             + f"--start {start} --bps {video_bps} "
             f"--gop {enc['gop']} --audio-bitrate {enc['audio_bitrate']} --slack {slack} "
+            f"--rc {'buffer' if rate_control == 'buffer' else 'cbr'} "
             f"--width {w} --height {h} "
             f"--video-device {shlex.quote(config['video_device'])} "
             f"--audio-device {shlex.quote(config['audio_device'])}"

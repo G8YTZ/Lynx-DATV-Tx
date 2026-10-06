@@ -79,6 +79,8 @@ ap.add_argument("--fallback-image", default="",
                 help="shown on the Camera input with no HDMI signal (name in --media-dir); bars if missing")
 ap.add_argument("--slack", type=float, default=0.6,
                 help="the stream's slack in seconds (ffmpeg -max_delay); the trim scales with it")
+ap.add_argument("--rc", choices=("cbr", "buffer"), default="cbr",
+                help="cbr: the encoder's own rate control; buffer: frame-by-frame QP (ratectl.py)")
 ap.add_argument("--buffer-json", default="/tmp/lynx-buffer.json",
                 help="the buffer monitor's live reading, for the bitrate trim")
 a = ap.parse_args()
@@ -205,6 +207,11 @@ else:
     # Moving pictures at this bitrate run well above QP 34 anyway.
     encode = (f"mpph265enc name=enc rc-mode=cbr bps={a.bps} bps-max={a.bps} "
               f"qp-max=51 qp-max-i=51 qp-init=34 qp-min=34 qp-min-i=34 max-reenc=1 gop={a.gop} header-mode=each-idr")
+    if a.rc == "buffer":
+        # Frame-by-frame: fixed-QP mode, with ratectl.py choosing every
+        # frame's QP from a model of the receiver's buffer.
+        encode = (f"mpph265enc name=enc rc-mode=fixqp qp-init=36 qp-min=36 qp-max=36 "
+                  f"qp-min-i=36 qp-max-i=36 gop={a.gop} header-mode=each-idr")
 sink = f"filesink location={a.out}" if a.out else "fdsink fd=1"
 
 prog = Gst.parse_launch(
@@ -240,6 +247,56 @@ def vstamp(pad, info):
 
 
 prog.get_by_name("vstamp").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, vstamp)
+
+# ---- frame-by-frame rate control ------------------------------------------------
+rc = None
+rcs = {"n": 0, "pts": {}, "qp": None, "force_key": False, "last_log": time.time(),
+       "skips": 0, "qps": [], "peak": 0.0}
+if a.rc == "buffer":
+    from ratectl import BufferRC
+    rc = BufferRC(a.bps, fps=25.0, slack=a.slack, gop=a.gop)
+
+    def set_qp(q):
+        if q != rcs["qp"]:
+            for prop in ("qp-init", "qp-min", "qp-max", "qp-min-i", "qp-max-i"):
+                enc.set_property(prop, q)
+            rcs["qp"] = q
+
+    def rc_in(pad, info):
+        """Before each frame enters the encoder: choose its QP, or skip it."""
+        buf = info.get_buffer()
+        n = rcs["n"]
+        rcs["n"] += 1
+        q = rc.choose(n, key=rcs["force_key"])
+        if q is None:
+            rc.skipped_frame()
+            rcs["skips"] += 1
+            return Gst.PadProbeReturn.DROP          # the receiver repeats the last frame
+        rcs["force_key"] = False
+        set_qp(q)
+        rcs["pts"][buf.pts] = n
+        rcs["qps"].append(q)
+        return Gst.PadProbeReturn.OK
+
+    def rc_out(pad, info):
+        """Each frame out of the encoder: teach the controller what it cost."""
+        buf = info.get_buffer()
+        n = rcs["pts"].pop(buf.pts, None)
+        if n is not None:
+            rc.done(n, buf.get_size() * 8, not buf.has_flags(Gst.BufferFlags.DELTA_UNIT))
+            rcs["peak"] = max(rcs["peak"], rc.B / rc.R)
+        if len(rcs["pts"]) > 200:                   # never let the map grow
+            rcs["pts"].clear()
+        now = time.time()
+        if now - rcs["last_log"] >= 10 and rcs["qps"]:
+            q = rcs["qps"]
+            log(f"rc: QP mean {sum(q) / len(q):.1f} (range {min(q)}-{max(q)}), "
+                f"buffer peak {rcs['peak']:.2f} of {a.slack} s, skipped {rcs['skips']}")
+            rcs.update(last_log=now, skips=0, qps=[], peak=0.0)
+        return Gst.PadProbeReturn.OK
+
+    enc.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, rc_in)
+    enc.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, rc_out)
 
 
 def selector_pads(sel):
@@ -346,6 +403,7 @@ def take(which):
     vsel.set_property("active-pad", vpads[which])
     for name, pad in apads.items():
         pad.set_property("mute", name != which)
+    rcs["force_key"] = True                          # the controller plans for it
     ev = GstVideo.video_event_new_upstream_force_key_unit(Gst.CLOCK_TIME_NONE, True, 0)
     enc.get_static_pad("src").send_event(ev)
     state["on"] = which
@@ -398,7 +456,7 @@ watch(prog, "prog")    # registered before the inputs start
 # Thresholds as fractions of the slack: act at half, harder below a
 # quarter, release above 85%. (Fixed at 1.0/0.5/1.6 s they suited a 2 s
 # slack, but with 0.4 s the trim sat at its floor permanently.)
-TRIM_FLOOR = 1.0
+TRIM_FLOOR = 1.0   # trim off: its live rate changes made the encoder re-settle; headroom + tsprio do the job
 TRIM_LOW, TRIM_VERY_LOW, TRIM_HIGH = 0.5 * a.slack, 0.25 * a.slack, 0.85 * a.slack
 trim = {"f": 1.0, "last_down": 0.0, "last_up": 0.0, "quiet_since": None, "prev": None}
 
