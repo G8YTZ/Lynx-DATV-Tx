@@ -360,7 +360,8 @@ if a.rc in ("buffer", "hybrid"):
             mode = f"look-ahead {LOOK:.1f} s" if LOOK > 0 and rcs["look_ok"] >= 0 else "reactive"
             mode = ("hybrid, " if HYBRID else "") + mode
             log(f"rc ({mode}): {'floor' if HYBRID else 'QP'} mean {sum(q) / len(q):.1f} (range {min(q)}-{max(q)}), "
-                f"buffer peak {rcs['peak']:.2f} of {a.slack} s, skipped {rcs['skips']}")
+                f"buffer peak {rcs['peak']:.2f} of {a.slack} s, skipped {rcs['skips']}, "
+                f"frames at 46+ {sum(1 for x in q if x >= 46)}")
             rcs.update(last_log=now, skips=0, qps=[], peak=0.0)
         return Gst.PadProbeReturn.OK
 

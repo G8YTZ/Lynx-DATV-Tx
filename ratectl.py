@@ -102,10 +102,14 @@ class BufferRC:
             q = self.qp_max
         elif key and self.guard:
             # Guard: keyframes at the plain-cbr anchor (34) unless that
-            # would not fit.
+            # would not fit - and then only as coarse as fits short of
+            # real overflow (0.95), never straight to 51 on the 0.9 mark.
             q = self.qp_min
+            hard = self.Bmax * 0.95 - Bp + self.drain
             while q < self.qp_max and self.cost(q, True) > room:
                 q += 1
+            while q > self.qp_min and self.cost(q - 1, True) <= hard and q > self.qp + 6:
+                q -= 1
         elif key:
             # A keyframe at the running QP + 2: the frames after it are built
             # on it, so a mushy one spoils a whole GOP. Coarser only if it
@@ -117,8 +121,12 @@ class BufferRC:
             planned = self.plan(n, key, future)
             q = planned if planned is not None else math.ceil(self.qp_for(max(allowed, 1.0), key))
             # At most +3 a frame, unless the buffer really is about to
-            # overflow; at most -1 a frame on the way back.
-            if q > self.qp + 3 and self.cost(self.qp + 3, False) <= room:
+            # overflow; at most -1 a frame on the way back. 'Really' is the
+            # 0.95 mark: on air, using the 0.9 mark here let the floor leap
+            # 34 -> 51 in one frame, and one smeared frame in a pan reads
+            # as a jerk.
+            hard = self.Bmax * 0.95 - Bp + self.drain
+            if q > self.qp + 3 and self.cost(self.qp + 3, False) <= hard:
                 q = self.qp + 3
             q = max(self.qp - 1, q)
         q = max(self.qp_min, min(self.qp_max, q))
@@ -146,17 +154,23 @@ class BufferRC:
         pending = sum(b for _, b, _ in self.inflight.values())
         B0 = max(0.0, self.B + pending - self.drain * len(self.inflight))
 
-        def fits(q):
+        def fits(q, strict=True):
             B = B0
             for i, (aP, aK, k) in enumerate(future):
                 bits = (uK * aK if k else self.uP * aP) * 2 ** (-q / self.k)
                 B = max(0.0, B + bits - self.drain)
-                if B > self.Bceil:
+                if B > (self.Bceil if strict else self.Bmax * 0.92):
                     return False
-            return B <= self.Bt + 0.25 * (self.Bceil - self.Bt)
+            return not strict or B <= self.Bt + 0.25 * (self.Bceil - self.Bt)
 
         for q in range(self.qp_min, self.qp_max + 1):
             if fits(q):
+                return q
+        # Nothing both stays under the ceiling AND ends near target (the
+        # buffer is already high): settle for the finest QP that merely
+        # stays under the ceiling, rather than jumping to 51.
+        for q in range(self.qp_min, self.qp_max + 1):
+            if fits(q, strict=False):
                 return q
         return self.qp_max
 
