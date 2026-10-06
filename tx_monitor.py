@@ -10,8 +10,11 @@ sample clock, so the sample rate is only ever READ. Only the receive LO and
 the receive gain are set, and both belong to the receive side alone. The
 span is therefore the transmitter's own sample rate.
 
-Capture runs only while someone is watching: it starts when the first page
-opens and stops a few seconds after the last one closes.
+An On/Off switch on the page, OFF by default and saved in the config
+(monitor.enabled): when off, nothing touches the LibreSDR's receiver at all -
+no capture, no iiod connection - even with the page open. When on, capture
+runs only while someone is watching, and stops a few seconds after the last
+page closes.
 
 Gain is manual (a slider) or a slow automatic: the carrier is averaged over
 a couple of seconds and the gain only moves when it is more than 3 dB from
@@ -58,7 +61,7 @@ GAIN_MIN, GAIN_MAX = 0.0, 60.0
 SIM = os.environ.get("LYNX_MONITOR_SIM") == "1"
 
 _state = {"watchers": 0, "running": False, "frame": None, "seq": 0, "error": "",
-          "mode": "auto", "manual_gain": 10.0}
+          "mode": "auto", "manual_gain": 10.0, "enabled": None}
 _lock = threading.Lock()
 
 
@@ -231,6 +234,8 @@ def _run(get_config):
         while True:
             with _lock:
                 watchers = _state["watchers"]
+            if not _state["enabled"]:
+                break                                  # switched off: let go at once
             if watchers == 0:
                 idle_since = idle_since or time.time()
                 if time.time() - idle_since > 5:
@@ -279,14 +284,30 @@ def _run(get_config):
 
 def _ensure_running(get_config):
     with _lock:
-        if _state["running"]:
+        if _state["running"] or not _state["enabled"]:
             return
         _state["running"] = True
     threading.Thread(target=_run, args=(get_config,), daemon=True).start()
 
 
 # ---- web ---------------------------------------------------------------------------
-def install(app, get_config):
+def install(app, get_config, save_enabled=None):
+    with _lock:
+        _state["enabled"] = bool((get_config().get("monitor") or {}).get("enabled", False))
+
+    @app.post("/api/monitor/enable")
+    async def monitor_enable(request: Request):
+        on = bool((await request.json()).get("on"))
+        with _lock:
+            _state["enabled"] = on
+            if not on:
+                _state["frame"] = None
+        if save_enabled:
+            save_enabled(on)
+        if on:
+            _ensure_running(get_config)
+        return {"enabled": on}
+
     @app.get("/monitor", response_class=HTMLResponse)
     def monitor_page():
         return PAGE
@@ -311,7 +332,12 @@ def install(app, get_config):
             try:
                 while not await request.is_disconnected():
                     with _lock:
-                        seq, frame, err = _state["seq"], _state["frame"], _state["error"]
+                        seq, frame, err, on = (_state["seq"], _state["frame"],
+                                               _state["error"], _state["enabled"])
+                    if not on:
+                        yield "event: off\ndata: {}\n\n"
+                        await asyncio.sleep(1)
+                        continue
                     if err:
                         yield f"event: problem\ndata: {json.dumps(err)}\n\n"
                         await asyncio.sleep(1)
@@ -341,7 +367,7 @@ PAGE = r"""<!DOCTYPE html>
 <style>
  body{background:#1a1a2e;color:#e0e0e0;font-family:system-ui,sans-serif;margin:0;padding:12px}
  .bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px}
- a.btn{color:#e0e0e0;border:1px solid #3a4a63;border-radius:6px;padding:4px 10px;text-decoration:none}
+ .btn{color:#e0e0e0;border:1px solid #3a4a63;border-radius:6px;padding:4px 10px;text-decoration:none;font:inherit;background:none;cursor:pointer}
  .tile{background:#16213e;border:1px solid #0f3460;border-radius:6px;padding:4px 10px}
  .tile b{font-family:monospace;font-size:1.1em;display:inline-block;text-align:right}
  #lo{width:12ch} #car{width:10ch} #rng{width:7ch} #sh{width:21ch} #gn{width:5ch}
@@ -352,6 +378,7 @@ PAGE = r"""<!DOCTYPE html>
 <div class="bar">
  <b>&#x1F4C8; TX monitor</b>
  <a class="btn" href="/">&larr; Transmitter</a>
+ <button id="power" class="btn" onclick="togglePower()">&hellip;</button>
  <span class="tile">Centre <b id="lo">&mdash;</b></span>
  <span class="tile">Carrier <b id="car">&mdash;</b></span>
  <span class="tile">Range <b id="rng">&mdash;</b></span>
@@ -363,6 +390,8 @@ PAGE = r"""<!DOCTYPE html>
           oninput="setGain()" style="vertical-align:middle;width:140px"></span>
  <span id="warn">&#x26A0;&#xFE0F; Receiver overloaded &mdash; reducing gain</span>
 </div>
+<div id="offmsg" style="display:none;background:#16213e;border:1px solid #0f3460;border-radius:6px;padding:10px;margin-bottom:8px">
+Monitor is <b>off</b>: The LibreSDR's receiver is not being used at all. Press <b>Turn on</b> to start it.</div>
 <canvas id="spec" height="1142"></canvas>
 <canvas id="fall" height="260" style="margin-top:8px"></canvas>
 <div class="note" id="note">A monitor, not a measurement: Watch the shape and changes. The span is the
@@ -435,8 +464,22 @@ function setGain(){
   gainTimer = setTimeout(() => fetch('/api/monitor/gain', {method: 'POST',
     headers: {'Content-Type': 'application/json'}, body: JSON.stringify({mode, gain: g})}), 120);
 }
-let synced = false;
+let synced = false, powered = null;
+function showPower(on){
+  powered = on;
+  const b = document.getElementById('power');
+  b.textContent = on ? '\u25CF Monitor on \u2014 turn off' : 'Turn on';
+  b.style.borderColor = on ? '#22c55e' : '#3a4a63';
+  document.getElementById('offmsg').style.display = on ? 'none' : 'block';
+}
+async function togglePower(){
+  const on = !powered;
+  await fetch('/api/monitor/enable', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({on})});
+  showPower(on);
+}
 const es = new EventSource('/api/monitor/stream');
-es.onmessage = e => draw(JSON.parse(e.data));
+es.addEventListener('off', () => { if (powered !== false) showPower(false); });
+es.onmessage = e => { if (powered !== true) showPower(true); draw(JSON.parse(e.data)); };
 es.addEventListener('problem', e => document.getElementById('note').textContent = JSON.parse(e.data));
 </script></body></html>"""

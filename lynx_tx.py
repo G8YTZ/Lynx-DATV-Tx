@@ -247,6 +247,16 @@ def read_libre_bitrate() -> Optional[int]:
 
 # ── Talking to the LibreSDR ───────────────────────────────────
 
+def read_buffer() -> Optional[dict]:
+    """The live slack from tsbuffer.py, or None if it is not reporting."""
+    try:
+        with open("/tmp/lynx-buffer.json") as f:
+            b = json.load(f)
+        return b if time.time() - b.get("time", 0) < 3 else None
+    except Exception:
+        return None
+
+
 def libre_host() -> str:
     """Where the LibreSDR is right now.
 
@@ -571,24 +581,25 @@ def hdmi_framerate(device: str) -> Optional[str]:
 
 
 def hdmi_format() -> dict:
-    """What the capture is actually being given.
+    """What the camera is actually sending, or {} when nothing is.
 
-    The HDMI receiver follows its source, so a camera set to 4K
-    presents 4K and one set to 1080p presents 1080p. Reading it beats
-    asking the operator, and beats assuming.
+    The live signal timing (--query-dv-timings), not the capture format:
+    with no signal the HDMI chip keeps reporting a leftover default format
+    (640x480), and believing it made the whole programme 640x480 - a
+    squashed test card and black media. No signal means {}, and each caller
+    falls back to its own size (the switcher: 3840x2160).
     """
     try:
-        # Always the camera's own device: this answers "what is plugged
-        # in", which is worth knowing even while media is playing.
         r = subprocess.run(
-            ["v4l2-ctl", "-d", config["video_device"], "--get-fmt-video"],
+            ["v4l2-ctl", "-d", config["video_device"], "--query-dv-timings"],
             capture_output=True, text=True, timeout=4)
-        w = h = None
+        w = h = 0
         for line in r.stdout.split("\n"):
-            if "Width/Height" in line:
-                bits = line.split(":")[1].strip().split("/")
-                w, h = int(bits[0]), int(bits[1])
-        return {"width": w, "height": h} if w else {}
+            if "Active width" in line:
+                w = int(line.split(":")[1].strip() or 0)
+            elif "Active height" in line:
+                h = int(line.split(":")[1].strip() or 0)
+        return {"width": w, "height": h} if r.returncode == 0 and w > 0 and h > 0 else {}
     except Exception:
         return {}
 
@@ -784,7 +795,15 @@ def build_pipeline() -> str:
                  if config.get("use_switcher", True) or
                  (enc["audio"] and src["kind"] != "still") else 0)
     psi_bps = 12000
-    video_bps = int((rate - audio_bps - psi_bps) * 0.92)
+    # The slack: how far ahead of need the pictures travel (ffmpeg's
+    # -max_delay). More rides out encoder overshoots, but every receiver
+    # has to hold it: a 2014 Sony Bravia was happy at 0.4 s and gave up
+    # ("scrambled or cannot be decoded") at 1.0 s and above. So it is a
+    # setting, encoder.slack, and the trim in switcher.py scales with it.
+    slack = float(enc.get("slack", 0.6))
+    # 85%: the rest is headroom for the encoder's brief excursions above
+    # its cap, so sound and tables always find room in the channel.
+    video_bps = int((rate - audio_bps - psi_bps) * 0.85)
 
     w, h, fps = enc["width"], enc["height"], enc["fps"]
     reader = ""
@@ -822,7 +841,13 @@ def build_pipeline() -> str:
     # takes NV12 or NV16, and the feeder writes I420. Without it the
     # pipeline fails to negotiate and stops with nothing more useful
     # than "not-negotiated (-4)".
-    if src["kind"] == "camera":
+    if config.get("use_switcher", True):
+        # The switcher reads its own sources and works out for itself
+        # whether a clip is a video or a still: the single-source checks
+        # below would only refuse things it handles (a PNG left recorded
+        # as "video" stopped key-up altogether).
+        video_in = ""
+    elif src["kind"] == "camera":
         video_in = f"v4l2src device={device} ! {caps}"
     elif src["kind"] == "still":
         # A still never changes, so it is decoded, converted and scaled
@@ -910,7 +935,7 @@ def build_pipeline() -> str:
             f"--media-dir {shlex.quote(str(MEDIA_DIR))} "
             + (f"--media {shlex.quote(clip)} " if clip else "")
             + f"--start {start} --bps {video_bps} "
-            f"--gop {enc['gop']} --audio-bitrate {enc['audio_bitrate']} "
+            f"--gop {enc['gop']} --audio-bitrate {enc['audio_bitrate']} --slack {slack} "
             f"--width {w} --height {h} "
             f"--video-device {shlex.quote(config['video_device'])} "
             f"--audio-device {shlex.quote(config['audio_device'])}"
@@ -920,7 +945,8 @@ def build_pipeline() -> str:
         parts = [
             (reader if src["kind"] == "video" else "") +
             f"gst-launch-1.0 -e -q {video_in} ! "
-            f"mpph265enc rc-mode=cbr bps={video_bps} gop={enc['gop']} "
+            f"mpph265enc rc-mode=cbr bps={video_bps} bps-max={video_bps} "
+            f"qp-max=51 qp-max-i=51 qp-init=34 qp-min=34 qp-min-i=34 max-reenc=2 gop={enc['gop']} "
             f"header-mode=each-idr ! h265parse config-interval=-1 ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! mux."
         ]
         # Audio follows video.
@@ -969,13 +995,21 @@ def build_pipeline() -> str:
         f"-mpegts_service_id {ident['service_id']} "
         f"-mpegts_service_type {ident['service_type']} "
         f"-mpegts_pmt_start_pid {ident['pmt_pid']} "
-        f"{streamids} -max_delay 400000 -pat_period 0.200 pipe:1")
+        f"{streamids} -max_delay {int(slack * 1e6)} -pat_period 0.200 pipe:1")
 
     # -- pace it ---------------------------------------------------
     # Deliberately above the modulator's figure. It wants its buffer
     # kept full; a small excess is discarded harmlessly, while
     # starvation shows up as missing video packets in a regular
     # pattern and a green screen at the far end.
+    # -max_delay above is the slack between sending a frame and the
+    # receiver needing it. The hardware encoder overshoots for a second or
+    # more when a scene suddenly gets hard (measured: 3.85 Mb/s against a
+    # 2.29 Mb/s cap); at 0.4 s of slack that broke the timing ("dts < pcr")
+    # and receivers dropped sound. 2 s absorbs it, spreading the spike over
+    # the next seconds, for about 1.6 s more delay. Set to 1.5 s once the
+    # keyframes were capped (qp-min-i): 2 s plus giant keyframes was more
+    # than some domestic receivers can hold.
     paced = int(rate * 1.006)
     # A small buffer: enough to smooth a GOP, not enough to add
     # noticeable delay. TSDuck's default held about 45 seconds.
@@ -990,9 +1024,14 @@ def build_pipeline() -> str:
         nit_stage = (f"-P pat --nit 0x10 "
                      f"-P inject {nit} --pid 0x10 --stuffing "
                      f"--inter-packet {every} ")
+    # The buffer monitor (tsbuffer.py, beside this file) gets a copy of the
+    # stream and reports the live slack for the Transmit card.
+    monitor = APP_DIR / "tsbuffer.py"
+    tap_cmd = f"python3 {monitor} {ident['video_pid']}"
+    tap = f"-P fork {shlex.quote(tap_cmd)} " if monitor.exists() else ""
     parts.append(
         f" | tsp --realtime --buffer-size-mb 0.05 -I file - "
-        f"{nit_stage}-P regulate --bitrate {paced} "
+        f"{nit_stage}{tap}-P regulate --bitrate {paced} "
         f"-O ip {libre_host()}:8282")
 
     return "".join(parts)
@@ -1104,6 +1143,7 @@ def api_status():
         "ts_bitrate": theoretical,
         "libre": libre_status(),
         "libre_patch": libre_patch,
+        "buffer": read_buffer() if tx_running() else None,
         "switcher": (switcher_call("GET", "/status")
                      if tx_running() and config.get("use_switcher", True) else None),
         "use_switcher": config.get("use_switcher", True),
@@ -1343,6 +1383,7 @@ PAGE = """<!DOCTYPE html>
             <tr><td class="text-muted">On air for</td>
                 <td class="status-value text-end" id="s-up">—</td></tr>
           </table>
+          <div class="small mt-2" id="buffer-line" style="display:none">Buffer: &mdash;</div>
           <div class="small mt-2" id="libre-patch">LibreSDR script: checking&hellip;</div>
           <button class="btn btn-sm btn-outline-light mt-2" onclick="checkLibre()">Check LibreSDR</button>
           <a href="/monitor" class="btn btn-sm btn-outline-light mt-2 ms-1">&#x1F4C8; TX monitor</a>
@@ -1611,7 +1652,11 @@ async function api(method, path, body) {
   const opts = {method, headers: {'Content-Type': 'application/json'}};
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(path, opts);
-  return r.json();
+  const j = await r.json().catch(() => ({}));
+  // A refusal must be seen: a key-up that silently does nothing is the
+  // worst kind of fault.
+  if (!r.ok) alert('Lynx-Tx: ' + (j.detail || ('error ' + r.status)));
+  return j;
 }
 
 async function startTx() { await api('POST', '/api/start'); poll(); }
@@ -1801,6 +1846,17 @@ async function poll() {
   }
 
   const LP = cfg.libre_patch || {};
+  // Buffer: how far ahead of need the pictures are sent. About 2 s at
+  // rest; it drains when the encoder overshoots; at zero receivers glitch.
+  const bl = document.getElementById('buffer-line'), B = cfg.buffer;
+  bl.style.display = B ? 'block' : 'none';
+  if (B) {
+    const lo = B.min_60s ?? B.slack;
+    const tr = cfg.switcher && cfg.switcher.trim ? ' \u00b7 trimming \u2212' + cfg.switcher.trim + '%' : '';
+    bl.textContent = 'Buffer: ' + B.slack.toFixed(2) + ' s' + tr + '  (lowest in the last minute ' +
+      lo.toFixed(2) + ' s' + (B.late ? ', ' + B.late + ' late frames since key-up' : '') + ')';
+    bl.style.color = lo <= 0 ? '#f87171' : lo < 0.5 ? '#fbbf24' : '#4ade80';
+  }
   const lp = document.getElementById('libre-patch');
   const lpColour = {ok: '#4ade80', rebooting: '#e8a33d', pending: '#e8a33d',
                     unknown: '#9fb3d1'}[LP.state] || '#f87171';
@@ -2076,7 +2132,11 @@ def media_page():
 # (tx_monitor.py, beside this file). Optional - Lynx-Tx runs without it.
 try:
     import tx_monitor
-    tx_monitor.install(app, lambda: {**config, "libre": {**config["libre"], "host": libre_host()}})
+    def _save_monitor(on: bool) -> None:
+        config.setdefault("monitor", {})["enabled"] = on
+        save_config(config)
+    tx_monitor.install(app, lambda: {**config, "libre": {**config["libre"], "host": libre_host()}},
+                       _save_monitor)
 except Exception as e:
     print(f"[monitor] not available: {e}")
 
