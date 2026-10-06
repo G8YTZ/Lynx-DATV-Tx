@@ -135,13 +135,22 @@ DEFAULT_CONFIG = {
         "width": 1920,
         "height": 1080,
         "fps": 50,
-        "gop": 25,
         "audio": True,
         "audio_bitrate": 192000,
-        # Of the transport stream, how much goes to video. The
-        # firmware's own documentation suggests 70%; the rest is audio,
-        # PSI and the stuffing that keeps the modulator fed.
-        "video_share": 0.70,
+        # The tweaks (Source and Encoder tweak cards): the values proven on
+        # air on 6 Oct 2026 - QPSK 3/4 2000 kS/s, 16 minutes of Save Tonight,
+        # nothing late. TESTED_TWEAKS below is the same set, for the page's
+        # "Reset to tested defaults".
+        "content": "balanced",
+        "rate_control": "hybrid",
+        "slack": 0.9,
+        "qp_floor": 30,
+        "gop": 50,
+        "rc_target": 0.3,
+        "look_ahead": 0.5,
+        "hybrid_aim": 0.97,
+        "picture_share": 0.92,
+        "sound_priority": True,
     },
     "source": {"kind": "camera", "file": ""},
     # DVB service information. Network > multiplex > provider > service.
@@ -193,6 +202,72 @@ def save_config(cfg: dict):
 
 
 config = load_config()
+
+
+# ── Tweaks: the trade-offs, adjustable from the page ──────────────────
+# Each: (lowest, highest) - anything outside is clamped, never refused, so
+# a typo cannot stop a key-up. The defaults are the tested values above.
+TWEAK_LIMITS = {
+    "slack": (0.3, 1.0),
+    "qp_floor": (20, 40),
+    "gop": (25, 250),
+    "rc_target": (0.1, 0.6),
+    "look_ahead": (0.0, 1.0),
+    "hybrid_aim": (0.85, 1.0),
+    "picture_share": (0.5, 0.97),
+}
+TWEAK_CHOICES = {
+    "rate_control": ("hybrid", "cbr"),
+    "content": ("talking", "balanced", "action", "custom"),
+}
+TESTED_TWEAKS = {k: DEFAULT_CONFIG["encoder"][k] for k in
+                 ("content", "rate_control", "slack", "qp_floor", "gop", "rc_target",
+                  "look_ahead", "hybrid_aim", "picture_share", "sound_priority")}
+# The Content presets fill these three; everything else is left alone.
+CONTENT_PRESETS = {
+    "talking":  {"qp_floor": 26, "gop": 100, "rc_target": 0.4},
+    "balanced": {"qp_floor": 30, "gop": 50,  "rc_target": 0.3},
+    "action":   {"qp_floor": 32, "gop": 50,  "rc_target": 0.2},
+}
+
+
+def clean_tweaks(d: dict) -> dict:
+    """Clamp and type the tweak values; drop anything unknown."""
+    out = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        if k in TWEAK_LIMITS:
+            lo, hi = TWEAK_LIMITS[k]
+            v = max(lo, min(hi, float(v)))
+            out[k] = int(round(v)) if k in ("qp_floor", "gop") else round(v, 3)
+        elif k in TWEAK_CHOICES:
+            if v in TWEAK_CHOICES[k]:
+                out[k] = v
+        elif k == "sound_priority":
+            out[k] = bool(v)
+    return out
+
+
+_hybrid_capable = None
+
+
+def hybrid_capable() -> bool:
+    """Is the patched encoder plugin installed? Hybrid steers the QP floor
+    live; the stock plugin ignores that (it never sets MPP's frame-level
+    limits), so hybrid on a stock plugin would be plain CBR aimed too high.
+    The patch adds the string rc:fqp_min_p - look for it."""
+    global _hybrid_capable
+    if _hybrid_capable is None:
+        _hybrid_capable = False
+        for d in ("/usr/lib/aarch64-linux-gnu/gstreamer-1.0", "/lib/aarch64-linux-gnu/gstreamer-1.0"):
+            try:
+                if b"rc:fqp_min_p" in Path(d, "libgstrockchipmpp.so").read_bytes():
+                    _hybrid_capable = True
+                    break
+            except OSError:
+                pass
+    return _hybrid_capable
 
 
 # ── DVB-S2 arithmetic ─────────────────────────────────────────
@@ -817,6 +892,8 @@ def build_pipeline() -> str:
     rate_control = enc.get("rate_control", "cbr")
     if rate_control not in ("cbr", "buffer", "hybrid"):
         rate_control = "cbr"
+    if rate_control == "hybrid" and not hybrid_capable():
+        rate_control = "cbr"            # stock plugin: see hybrid_capable()
     share = (float(enc.get("picture_share_rc", 0.92)) if rate_control == "buffer"
              else float(enc.get("picture_share", 0.85)))
     video_bps = int((rate - audio_bps - psi_bps) * share)
@@ -979,6 +1056,7 @@ def build_pipeline() -> str:
             f"--rc {rate_control} "
             f"--rc-rate {picture_channel_bps} "
             f"--look {float(enc.get('look_ahead', 0.5))} "
+            f"--rc-target {float(enc.get('rc_target', 0.3))} "
             f"--width {w} --height {h} "
             f"--video-device {shlex.quote(config['video_device'])} "
             f"--audio-device {shlex.quote(config['audio_device'])}"
@@ -1179,10 +1257,21 @@ class EncoderUpdate(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     fps: Optional[int] = None
-    gop: Optional[int] = None
     audio: Optional[bool] = None
     audio_bitrate: Optional[int] = None
-    video_share: Optional[float] = None
+
+
+class TweaksUpdate(BaseModel):
+    content: Optional[str] = None
+    rate_control: Optional[str] = None
+    slack: Optional[float] = None
+    qp_floor: Optional[int] = None
+    gop: Optional[int] = None
+    rc_target: Optional[float] = None
+    look_ahead: Optional[float] = None
+    hybrid_aim: Optional[float] = None
+    picture_share: Optional[float] = None
+    sound_priority: Optional[bool] = None
 
 
 class SourceUpdate(BaseModel):
@@ -1209,6 +1298,8 @@ def api_status():
                      if tx_running() and config.get("use_switcher", True) else None),
         "use_switcher": config.get("use_switcher", True),
         "nit": nit_status,
+        "tweaks": {"hybrid_capable": hybrid_capable(), "tested": TESTED_TWEAKS,
+                   "presets": CONTENT_PRESETS, "limits": TWEAK_LIMITS},
     }
 
 
@@ -1315,6 +1406,28 @@ def api_encoder(req: EncoderUpdate):
     return {"success": True, "config": config["encoder"]}
 
 
+@app.post("/api/tweaks")
+def api_tweaks(req: TweaksUpdate):
+    """The trade-off settings, all at once. Applied by a restart if on air
+    - one restart for the whole card, not one per control."""
+    t = clean_tweaks(req.model_dump())
+    config["encoder"].pop("video_share", None)          # long unused
+    config["encoder"].update(t)
+    save_config(config)
+    if tx_running():
+        start_tx()
+    return {"success": True, "config": config["encoder"]}
+
+
+@app.post("/api/tweaks/reset")
+def api_tweaks_reset():
+    config["encoder"].update(TESTED_TWEAKS)
+    save_config(config)
+    if tx_running():
+        start_tx()
+    return {"success": True, "config": config["encoder"]}
+
+
 SWITCHER_URL = "http://127.0.0.1:8090"
 
 
@@ -1404,10 +1517,12 @@ PAGE = """<!DOCTYPE html>
   .table { --bs-table-bg: transparent; --bs-table-color: #e0e0e0; }
   .text-muted { color: #9fb3d1 !important; }
   label.small { color: #9fb3d1; }
-  /* Bootstrap's table and muted text both assume a light page. */
-  .table { --bs-table-bg: transparent; --bs-table-color: #e0e0e0; }
-  .text-muted { color: #9fb3d1 !important; }
-  label.small { color: #9fb3d1; }
+  /* Tweak cards: each control explains its trade-off and shows the tested value. */
+  .help { font-size: .78em; color: #9fb3d1; line-height: 1.35; }
+  .tested { font-size: .72em; color: #6b7c99; }
+  .tweaks label.small { display: flex; justify-content: space-between; width: 100%; }
+  .tv { color: #4ade80; font-family: monospace; }
+  .tweaks .form-range { margin-bottom: 0; }
   .status-off { color: #9ca3af; }
   .big-btn { font-size: 1.3em; padding: 0.6em; }
 </style>
@@ -1426,7 +1541,7 @@ PAGE = """<!DOCTYPE html>
 
   <div class="row g-3">
 
-    <div class="col-md-4">
+    <div class="col-lg-4">
       <div class="card mb-3">
         <div class="card-header">&#x25B6;&#xFE0F; Transmit</div>
         <div class="card-body">
@@ -1452,7 +1567,7 @@ PAGE = """<!DOCTYPE html>
                    style="position:absolute;top:0;bottom:0;width:2px;background:#fbbf24;left:0"></div>
             </div>
             <div id="bb-scale" style="position:relative;height:14px;font-size:.7em;color:#9fb3d1"></div>
-            <canvas id="bb-hist" height="70" style="width:100%;display:block;margin-top:2px;background:#0b0f1d;border:1px solid #0f3460;border-radius:4px"></canvas>
+            <canvas id="bb-hist" height="150" style="width:100%;display:block;margin-top:2px;background:#0b0f1d;border:1px solid #0f3460;border-radius:4px"></canvas>
           </div>
           <div class="small mt-2" id="libre-patch">LibreSDR script: checking&hellip;</div>
           <button class="btn btn-sm btn-outline-light mt-2" onclick="checkLibre()">Check LibreSDR</button>
@@ -1460,32 +1575,6 @@ PAGE = """<!DOCTYPE html>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">&#x1F3A5; Source</div>
-        <div class="card-body">
-          <div class="small text-muted mb-1">Programme</div>
-          <div class="d-flex gap-2 mb-1">
-            <button class="btn btn-lg btn-outline-light flex-fill" id="pgm-cam"
-                    onclick="takeSrc('cam')">&#x1F4F9; Camera</button>
-            <button class="btn btn-lg btn-outline-light flex-fill" id="pgm-med"
-                    onclick="takeSrc('med')">&#x1F39E;&#xFE0F; Media</button>
-          </div>
-          <div class="small mb-1" id="pgm-info">&mdash;</div>
-          <div class="text-muted small mb-2" id="hdmi-info">&mdash;</div>
-          <div class="small text-muted mb-1">Media player &mdash; click a clip to load it</div>
-          <div id="media-list"></div>
-          <a href="/media" class="btn btn-sm btn-outline-light w-100 mt-2">&#x1F4C1; Manage media &mdash; upload, check, delete</a>
-          <div class="text-muted small mt-2">
-            Cuts are clean &mdash; the carrier stays up. Loading a clip while
-            Media is on air changes the picture straight away, like a HyperDeck
-            on an ATEM. Off air, these choose what starts at key-up.
-            Files live in /srv/lynxdeck/media, shared with Lynx-Deck.
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="col-md-4">
       <div class="card">
         <div class="card-header">&#x1F4FB; Modulation</div>
         <div class="card-body">
@@ -1537,7 +1626,58 @@ PAGE = """<!DOCTYPE html>
       </div>
     </div>
 
-    <div class="col-md-4">
+    <div class="col-lg-4">
+      <div class="card">
+        <div class="card-header">&#x1F3A5; Source</div>
+        <div class="card-body">
+          <div class="small text-muted mb-1">Programme</div>
+          <div class="d-flex gap-2 mb-1">
+            <button class="btn btn-lg btn-outline-light flex-fill" id="pgm-cam"
+                    onclick="takeSrc('cam')">&#x1F4F9; Camera</button>
+            <button class="btn btn-lg btn-outline-light flex-fill" id="pgm-med"
+                    onclick="takeSrc('med')">&#x1F39E;&#xFE0F; Media</button>
+          </div>
+          <div class="small mb-1" id="pgm-info">&mdash;</div>
+          <div class="text-muted small mb-2" id="hdmi-info">&mdash;</div>
+          <div class="small text-muted mb-1">Media player &mdash; click a clip to load it</div>
+          <div id="media-list"></div>
+          <a href="/media" class="btn btn-sm btn-outline-light w-100 mt-2">&#x1F4C1; Manage media &mdash; upload, check, delete</a>
+          <div class="text-muted small mt-2">
+            Cuts are clean &mdash; the carrier stays up. Loading a clip while
+            Media is on air changes the picture straight away, like a HyperDeck
+            on an ATEM. Off air, these choose what starts at key-up.
+            Files live in /srv/lynxdeck/media, shared with Lynx-Deck.
+          </div>
+        </div>
+      </div>
+      <div class="card mt-3 tweaks">
+        <div class="card-header">&#x1F39A;&#xFE0F; Source tweaks</div>
+        <div class="card-body">
+          <label class="small text-muted">Content &mdash; what you are sending</label>
+          <div class="btn-group w-100 mb-1" role="group">
+            <button class="btn btn-sm btn-outline-light" id="c-talking" onclick="preset('talking')">&#x1F5E3;&#xFE0F; Talking heads</button>
+            <button class="btn btn-sm btn-outline-light" id="c-balanced" onclick="preset('balanced')">&#x2696;&#xFE0F; Balanced</button>
+            <button class="btn btn-sm btn-outline-light" id="c-action" onclick="preset('action')">&#x1F3B8; Action</button>
+          </div>
+          <div class="help mb-3" id="c-help">&mdash;</div>
+
+          <label class="small text-muted">Look-ahead <span class="tv" id="v-look"></span></label>
+          <input type="range" class="form-range" id="t-look" min="0" max="1" step="0.1" oninput="tweakChanged()">
+          <div class="help mb-1">The controller scores each picture this far ahead of the encoder, so it
+            can ease off <i>before</i> a strobe or a burst of motion arrives. Costs the same delay end to
+            end &mdash; fine for playout, noticeable on a live camera with talkback. 0 = react only.</div>
+          <div class="tested">Tested: <span id="d-look"></span></div>
+
+          <div class="d-flex gap-2 mt-3">
+            <button class="btn btn-sm btn-warning flex-fill apply-btn" onclick="applyTweaks()" disabled>Apply</button>
+            <button class="btn btn-sm btn-outline-light" onclick="resetTweaks()">Reset to tested</button>
+          </div>
+          <div class="help mt-1 apply-note"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
       <div class="card">
         <div class="card-header">&#x1F39E;&#xFE0F; Encoder</div>
         <div class="card-body">
@@ -1592,6 +1732,84 @@ PAGE = """<!DOCTYPE html>
             mistaken for a reception problem.
           </div>
 
+        </div>
+      </div>
+      <div class="card mt-3 tweaks">
+        <div class="card-header">&#x1F527; Encoder tweaks &mdash; very advanced</div>
+        <div class="card-body">
+          <div class="help mb-3" style="color:#e8a33d">Every setting here is a compromise. The tested
+            values are what ran 16 minutes of the hardest clip at QPSK 3/4 with nothing late.</div>
+
+          <label class="small text-muted">Rate control</label>
+          <select class="form-select form-select-sm bg-dark text-light border-secondary mb-1"
+                  id="t-rc" onchange="tweakChanged()">
+            <option value="hybrid">Hybrid &mdash; encoder&rsquo;s own control, guarded floor</option>
+            <option value="cbr">CBR &mdash; encoder alone</option>
+          </select>
+          <div class="help mb-1" id="rc-help"></div>
+          <div class="tested mb-3">Tested: <span id="d-rc"></span></div>
+
+          <label class="small text-muted">Receiver buffer <span class="tv" id="v-slack"></span></label>
+          <input type="range" class="form-range" id="t-slack" min="0.3" max="1.0" step="0.05" oninput="tweakChanged()">
+          <div class="help mb-1">How far ahead of need pictures are sent. More rides out bigger bursts,
+            but every receiver must hold it: the spec limit is 1.0 s; the Sony KD-65X850B is happy at
+            0.9 s. Keep 0.6 s for an unknown receiver.</div>
+          <div class="tested mb-3">Tested: <span id="d-slack"></span></div>
+
+          <label class="small text-muted">Finest QP <span class="tv" id="v-qp"></span></label>
+          <input type="range" class="form-range" id="t-qp" min="20" max="40" step="1" oninput="tweakChanged()">
+          <div class="help mb-1">The sharpest the encoder may go. Lower = crisper stills, faces and
+            text, using spare channel in calm scenes &mdash; but bigger keyframes (QP 30: ~0.27 s of
+            channel each). Hard scenes are unaffected: the floor rises there anyway.</div>
+          <div class="tested mb-3">Tested: <span id="d-qp"></span></div>
+
+          <label class="small text-muted">Keyframe interval</label>
+          <select class="form-select form-select-sm bg-dark text-light border-secondary mb-1"
+                  id="t-gop" onchange="tweakChanged()">
+            <option value="25">1 s</option><option value="50">2 s</option>
+            <option value="75">3 s</option><option value="100">4 s</option>
+            <option value="150">6 s</option>
+          </select>
+          <div class="help mb-1">Longer spends fewer bits on keyframes and more on the pictures
+            between them &mdash; but a receiver tuning in, or recovering from a dropout, waits up to
+            this long for a picture.</div>
+          <div class="tested mb-3">Tested: <span id="d-gop"></span></div>
+
+          <div id="hy-only">
+            <label class="small text-muted">Floor reacts <span class="tv" id="v-tgt"></span></label>
+            <input type="range" class="form-range" id="t-tgt" min="0.1" max="0.6" step="0.05" oninput="tweakChanged()">
+            <div class="d-flex justify-content-between help"><span>&larr; early: softer, smooth</span><span>late: sharper, riskier &rarr;</span></div>
+            <div class="help mb-1">How full the buffer may get before the floor starts rising.</div>
+            <div class="tested mb-3">Tested: <span id="d-tgt"></span></div>
+
+            <label class="small text-muted">Encoder aim <span class="tv" id="v-aim"></span></label>
+            <input type="range" class="form-range" id="t-aim" min="0.85" max="1.0" step="0.01" oninput="tweakChanged()">
+            <div class="help mb-1">The encoder&rsquo;s own target, as a share of the picture&rsquo;s real
+              channel. Keep it under 100%: above, the encoder and the floor fight and the floor sticks high.</div>
+            <div class="tested mb-3">Tested: <span id="d-aim"></span></div>
+          </div>
+
+          <div id="cbr-only">
+            <label class="small text-muted">Picture share <span class="tv" id="v-share"></span></label>
+            <input type="range" class="form-range" id="t-share" min="0.5" max="0.97" step="0.01" oninput="tweakChanged()">
+            <div class="help mb-1">CBR only: the encoder&rsquo;s target as a share of what sound and tables
+              leave. The rest is headroom for its overshoots &mdash; with nothing to guard them, keep it
+              at 0.85 or below.</div>
+            <div class="tested mb-3">Tested: <span id="d-share"></span></div>
+          </div>
+
+          <div class="form-check form-switch mb-1">
+            <input class="form-check-input" type="checkbox" id="t-prio" onchange="tweakChanged()">
+            <label class="form-check-label small" for="t-prio">Sound priority</label>
+          </div>
+          <div class="help mb-3">Sound always goes before pictures in the multiplex, so a burst of
+            picture can never make the sound drop out. Leave on.</div>
+
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-warning flex-fill apply-btn" onclick="applyTweaks()" disabled>Apply</button>
+            <button class="btn btn-sm btn-outline-light" onclick="resetTweaks()">Reset to tested</button>
+          </div>
+          <div class="help mt-1 apply-note"></div>
         </div>
       </div>
     </div>
@@ -1846,6 +2064,124 @@ async function saveEnc() {
 
 let firstLoad = true;
 
+// ---- Tweaks ---------------------------------------------------------------
+// Both tweak cards edit one set of settings, sent together by Apply - one
+// restart on air, not one per control.
+const $ = id => document.getElementById(id);
+let PRESETS = {}, TESTED = {}, twDirty = false;
+const PRESET_HELP = {
+  talking: 'Presenters, slides, test cards, stills: finest QP 26 for crisp faces and text, ' +
+           'keyframes every 4 s, floor reacts late.',
+  balanced: 'The tested all-rounder: finest QP 30, keyframes every 2 s, floor reacts at 30%.',
+  action: 'Fast motion, strobes, concerts: finest QP 32 and the floor reacts early, ' +
+          'so pans stay smooth at the cost of some softness.',
+  custom: 'Custom \u2014 your own mix of finest QP, keyframe interval and floor reaction.',
+};
+const gopText = g => (g / 25) + ' s';
+const pc = v => Math.round(v * 100) + '%';
+
+function currentContent() {
+  const q = +$('t-qp').value, g = +$('t-gop').value, t = +$('t-tgt').value;
+  for (const [k, p] of Object.entries(PRESETS))
+    if (p.qp_floor === q && p.gop === g && Math.abs(p.rc_target - t) < 1e-6) return k;
+  return 'custom';
+}
+
+function showTweakValues() {
+  $('v-look').textContent = (+$('t-look').value).toFixed(1) + ' s';
+  $('v-slack').textContent = (+$('t-slack').value).toFixed(2) + ' s';
+  $('v-qp').textContent = $('t-qp').value;
+  $('v-tgt').textContent = pc(+$('t-tgt').value) + ' of the buffer';
+  $('v-aim').textContent = pc(+$('t-aim').value);
+  $('v-share').textContent = pc(+$('t-share').value);
+  const c = currentContent();
+  for (const k of ['talking', 'balanced', 'action'])
+    $('c-' + k).className = 'btn btn-sm ' + (k === c ? 'btn-light' : 'btn-outline-light');
+  $('c-help').textContent = PRESET_HELP[c];
+  const hy = $('t-rc').value === 'hybrid';
+  $('hy-only').style.display = hy ? '' : 'none';
+  $('cbr-only').style.display = hy ? 'none' : '';
+  const capable = cfg && cfg.tweaks && cfg.tweaks.hybrid_capable;
+  const rh = $('rc-help');
+  if (hy && !capable) {
+    rh.innerHTML = '<span style="color:#f87171">The patched encoder plugin is not installed, so ' +
+      'Hybrid runs as plain CBR. See patches/ in the repository.</span>';
+  } else {
+    rh.textContent = hy
+      ? 'The encoder keeps its own rate control and adaptive quantisation; a controller with ' +
+        'look-ahead raises its QP floor frame by frame only when the receiver\u2019s buffer is threatened.'
+      : 'The encoder alone. It overshoots its target by 25\u201340% for seconds at a time, so it ' +
+        'needs a low picture share for headroom. For comparison, or a stock plugin.';
+  }
+}
+
+function fillTweaks(e) {
+  $('t-look').value = e.look_ahead;
+  $('t-rc').value = e.rate_control === 'cbr' ? 'cbr' : 'hybrid';
+  $('t-slack').value = e.slack;
+  $('t-qp').value = e.qp_floor;
+  if (![...$('t-gop').options].some(o => +o.value === +e.gop))
+    $('t-gop').add(new Option(gopText(e.gop), e.gop));
+  $('t-gop').value = e.gop;
+  $('t-tgt').value = e.rc_target;
+  $('t-aim').value = e.hybrid_aim;
+  $('t-share').value = e.picture_share;
+  $('t-prio').checked = e.sound_priority !== false;
+  showTweakValues();
+  setDirty(false);
+}
+
+function showTested() {
+  const T = TESTED;
+  $('d-look').textContent = T.look_ahead + ' s';
+  $('d-rc').textContent = T.rate_control === 'hybrid' ? 'Hybrid' : 'CBR';
+  $('d-slack').textContent = T.slack + ' s';
+  $('d-qp').textContent = T.qp_floor;
+  $('d-gop').textContent = gopText(T.gop);
+  $('d-tgt').textContent = pc(T.rc_target);
+  $('d-aim').textContent = pc(T.hybrid_aim);
+  $('d-share').textContent = pc(T.picture_share);
+}
+
+function setDirty(d) {
+  twDirty = d;
+  document.querySelectorAll('.apply-btn').forEach(b => b.disabled = !d);
+  const note = !d ? '' : (cfg && cfg.transmitting
+    ? 'Not applied yet. On air, Apply restarts the transmitter \u2014 a few seconds off air.'
+    : 'Not applied yet. Takes effect at the next Start.');
+  document.querySelectorAll('.apply-note').forEach(n => n.textContent = note);
+}
+
+function tweakChanged() { showTweakValues(); setDirty(true); }
+
+function preset(k) {
+  const p = PRESETS[k];
+  $('t-qp').value = p.qp_floor; $('t-gop').value = p.gop; $('t-tgt').value = p.rc_target;
+  tweakChanged();
+}
+
+function readTweaks() {
+  return {
+    content: currentContent(), rate_control: $('t-rc').value,
+    slack: +$('t-slack').value, qp_floor: +$('t-qp').value, gop: +$('t-gop').value,
+    rc_target: +$('t-tgt').value, look_ahead: +$('t-look').value,
+    hybrid_aim: +$('t-aim').value, picture_share: +$('t-share').value,
+    sound_priority: $('t-prio').checked,
+  };
+}
+
+async function applyTweaks() {
+  const j = await api('POST', '/api/tweaks', readTweaks());
+  if (j.config) fillTweaks(j.config);
+  poll();
+}
+
+async function resetTweaks() {
+  const j = await api('POST', '/api/tweaks/reset');
+  if (j.config) fillTweaks(j.config);
+  poll();
+}
+
 async function poll() {
   try {
     cfg = await (await fetch('/api/status')).json();
@@ -1955,6 +2291,9 @@ async function poll() {
     document.getElementById('e-fps').value = e.fps;
     document.getElementById('e-audio').checked = e.audio;
     document.getElementById('e-abr').value = e.audio_bitrate;
+    PRESETS = cfg.tweaks.presets; TESTED = cfg.tweaks.tested;
+    showTested();
+    fillTweaks(e);
     firstLoad = false;
   }
 }
@@ -1991,11 +2330,14 @@ function drawBuffer(B, target) {
   // The history: one bar per reading, the last two minutes, with its own axes.
   bufHist.push(B.slack); if (bufHist.length > 60) bufHist.shift();
   const dpr = devicePixelRatio, c = document.getElementById('bb-hist'),
-        W = c.width = c.clientWidth * dpr, H = c.height = 70 * dpr, x = c.getContext('2d');
+        W = c.width = c.clientWidth * dpr, H = c.height = 150 * dpr, x = c.getContext('2d');
   const L = 34 * dpr, Bm = 14 * dpr, T = 4 * dpr;                       // margins for the labels
-  const bottom = -target * 0.5;                                          // room below zero for late frames
+  const bottom = -target * 0.35;                                         // room below zero for late frames
   const Y = v => T + (top - Math.max(bottom, Math.min(top, v))) / (top - bottom) * (H - T - Bm);
   x.clearRect(0, 0, W, H);
+  // The under-run zone: below zero, a picture arrives after it is needed.
+  x.fillStyle = 'rgba(185, 28, 28, 0.22)';
+  x.fillRect(L, Y(0), W - L, Y(bottom) - Y(0));
   x.font = (10 * dpr) + 'px system-ui'; x.fillStyle = '#9fb3d1'; x.textBaseline = 'middle';
   x.textAlign = 'right';
   for (let v = 0; v <= top + 1e-9; v += step) {                          // seconds axis
@@ -2003,7 +2345,7 @@ function drawBuffer(B, target) {
     x.strokeStyle = v === 0 ? '#b91c1c' : '#1f2b44'; x.lineWidth = dpr;
     x.beginPath(); x.moveTo(L, Y(v)); x.lineTo(W, Y(v)); x.stroke();
   }
-  x.fillText('late', L - 4 * dpr, Y(bottom * 0.6));
+  x.fillStyle = '#f87171'; x.fillText('late', L - 4 * dpr, Y(bottom * 0.5)); x.fillStyle = '#9fb3d1';
   x.setLineDash([4 * dpr, 4 * dpr]); x.strokeStyle = '#e0e0e0';          // the slack setting
   x.beginPath(); x.moveTo(L, Y(target)); x.lineTo(W, Y(target)); x.stroke(); x.setLineDash([]);
   x.textBaseline = 'bottom';                                             // time axis

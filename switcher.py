@@ -69,6 +69,9 @@ ap.add_argument("--out", default="", help="file; default is stdout")
 ap.add_argument("--seconds", type=int, default=0)
 ap.add_argument("--bps", type=int, default=3_800_000)
 ap.add_argument("--gop", type=int, default=25)
+ap.add_argument("--qp-floor", type=int, default=34,
+                help="finest QP the encoder may use (its floor when the picture is easy); "
+                     "lower = sharper still detail, bigger keyframes")
 ap.add_argument("--audio-bitrate", type=int, default=192000)
 ap.add_argument("--width", type=int, default=3840)
 ap.add_argument("--height", type=int, default=2160)
@@ -86,6 +89,9 @@ ap.add_argument("--rc", choices=("cbr", "buffer", "hybrid"), default="cbr",
 ap.add_argument("--rc-rate", type=float, default=0,
                 help="with --rc buffer/hybrid: the picture's real channel rate, b/s "
                      "(what sound and tables leave); default: --bps")
+ap.add_argument("--rc-target", type=float, default=0.3,
+                help="with --rc buffer/hybrid: how full (fraction of the slack) the controller "
+                     "lets the buffer sit before it coarsens - lower reacts earlier")
 ap.add_argument("--look", type=float, default=0.5,
                 help="with --rc buffer/hybrid: look-ahead delay in seconds (0 = react only)")
 ap.add_argument("--buffer-json", default="/tmp/lynx-buffer.json",
@@ -213,7 +219,7 @@ else:
     # card keyframes in a row at 492-496 kbit, about 0.22 s of channel each.
     # Moving pictures at this bitrate run well above QP 34 anyway.
     encode = (f"mpph265enc name=enc rc-mode=cbr bps={a.bps} bps-max={a.bps} "
-              f"qp-max=51 qp-max-i=51 qp-init=34 qp-min=34 qp-min-i=34 max-reenc=1 gop={a.gop} header-mode=each-idr")
+              f"qp-max=51 qp-max-i=51 qp-init={a.qp_floor} qp-min={a.qp_floor} qp-min-i={a.qp_floor} max-reenc=1 gop={a.gop} header-mode=each-idr")
     if a.rc == "buffer":
         # Frame-by-frame: fixed-QP mode, with ratectl.py choosing every
         # frame's QP from a model of the receiver's buffer.
@@ -243,6 +249,7 @@ stamp = {"v_next": None}
 
 def vstamp(pad, info):
     buf = info.get_buffer()
+    _tick("prog")
     pts = buf.pts
     if pts == Gst.CLOCK_TIME_NONE:
         pts = stamp["v_next"] or 0
@@ -279,7 +286,9 @@ if a.rc in ("buffer", "hybrid"):
     import numpy as np
     from ratectl import BufferRC
     rc = BufferRC(a.rc_rate or a.bps, fps=25.0, slack=a.slack, gop=a.gop, guard=HYBRID,
-                  qp_start=34 if HYBRID else 36)
+                  target=max(0.05, min(0.7, a.rc_target)),
+                  qp_min=a.qp_floor if HYBRID else 34,
+                  qp_start=a.qp_floor if HYBRID else 36)
     HORIZON = max(1, int(round(LOOK * 25)))
 
     def set_qp(q):
@@ -361,7 +370,7 @@ if a.rc in ("buffer", "hybrid"):
             mode = ("hybrid, " if HYBRID else "") + mode
             log(f"rc ({mode}): {'floor' if HYBRID else 'QP'} mean {sum(q) / len(q):.1f} (range {min(q)}-{max(q)}), "
                 f"buffer peak {rcs['peak']:.2f} of {a.slack} s, skipped {rcs['skips']}, "
-                f"frames at 46+ {sum(1 for x in q if x >= 46)}")
+                f"frames at 46+ {sum(1 for x in q if x >= 46)}, at the base {sum(1 for x in q if x == rc.qp_min)}")
             rcs.update(last_log=now, skips=0, qps=[], peak=0.0)
         return Gst.PadProbeReturn.OK
 
@@ -435,6 +444,53 @@ def retry_camera():
     return state["camera"] == "bars"
 
 
+# ---- smoothness: does every frame arrive on time? -------------------------
+# A jerk on a pan with nothing late in the stream means a frame was shown
+# twice (or skipped) before the encoder ever saw it: the Media player's
+# decode fell behind and intervideosrc repeated the last picture. Count the
+# frames reaching each side and the gaps between them, by the wall clock.
+smooth = {"med": {"n": 0, "slow": 0, "worst": 0.0, "t": None},
+          "prog": {"n": 0, "slow": 0, "worst": 0.0, "t": None}}
+
+
+def _tick(key):
+    s = smooth[key]
+    now = time.monotonic()
+    if s["t"] is not None:
+        gap = now - s["t"]
+        s["worst"] = max(s["worst"], gap)
+        if gap > 0.060:                      # 1.5 frames at 25 fps
+            s["slow"] += 1
+    s["t"] = now
+    s["n"] += 1
+
+
+def tap_smooth(p):
+    """Watch the frames leaving a Media player pipeline."""
+    it = p.iterate_elements()
+    while True:
+        ok, el = it.next()
+        if ok != Gst.IteratorResult.OK:
+            break
+        if el.get_factory() and el.get_factory().get_name() == "intervideosink":
+            el.get_static_pad("sink").add_probe(
+                Gst.PadProbeType.BUFFER, lambda pad, info: (_tick("med"), Gst.PadProbeReturn.OK)[1])
+
+
+def report_smooth():
+    m, g = smooth["med"], smooth["prog"]
+    if m["n"] or m["slow"]:
+        log(f"smooth: media decoded {m['n']} frames in 10 s, gaps >60 ms {m['slow']} "
+            f"(longest {m['worst'] * 1000:.0f} ms)  |  to encoder {g['n']}, gaps {g['slow']} "
+            f"(longest {g['worst'] * 1000:.0f} ms)")
+    for s in (m, g):
+        s.update(n=0, slow=0, worst=0.0)
+    return True
+
+
+GLib.timeout_add_seconds(10, report_smooth)
+
+
 def load(name):
     """Play <name> in the Media player. Runs on the main loop."""
     desc, kind = media_desc(name)
@@ -451,6 +507,7 @@ def load(name):
         state["media_state"] = f"error: {e.message}"
         return False
     watch(p, "med")
+    tap_smooth(p)
     pipes["med"] = p
     p.set_state(Gst.State.PLAYING)
     state.update(media=name, kind=kind, media_state="playing")
