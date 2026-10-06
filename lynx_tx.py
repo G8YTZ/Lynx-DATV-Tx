@@ -810,7 +810,13 @@ def build_pipeline() -> str:
     # With frame-by-frame rate control (encoder.rate_control: buffer) the
     # encoder no longer overshoots, so the picture can have far more of the
     # channel: encoder.picture_share_rc, default 0.92.
+    # Hybrid (encoder.rate_control: hybrid): the encoder keeps its own rate
+    # control and adaptive quantisation, and ratectl.py only raises its QP
+    # floor, frame by frame, when the receiver's buffer is threatened. It
+    # uses picture_share like cbr - raise that once hybrid has proved itself.
     rate_control = enc.get("rate_control", "cbr")
+    if rate_control not in ("cbr", "buffer", "hybrid"):
+        rate_control = "cbr"
     share = (float(enc.get("picture_share_rc", 0.92)) if rate_control == "buffer"
              else float(enc.get("picture_share", 0.85)))
     video_bps = int((rate - audio_bps - psi_bps) * share)
@@ -946,7 +952,7 @@ def build_pipeline() -> str:
             + (f"--media {shlex.quote(clip)} " if clip else "")
             + f"--start {start} --bps {video_bps} "
             f"--gop {enc['gop']} --audio-bitrate {enc['audio_bitrate']} --slack {slack} "
-            f"--rc {'buffer' if rate_control == 'buffer' else 'cbr'} "
+            f"--rc {rate_control} "
             f"--look {float(enc.get('look_ahead', 0.5))} "
             f"--width {w} --height {h} "
             f"--video-device {shlex.quote(config['video_device'])} "

@@ -80,10 +80,11 @@ ap.add_argument("--fallback-image", default="",
                 help="shown on the Camera input with no HDMI signal (name in --media-dir); bars if missing")
 ap.add_argument("--slack", type=float, default=0.6,
                 help="the stream's slack in seconds (ffmpeg -max_delay); the trim scales with it")
-ap.add_argument("--rc", choices=("cbr", "buffer"), default="cbr",
-                help="cbr: the encoder's own rate control; buffer: frame-by-frame QP (ratectl.py)")
+ap.add_argument("--rc", choices=("cbr", "buffer", "hybrid"), default="cbr",
+                help="cbr: the encoder's own rate control; buffer: frame-by-frame QP (ratectl.py); "
+                     "hybrid: the encoder's rate control, with ratectl.py raising its QP floor")
 ap.add_argument("--look", type=float, default=0.5,
-                help="with --rc buffer: look-ahead delay in seconds (0 = react only)")
+                help="with --rc buffer/hybrid: look-ahead delay in seconds (0 = react only)")
 ap.add_argument("--buffer-json", default="/tmp/lynx-buffer.json",
                 help="the buffer monitor's live reading, for the bitrate trim")
 a = ap.parse_args()
@@ -217,7 +218,7 @@ else:
                   f"qp-min-i=36 qp-max-i=36 gop={a.gop} header-mode=each-idr")
 sink = f"filesink location={a.out}" if a.out else "fdsink fd=1"
 
-LOOK = a.look if a.rc == "buffer" else 0.0
+LOOK = a.look if a.rc in ("buffer", "hybrid") else 0.0
 LOOK_Q = (f"queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 "
           f"min-threshold-time={int(LOOK * 1e9)} ! ") if LOOK > 0 else ""
 prog = Gst.parse_launch(
@@ -264,15 +265,25 @@ prog.get_by_name("vstamp").get_static_pad("src").add_probe(Gst.PadProbeType.BUFF
 rc = None
 rcs = {"n": 0, "fifo": deque(), "qp": None, "force_key": False, "last_log": time.time(),
        "skips": 0, "qps": [], "peak": 0.0, "ahead": deque(), "prev": None, "look_ok": 0}
-if a.rc == "buffer":
+# Hybrid: the encoder stays in CBR - its own rate control and adaptive
+# quantisation, so smoke and backgrounds keep their detail - and the
+# controller sets only its QP FLOOR. In easy passages the floor sits at 34,
+# exactly as plain cbr; when the encoder would overshoot and make the stream
+# late, the floor rises and holds it. This needs the patched plugin (live
+# qp-min changes were ignored by the stock one: rc:fqp_min/max never set).
+HYBRID = a.rc == "hybrid"
+if a.rc in ("buffer", "hybrid"):
     import numpy as np
     from ratectl import BufferRC
-    rc = BufferRC(a.bps, fps=25.0, slack=a.slack, gop=a.gop)
+    rc = BufferRC(a.bps, fps=25.0, slack=a.slack, gop=a.gop, guard=HYBRID,
+                  qp_start=34 if HYBRID else 36)
     HORIZON = max(1, int(round(LOOK * 25)))
 
     def set_qp(q):
         if q != rcs["qp"]:
-            for prop in ("qp-init", "qp-min", "qp-max", "qp-min-i", "qp-max-i"):
+            props = ("qp-min", "qp-min-i") if HYBRID else \
+                    ("qp-init", "qp-min", "qp-max", "qp-min-i", "qp-max-i")
+            for prop in props:
                 enc.set_property(prop, q)
             rcs["qp"] = q
 
@@ -344,7 +355,8 @@ if a.rc == "buffer":
         if now - rcs["last_log"] >= 10 and rcs["qps"]:
             q = rcs["qps"]
             mode = f"look-ahead {LOOK:.1f} s" if LOOK > 0 and rcs["look_ok"] >= 0 else "reactive"
-            log(f"rc ({mode}): QP mean {sum(q) / len(q):.1f} (range {min(q)}-{max(q)}), "
+            mode = ("hybrid, " if HYBRID else "") + mode
+            log(f"rc ({mode}): {'floor' if HYBRID else 'QP'} mean {sum(q) / len(q):.1f} (range {min(q)}-{max(q)}), "
                 f"buffer peak {rcs['peak']:.2f} of {a.slack} s, skipped {rcs['skips']}")
             rcs.update(last_log=now, skips=0, qps=[], peak=0.0)
         return Gst.PadProbeReturn.OK
