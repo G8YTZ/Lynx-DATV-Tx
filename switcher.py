@@ -50,6 +50,7 @@ import signal
 import subprocess
 import sys
 import threading
+from collections import deque
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -81,6 +82,8 @@ ap.add_argument("--slack", type=float, default=0.6,
                 help="the stream's slack in seconds (ffmpeg -max_delay); the trim scales with it")
 ap.add_argument("--rc", choices=("cbr", "buffer"), default="cbr",
                 help="cbr: the encoder's own rate control; buffer: frame-by-frame QP (ratectl.py)")
+ap.add_argument("--look", type=float, default=0.5,
+                help="with --rc buffer: look-ahead delay in seconds (0 = react only)")
 ap.add_argument("--buffer-json", default="/tmp/lynx-buffer.json",
                 help="the buffer monitor's live reading, for the bitrate trim")
 a = ap.parse_args()
@@ -214,10 +217,13 @@ else:
                   f"qp-min-i=36 qp-max-i=36 gop={a.gop} header-mode=each-idr")
 sink = f"filesink location={a.out}" if a.out else "fdsink fd=1"
 
+LOOK = a.look if a.rc == "buffer" else 0.0
+LOOK_Q = (f"queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 "
+          f"min-threshold-time={int(LOOK * 1e9)} ! ") if LOOK > 0 else ""
 prog = Gst.parse_launch(
-    f"input-selector name=vsel ! identity name=vstamp ! {VCAPS} ! {encode} ! "
+    f"input-selector name=vsel ! identity name=vstamp ! {LOOK_Q}{VCAPS} ! {encode} ! "
     f"h265parse config-interval=-1 ! {Q} ! mux. "
-    f"audiomixer name=amix ! {ACAPS} ! audioconvert ! "
+    f"audiomixer name=amix ! {ACAPS} ! {LOOK_Q}audioconvert ! "
     f"avenc_aac bitrate={a.audio_bitrate} ! aacparse ! {Q} ! mux. "
     f"mpegtsmux name=mux ! {sink} "
     f"intervideosrc name=src_cam channel=cam timeout=10000000000 ! {VCAPS} ! vsel. "
@@ -248,13 +254,21 @@ def vstamp(pad, info):
 
 prog.get_by_name("vstamp").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, vstamp)
 
-# ---- frame-by-frame rate control ------------------------------------------------
+# ---- frame-by-frame rate control, with look-ahead ------------------------------
+# Pictures wait LOOK seconds (12 frames at 0.5 s) in a delay line before the
+# encoder; each is scored as it enters - motion against the previous frame,
+# and fine detail - on a 240x135 sample grid. Before each frame is encoded,
+# ratectl plans one steady QP across the frames still in the line, so a
+# strobe, a burst or a cut from a still into busy footage is coarsened for
+# a few frames early and gently, instead of overflowing the buffer.
 rc = None
-rcs = {"n": 0, "pts": {}, "qp": None, "force_key": False, "last_log": time.time(),
-       "skips": 0, "qps": [], "peak": 0.0}
+rcs = {"n": 0, "fifo": deque(), "qp": None, "force_key": False, "last_log": time.time(),
+       "skips": 0, "qps": [], "peak": 0.0, "ahead": deque(), "prev": None, "look_ok": 0}
 if a.rc == "buffer":
+    import numpy as np
     from ratectl import BufferRC
     rc = BufferRC(a.bps, fps=25.0, slack=a.slack, gop=a.gop)
+    HORIZON = max(1, int(round(LOOK * 25)))
 
     def set_qp(q):
         if q != rcs["qp"]:
@@ -262,39 +276,80 @@ if a.rc == "buffer":
                 enc.set_property(prop, q)
             rcs["qp"] = q
 
+    def score(pad, info):
+        """As each frame enters the delay line: how hard will it be?"""
+        buf = info.get_buffer()
+        try:
+            ok, mi = buf.map(Gst.MapFlags.READ)
+            if not ok:
+                return Gst.PadProbeReturn.OK
+            try:
+                arr = np.frombuffer(mi.data, dtype=np.uint8)
+                stride = max(W, len(arr) // (H * 2))           # NV16: luma, then chroma
+                y = arr[:stride * H].reshape(H, stride)[::16, :W:16].astype(np.int16)
+            finally:
+                buf.unmap(mi)
+            spatial = float(np.abs(np.diff(y, axis=1)).mean() + np.abs(np.diff(y, axis=0)).mean())
+            prev = rcs["prev"]
+            temporal = float(np.abs(y - prev).mean()) if prev is not None else spatial
+            rcs["prev"] = y
+            rcs["ahead"].append((buf.pts, 1.0 + temporal + 0.15 * spatial, 1.0 + spatial))
+            rcs["look_ok"] += 1
+        except Exception as e:                                  # never stop the picture
+            if rcs["look_ok"] >= 0:
+                log(f"rc: look-ahead scoring failed ({e}) - reacting only")
+                rcs["look_ok"] = -1
+        while len(rcs["ahead"]) > HORIZON * 4:
+            rcs["ahead"].popleft()
+        return Gst.PadProbeReturn.OK
+
+    def future_for(pts):
+        """The scores for this frame and the ones queued behind it."""
+        ahead = rcs["ahead"]
+        while ahead and ahead[0][0] < pts:
+            ahead.popleft()
+        if not ahead or ahead[0][0] != pts:
+            return None
+        out, since = [], rc.since_key
+        for i, (_, aP, aK) in enumerate(list(ahead)[:HORIZON]):
+            k = (i == 0 and rcs["force_key"]) or (since + 1 + i) % rc.gop == 0
+            out.append((aP, aK, k))
+        return out
+
     def rc_in(pad, info):
         """Before each frame enters the encoder: choose its QP, or skip it."""
         buf = info.get_buffer()
         n = rcs["n"]
         rcs["n"] += 1
-        q = rc.choose(n, key=rcs["force_key"])
+        fut = future_for(buf.pts) if LOOK > 0 and rcs["look_ok"] >= 0 else None
+        q = rc.choose(n, key=rcs["force_key"], future=fut)
         if q is None:
             rc.skipped_frame()
             rcs["skips"] += 1
             return Gst.PadProbeReturn.DROP          # the receiver repeats the last frame
         rcs["force_key"] = False
         set_qp(q)
-        rcs["pts"][buf.pts] = n
+        rcs["fifo"].append(n)
         rcs["qps"].append(q)
         return Gst.PadProbeReturn.OK
 
     def rc_out(pad, info):
-        """Each frame out of the encoder: teach the controller what it cost."""
+        """Each frame out of the encoder - in the order they went in."""
         buf = info.get_buffer()
-        n = rcs["pts"].pop(buf.pts, None)
-        if n is not None:
-            rc.done(n, buf.get_size() * 8, not buf.has_flags(Gst.BufferFlags.DELTA_UNIT))
+        if rcs["fifo"]:
+            rc.done(rcs["fifo"].popleft(), buf.get_size() * 8,
+                    not buf.has_flags(Gst.BufferFlags.DELTA_UNIT))
             rcs["peak"] = max(rcs["peak"], rc.B / rc.R)
-        if len(rcs["pts"]) > 200:                   # never let the map grow
-            rcs["pts"].clear()
         now = time.time()
         if now - rcs["last_log"] >= 10 and rcs["qps"]:
             q = rcs["qps"]
-            log(f"rc: QP mean {sum(q) / len(q):.1f} (range {min(q)}-{max(q)}), "
+            mode = f"look-ahead {LOOK:.1f} s" if LOOK > 0 and rcs["look_ok"] >= 0 else "reactive"
+            log(f"rc ({mode}): QP mean {sum(q) / len(q):.1f} (range {min(q)}-{max(q)}), "
                 f"buffer peak {rcs['peak']:.2f} of {a.slack} s, skipped {rcs['skips']}")
             rcs.update(last_log=now, skips=0, qps=[], peak=0.0)
         return Gst.PadProbeReturn.OK
 
+    prog.get_by_name("vstamp").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, score)
     enc.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, rc_in)
     enc.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, rc_out)
 

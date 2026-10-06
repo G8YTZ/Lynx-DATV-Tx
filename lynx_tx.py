@@ -947,6 +947,7 @@ def build_pipeline() -> str:
             + f"--start {start} --bps {video_bps} "
             f"--gop {enc['gop']} --audio-bitrate {enc['audio_bitrate']} --slack {slack} "
             f"--rc {'buffer' if rate_control == 'buffer' else 'cbr'} "
+            f"--look {float(enc.get('look_ahead', 0.5))} "
             f"--width {w} --height {h} "
             f"--video-device {shlex.quote(config['video_device'])} "
             f"--audio-device {shlex.quote(config['audio_device'])}"
