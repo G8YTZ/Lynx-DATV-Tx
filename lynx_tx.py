@@ -1258,9 +1258,18 @@ def build_pipeline() -> str:
         f"-mpegts_pmt_start_pid {ident['pmt_pid']} "
         f"{streamids} -max_delay {int(slack * 1e6)} -pat_period 0.200 pipe:1")
     if use_prio:
+        # --pace: how far tsprio may run ahead of real time to catch up. In
+        # DVB-S2 1.002 (its default) stops tsp regulate's catch-up bursts
+        # racing the clock. In ATSC 3.0 the DAC pulls at exactly real time,
+        # and 0.2% meant a 100 ms upstream gap took 50 s to make good: the
+        # buffers in front of the modulator sat near empty and the next gap
+        # underran the DAC (stutter, lost packets at 4K, 16 Oct 2026). 5%
+        # refills them in about 2 s; the DAC's pull and the buffers' size
+        # still stop it running more than a fraction of a second ahead.
+        pace = " --pace 1.05" if atsc3 else ""
         parts.append(
             f" | python3 {shlex.quote(str(prio))} --rate {rate} --slack {slack} "
-            f"--video-pid {ident['video_pid']} --audio-pid {ident['audio_pid']}")
+            f"--video-pid {ident['video_pid']} --audio-pid {ident['audio_pid']}{pace}")
 
     # -- pace it ---------------------------------------------------
     # Deliberately above the modulator's figure. It wants its buffer
