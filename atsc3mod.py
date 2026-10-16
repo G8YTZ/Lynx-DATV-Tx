@@ -68,11 +68,31 @@ DEFAULTS = {
     "oversample": 2,
 }
 OVERSAMPLE = (1, 2)
-# The interpolation filter's passband as a fraction of the input rate. GNU
-# Radio's default (0.4) would roll off from 2.76 MHz - inside the 2.9 MHz
-# band edge. 0.45 is flat to 3.11 MHz, stopband from 3.46 MHz (Kaiser,
-# beta 7, about 70 dB), so the whole channel passes and the image does not.
-INTERP_FBW = 0.45
+# The interpolation filter, designed for exactly this job: flat to 2.95 MHz
+# (the band edge is 2.9), at least 65 dB down from 3.95 MHz (the image
+# starts at 4.0), Kaiser windowed sinc - 57 taps. The first version used GNU
+# Radio's own design at fractional bandwidth 0.45, which spends a far
+# narrower transition than the 1.1 MHz the image leaves free: about 170
+# taps, and with a 4K encode alongside the modulator could not keep the DAC
+# fed (225% CPU, SNQ down to 11, sound and picture breaking up).
+INTERP_PASS = 2.95e6
+INTERP_STOP = 3.95e6
+INTERP_ATTEN = 65.0
+
+
+def interp_taps(factor: int) -> list:
+    """Kaiser-windowed low-pass for the 'factor' times output rate, gain
+    'factor' so the level is unchanged after zero-stuffing."""
+    import numpy as np
+    fs = SAMPLE_RATE * factor
+    fc = (INTERP_PASS + INTERP_STOP) / 2
+    dw = 2 * np.pi * (INTERP_STOP - INTERP_PASS) / fs
+    n = int(np.ceil((INTERP_ATTEN - 8) / (2.285 * dw))) + 1 | 1
+    beta = 0.1102 * (INTERP_ATTEN - 8.7)
+    k = np.arange(n) - (n - 1) / 2
+    h = 2 * fc / fs * np.sinc(2 * fc / fs * k) * np.kaiser(n, beta)
+    h = h * factor / h.sum()
+    return [float(f"{x:.9g}") for x in h]
 
 TS_FIFO = "/tmp/lynx-atsc3-ts"
 IQ_FIFO = "/tmp/lynx-atsc3-iq"
@@ -125,7 +145,7 @@ def build_flowgraph(cfg: dict, app_dir: Path) -> Path:
     tpl = template.read_text()
     key = hashlib.sha1(
         (tpl + c["constellation"] + c["rate"] + str(c["oversample"]) +
-         str(INTERP_FBW) + TS_FIFO + IQ_FIFO).encode()).hexdigest()
+         f"{INTERP_PASS}{INTERP_STOP}{INTERP_ATTEN}" + TS_FIFO + IQ_FIFO).encode()).hexdigest()
     if out_py.exists() and stamp.exists() and stamp.read_text() == key:
         return out_py
 
@@ -149,7 +169,7 @@ def build_flowgraph(cfg: dict, app_dir: Path) -> Path:
         g["blocks"].append({
             "name": "interp_0", "id": "rational_resampler_xxx",
             "parameters": {"type": "ccf", "interp": str(c["oversample"]), "decim": "1",
-                           "taps": "[]", "fbw": str(INTERP_FBW)},
+                           "taps": repr(interp_taps(c["oversample"])), "fbw": "0"},
             "states": {"coordinate": [0, 0], "rotation": 0, "state": "enabled"}})
         conns = []
         for cn in g["connections"]:
