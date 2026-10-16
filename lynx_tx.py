@@ -1796,8 +1796,8 @@ PAGE = """<!DOCTYPE html>
             <button class="btn btn-outline-light" id="mode-atsc3" onclick="setMode('atsc3')">ATSC 3.0</button>
           </div>
           <div class="d-grid gap-2 mb-3">
-            <button class="btn btn-success big-btn" onclick="startTx()">TX On</button>
-            <button class="btn btn-danger big-btn" onclick="stopTx()">TX Off</button>
+            <button class="btn btn-secondary big-btn" id="btn-txon" onclick="startTx()">TX On</button>
+            <button class="btn btn-secondary big-btn" id="btn-txoff" onclick="stopTx()">TX Off</button>
           </div>
           <table class="table table-sm table-borderless mb-0">
             <tr><td class="text-muted">Transport stream</td>
@@ -2553,6 +2553,9 @@ async function poll() {
   } catch (e) { return; }
 
   setText('tx-badge', cfg.transmitting ? 'ON AIR' : 'IDLE');
+  // Whichever state the transmitter is in is lit: green on air, red off.
+  setClass('btn-txon', 'btn big-btn ' + (cfg.transmitting ? 'btn-success' : 'btn-secondary'));
+  setClass('btn-txoff', 'btn big-btn ' + (cfg.transmitting ? 'btn-secondary' : 'btn-danger'));
   setStyle('tx-badge', 'background', cfg.transmitting ? '#16a34a' : '#3a4a63');
   setText('call-badge', cfg.config.callsign);
 
