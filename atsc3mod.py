@@ -206,14 +206,38 @@ def mute_command(uri: str) -> list:
             "voltage0", "hardwaregain", f"{MUTE_GAIN:g}"]
 
 
+def big_cores(root: str = "/sys/devices/system/cpu") -> str:
+    """The fastest cores, as a taskset list ("4-7" on the RK3588's A76s), or
+    "" when they cannot be told apart. From the kernel's own cpu_capacity,
+    not assumed numbers, so another board is handled correctly."""
+    caps = {}
+    for d in Path(root).glob("cpu[0-9]*"):
+        try:
+            caps[int(d.name[3:])] = int((d / "cpu_capacity").read_text())
+        except (OSError, ValueError):
+            pass
+    if not caps or len(set(caps.values())) < 2:
+        return ""
+    top = max(caps.values())
+    return ",".join(str(c) for c in sorted(caps) if caps[c] == top)
+
+
 def modulator_shell(uri: str, flowgraph: Path) -> str:
     """The modulator half of the shell pipeline: FIFOs, IQ writer, flowgraph.
 
     Both run in the background inside the transmitter's process group, so
     stopping the transmitter stops them too. Each opens its FIFO and waits
     for the other end, so start order does not matter.
+
+    Both are pinned to the big cores. With a 4K programme the ROCK is ~80%
+    busy, and a modulator thread landing on an A55 missed its deadline: the
+    DAC underran, SNQ dipped and the receiver lost packets (16 Oct 2026).
+    The IQ buffers are 2M samples (~150 ms each at 13.8 MS/s) for the same
+    reason: a brief stall is absorbed instead of going out on air.
     """
+    cores = big_cores()
+    pin = f"taskset -c {cores} " if cores else ""
     return (f"rm -f {TS_FIFO} {IQ_FIFO}; mkfifo {TS_FIFO} {IQ_FIFO}; "
-            f"iio_writedev -u {uri} -b 1048576 cf-ad9361-dds-core-lpc voltage0 voltage1 "
+            f"{pin}iio_writedev -u {uri} -b 2097152 cf-ad9361-dds-core-lpc voltage0 voltage1 "
             f"< {IQ_FIFO} & "
-            f"python3 {flowgraph} > {MOD_LOG} 2>&1 & ")
+            f"{pin}python3 {flowgraph} > {MOD_LOG} 2>&1 & ")
