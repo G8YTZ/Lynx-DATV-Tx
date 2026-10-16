@@ -20,7 +20,7 @@ The modulator pulls the stream at exactly the PLP rate, paced by the LibreSDR's 
 - **Constellation:** QPSK, 16QAM, 64QAM or 256QAM.
 - **Code rate:** 2/15 to 13/15.
 - **Frequency and power:** Kept separately from DVB-S2's. Both are changed live on air, with no break.
-- **Output filter:** Off (DAC at 6.912 MS/s, as proven) or 2x oversample (13.824 MS/s). The DAC's first image sits at the sample rate less the band edge, ±4.0 MHz from the carrier, which is exactly where the IC-9700 showed it. At 2x it moves to about ±10.9 MHz, where the AD9361's analogue filter removes it.
+- **Output filter:** 2x oversample (DAC at 13.824 MS/s, the default) or Off (6.912 MS/s). The DAC's first image sits at the sample rate less the band edge, ±4.0 MHz from the carrier, which is exactly where the IC-9700 showed it. At 2x it moves to about ±10.9 MHz, where the AD9361's analogue filter removes it. Proven on air on 16 October: nothing to be seen out to ±25 MHz, and the HDHomeRun still locked.
 - **Frame structure:** Fixed for now at the one proven on air: 6 MHz, 8K FFT, GI5_1024, SP3_4, 72 data and 2 preamble symbols.
 
 Rates come from Ron's `atsc3rate` (dtv-utils) for that structure: QPSK 13/15 is 7,720,144 b/s.

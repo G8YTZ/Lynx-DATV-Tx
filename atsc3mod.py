@@ -58,13 +58,14 @@ DEFAULTS = {
     "constellation": "QPSK",
     "rate": "13/15",
     "power_db": 0.0,
-    # 1: the DAC at 6.912 MS/s, as proven on air. 2: interpolated 2x on the
-    # ROCK through a sharp filter, the DAC at 13.824 MS/s. The DAC's first
-    # image sits at the sample rate less the band edge: 6.912 - 2.9 = 4.0
-    # MHz either side of the carrier, which is exactly where the "spurs"
-    # were measured on the IC-9700 (16 Oct 2026). At 2x it moves to about
-    # 10.9 MHz, where the AD9361's analogue filter removes it.
-    "oversample": 1,
+    # 2: interpolated 2x on the ROCK through a sharp filter, the DAC at
+    # 13.824 MS/s. 1: the DAC at the channel's own 6.912 MS/s. The DAC's
+    # first image sits at the sample rate less the band edge: 6.912 - 2.9 =
+    # 4.0 MHz either side of the carrier, exactly where the "spurs" were
+    # measured on the IC-9700 (16 Oct 2026). At 2x it moves to about 10.9
+    # MHz, where the AD9361's analogue filter removes it: on air, nothing
+    # to be seen out to +/-25 MHz, and the HDHomeRun still locked.
+    "oversample": 2,
 }
 OVERSAMPLE = (1, 2)
 # The interpolation filter's passband as a fraction of the input rate. GNU
@@ -92,9 +93,9 @@ def clean(cfg: dict) -> dict:
     try:
         out["oversample"] = int(out["oversample"])
     except (TypeError, ValueError):
-        out["oversample"] = 1
+        out["oversample"] = DEFAULTS["oversample"]
     if out["oversample"] not in OVERSAMPLE:
-        out["oversample"] = 1
+        out["oversample"] = DEFAULTS["oversample"]
     return out
 
 

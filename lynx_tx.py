@@ -1860,8 +1860,8 @@ PAGE = """<!DOCTYPE html>
             <label class="small text-muted">Output filter</label>
             <select class="form-select form-select-sm bg-dark text-light border-secondary mb-1"
                     id="a-os" onchange="saveMod()">
-              <option value="1">Off &mdash; DAC at 6.912 MS/s (as proven)</option>
-              <option value="2">2&times; oversample &mdash; DAC at 13.824 MS/s</option>
+              <option value="2">2&times; oversample &mdash; DAC at 13.824 MS/s (recommended)</option>
+              <option value="1">Off &mdash; DAC at 6.912 MS/s</option>
             </select>
             <div class="text-muted small mb-2">
               The DAC's first image sits at the sample rate less the band edge,
@@ -2377,7 +2377,7 @@ function fillMod(c, mode) {
   document.getElementById('m-pilots').checked = m.pilots;
   document.getElementById('a-const').value = a.constellation;
   document.getElementById('a-rate').value = a.rate;
-  document.getElementById('a-os').value = String(a.oversample || 1);
+  document.getElementById('a-os').value = String(a.oversample || 2);
 }
 
 let shownMode = null;
