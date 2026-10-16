@@ -218,8 +218,10 @@ def big_cores(root: str = "/sys/devices/system/cpu") -> str:
             pass
     if not caps or len(set(caps.values())) < 2:
         return ""
+    # Within 80% of the fastest: the RK3588 reports its A76 pairs as 1003
+    # and 1024 (and the A55s as 405), so "equal to the top" found only two.
     top = max(caps.values())
-    return ",".join(str(c) for c in sorted(caps) if caps[c] == top)
+    return ",".join(str(c) for c in sorted(caps) if caps[c] >= 0.8 * top)
 
 
 def modulator_shell(uri: str, flowgraph: Path) -> str:
