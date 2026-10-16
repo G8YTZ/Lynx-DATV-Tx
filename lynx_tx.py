@@ -87,6 +87,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
 
+import atsc3mod
+
 # ── Paths and configuration ───────────────────────────────────
 
 APP_DIR = Path(__file__).resolve().parent
@@ -153,6 +155,11 @@ DEFAULT_CONFIG = {
         "sound_priority": True,
     },
     "source": {"kind": "camera", "file": ""},
+    # Transmission system: "dvbs2" (DL1JM's modulator on the LibreSDR) or
+    # "atsc3" (gr-atsc3 on the ROCK, the LibreSDR as an IQ transmitter).
+    # Everything up to the remux is shared; see atsc3mod.py.
+    "mode": "dvbs2",
+    "atsc3": dict(atsc3mod.DEFAULTS),
     # DVB service information. Network > multiplex > provider > service.
     # The triplet original_network_id / ts_id / service_id is what a TV
     # stores; the names are only what it displays.
@@ -592,6 +599,70 @@ def libre_patch_watch():
         time.sleep(600)
 
 
+# ── ATSC 3.0 mode: the LibreSDR as a plain IQ transmitter ─────
+#
+# In ATSC 3.0 the modulation is done on the ROCK (atsc3mod.py), so DL1JM's
+# modulator must let go of the transmitter: its scripts and pluto_dvb are
+# stopped for the duration. Nothing on the board is changed, so a reboot
+# brings DVB-S2 back exactly as it was - done automatically on switching
+# back to DVB-S2.
+
+def is_atsc3() -> bool:
+    return config.get("mode") == "atsc3"
+
+
+def libre_uri() -> str:
+    return f"ip:{libre_host()}"
+
+
+def atsc3_release_libre():
+    """Stop DL1JM's modulator (and the scripts that would restart it)."""
+    libre_ssh("killall rtmppluto.sh udpts.sh pluto_dvb 2>/dev/null; sleep 1; "
+              "killall -9 pluto_dvb 2>/dev/null; true", timeout=10)
+
+
+def _iio(cmd: list) -> str:
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout or "iio_attr failed").strip())
+    return r.stdout.strip()
+
+
+def atsc3_set_radio():
+    """Frequency, sample rate, filter and power, straight to the AD9361."""
+    if not shutil.which("iio_attr"):
+        raise HTTPException(500, "iio_attr is not installed on the ROCK: "
+                                 "sudo apt install libiio-utils")
+    try:
+        for cmd in atsc3mod.iio_commands(libre_uri(), config["atsc3"]):
+            _iio(cmd)
+    except Exception as e:
+        raise HTTPException(500, f"LibreSDR would not take the ATSC 3.0 settings: {e}")
+
+
+def atsc3_mute():
+    """Most attenuation the AD9361 has. Best effort: never stops a TX Off."""
+    try:
+        _iio(atsc3mod.mute_command(libre_uri()))
+    except Exception as e:
+        print(f"[atsc3] mute: {e}")
+
+
+def libre_restore_dvbs2():
+    """After ATSC 3.0, reboot the board if its modulator is not running,
+    which starts DL1JM's scripts again. About a minute."""
+    out = libre_ssh("pgrep -c pluto_dvb 2>/dev/null || echo 0")
+    try:
+        running = int((out or "0").strip().split()[-1]) > 0
+    except ValueError:
+        running = False
+    if running or not out:
+        return
+    libre_ssh_full("nohup sh -c 'sleep 1; reboot' >/dev/null 2>&1 &", timeout=8)
+    _libre_cache["v"] = None
+    _set_libre("rebooting", "Back to DVB-S2 - LibreSDR restarting (about a minute)")
+
+
 # ── The network information table ─────────────────────────────
 
 NIT_DIR = APP_DIR / "run"
@@ -900,8 +971,13 @@ def build_pipeline() -> str:
     # The modulator's own figure when we can get it, ours when we
     # cannot. Never the web page's "TS Rate Available" - that has been
     # seen to differ from what the modulator asks for.
-    rate = read_libre_bitrate() or ts_bitrate(
-        m["symbol_rate_ks"], m["constellation"], m["fec"], m["pilots"])
+    # In ATSC 3.0 the modulator is ours, and its rate is exact (atsc3mod).
+    atsc3 = is_atsc3()
+    if atsc3:
+        rate = atsc3mod.ts_rate(config["atsc3"])
+    else:
+        rate = read_libre_bitrate() or ts_bitrate(
+            m["symbol_rate_ks"], m["constellation"], m["fec"], m["pilots"])
 
     # What is left after audio and the overhead the stream genuinely
     # needs - not a fraction anybody chooses.
@@ -1160,7 +1236,11 @@ def build_pipeline() -> str:
     # arrived late; through tsprio, none. encoder.sound_priority: false
     # returns to ffmpeg's own constant-rate muxing.
     prio = APP_DIR / "tsprio.py"
-    use_prio = bool(enc.get("sound_priority", True)) and prio.exists()
+    # Always in ATSC 3.0: tsprio builds the constant-rate stream at the
+    # modulator's pull. ffmpeg's own -muxrate pads by the stream's clock
+    # instead, and against the modulator's FIFO that backed up into the
+    # camera capture: 13 frames in 10 s, 96% stuffing (16 Oct 2026).
+    use_prio = (atsc3 or bool(enc.get("sound_priority", True))) and prio.exists()
     # With priority, ffmpeg also passes each piece of sound on at once
     # (-pes_payload_size 0: every 21 ms) instead of gathering ~107 ms
     # blocks: sound that sets off 0.1 s behind arrives late whenever a
@@ -1202,8 +1282,15 @@ def build_pipeline() -> str:
     # The NIT rides in place of stuffing packets, so the rate does not
     # move: about two a second, well inside DVB's 10 s maximum. The PAT
     # gains its pointer to PID 0x10 here too - ffmpeg's has none.
+    #
+    # Not in ATSC 3.0: the NIT is a DVB table (its delivery descriptor is
+    # DVB-S2's), and an ATSC 3.0 receiver has no use for it.
     nit_stage = ""
-    nit = build_nit()
+    nit = None
+    if atsc3:
+        nit_status.update(ok=False, detail="Not sent in ATSC 3.0 mode (a DVB table)")
+    else:
+        nit = build_nit()
     if nit:
         every = max(10, int(rate / 1504 * 0.5))
         nit_stage = (f"-P pat --nit 0x10 "
@@ -1214,6 +1301,15 @@ def build_pipeline() -> str:
     monitor = APP_DIR / "tsbuffer.py"
     tap_cmd = f"python3 {monitor} {ident['video_pid']}"
     tap = f"-P fork {shlex.quote(tap_cmd)} " if monitor.exists() else ""
+    if atsc3:
+        # No regulate: the modulator's pull is the pace (see atsc3mod.py),
+        # and tsprio above has already made the stream constant-rate.
+        flowgraph = atsc3mod.build_flowgraph(config["atsc3"], APP_DIR)
+        parts.append(
+            f" | tsp --buffer-size-mb 0.05 -I file - "
+            f"{tap}-O file {atsc3mod.TS_FIFO}")
+        return atsc3mod.modulator_shell(libre_uri(), flowgraph) + "".join(parts)
+
     parts.append(
         f" | tsp --realtime --buffer-size-mb 0.05 -I file - "
         f"{nit_stage}{tap}-P regulate --bitrate {paced} "
@@ -1234,12 +1330,24 @@ def start_tx() -> dict:
         # frozen in GStreamer and video is read by ffmpeg inside the
         # pipeline (see build_pipeline). Stop any left from before.
         stop_feeder()
-        write_libre_settings()
-        # The board's watcher restarts the modulator on the settings
-        # change; give it a moment to be listening before the stream
-        # arrives, or the first seconds go nowhere.
-        time.sleep(2)
-        cmd = build_pipeline()
+        if is_atsc3():
+            # DL1JM's modulator lets go, then the AD9361 is set up
+            # directly. Both are quick and idempotent, so every key-up does
+            # them: a board rebooted behind our back is simply taken over.
+            atsc3_release_libre()
+            atsc3_set_radio()
+            try:
+                cmd = build_pipeline()
+            except RuntimeError as e:
+                atsc3_mute()
+                raise HTTPException(500, f"ATSC 3.0 modulator: {e}")
+        else:
+            write_libre_settings()
+            # The board's watcher restarts the modulator on the settings
+            # change; give it a moment to be listening before the stream
+            # arrives, or the first seconds go nowhere.
+            time.sleep(2)
+            cmd = build_pipeline()
         tx_last_command = cmd
         tx_proc = subprocess.Popen(
             cmd, shell=True, preexec_fn=os.setsid,
@@ -1268,12 +1376,20 @@ def stop_tx_locked():
     # nothing is writing - which is exactly the failure this whole
     # arrangement kept producing. Match the remux stage specifically.
     for pattern in ("gst-launch-1.0", "ffmpeg.*-f mpegts",
-                    "tsp --realtime", "switcher.py", "tsprio.py", "tsbuffer.py"):
+                    "tsp --realtime", "switcher.py", "tsprio.py", "tsbuffer.py",
+                    f"file {atsc3mod.TS_FIFO}", "iio_writedev",
+                    f"{atsc3mod.FLOWGRAPH_ID}.py"):
         subprocess.run(["pkill", "-f", pattern], capture_output=True)
 
 
 def stop_tx() -> dict:
     with tx_lock:
+        if is_atsc3():
+            # Attenuate first, while the IQ stream is still flowing, so the
+            # DAC is never left at full output once it stops.
+            atsc3_mute()
+            stop_tx_locked()
+            return {"success": True}
         stop_tx_locked()
         # Mute rather than leave a bare carrier: PTT follows the power
         # setting on this firmware, and below -40 dB it drops out.
@@ -1328,9 +1444,15 @@ class SourceUpdate(BaseModel):
 @app.get("/api/status")
 def api_status():
     m = config["modulation"]
-    theoretical = ts_bitrate(m["symbol_rate_ks"], m["constellation"],
-                             m["fec"], m["pilots"])
+    if is_atsc3():
+        theoretical = atsc3mod.ts_rate(config["atsc3"])
+    else:
+        theoretical = ts_bitrate(m["symbol_rate_ks"], m["constellation"],
+                                 m["fec"], m["pilots"])
     return {
+        "mode": "atsc3" if is_atsc3() else "dvbs2",
+        "atsc3_choices": {"constellations": atsc3mod.CONSTELLATIONS,
+                          "rates": atsc3mod.CODE_RATES, "ts_rates": atsc3mod.TS_RATES},
         "transmitting": tx_running(),
         "uptime": int(time.time() - tx_started_at) if tx_running() else 0,
         "config": config,
@@ -1357,6 +1479,83 @@ def api_start():
 @app.post("/api/stop")
 def api_stop():
     return stop_tx()
+
+
+class ModeUpdate(BaseModel):
+    mode: str
+
+
+@app.post("/api/mode")
+def api_mode(req: ModeUpdate):
+    """DVB-S2 or ATSC 3.0. Changing it takes the transmitter off air: the
+    two use the LibreSDR quite differently, and going back to DVB-S2 means
+    restarting the board's own modulator."""
+    if req.mode not in ("dvbs2", "atsc3"):
+        raise HTTPException(400, "mode must be dvbs2 or atsc3")
+    if req.mode == config.get("mode", "dvbs2"):
+        return {"success": True, "mode": req.mode}
+    if tx_running():
+        stop_tx()
+    config["mode"] = req.mode
+    save_config(config)
+    if req.mode == "dvbs2":
+        threading.Thread(target=libre_restore_dvbs2, daemon=True).start()
+    return {"success": True, "mode": req.mode}
+
+
+class Atsc3Update(BaseModel):
+    frequency_mhz: Optional[float] = None
+    constellation: Optional[str] = None
+    rate: Optional[str] = None
+    power_db: Optional[float] = None
+    oversample: Optional[int] = None
+
+
+@app.post("/api/atsc3")
+def api_atsc3(req: Atsc3Update):
+    """The ATSC 3.0 Modulation card. Frequency and power go straight to the
+    AD9361 on air, with no break; constellation and code rate change the
+    modulator and the stream's rate, so they restart the transmitter."""
+    old = atsc3mod.clean(config.get("atsc3"))
+    new = dict(old)
+    for k, v in req.model_dump().items():
+        if v is not None:
+            new[k] = v
+    new = atsc3mod.clean(new)
+    if new["constellation"] != req.constellation and req.constellation is not None:
+        raise HTTPException(400, f"unknown constellation {req.constellation}")
+    if new["rate"] != req.rate and req.rate is not None:
+        raise HTTPException(400, f"unknown code rate {req.rate}")
+    config["atsc3"] = new
+    save_config(config)
+    if tx_running() and is_atsc3():
+        if ((new["constellation"], new["rate"], new["oversample"]) !=
+                (old["constellation"], old["rate"], old["oversample"])):
+            start_tx()
+        elif (new["frequency_mhz"], new["power_db"]) != (old["frequency_mhz"], old["power_db"]):
+            atsc3_set_radio()
+    return {"success": True, "atsc3": new, "ts_rate": atsc3mod.ts_rate(new)}
+
+
+@app.post("/api/system/{action}")
+def api_system(action: str):
+    """Restart or shut down the ROCK itself, off air first.
+
+    Needs one sudoers rule for the account the service runs as, allowing
+    exactly these two commands and nothing else:
+        radxa ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff
+    """
+    verb = {"restart": "reboot", "shutdown": "poweroff"}.get(action)
+    if not verb:
+        raise HTTPException(400, "action must be restart or shutdown")
+    if tx_running():
+        stop_tx()
+    r = subprocess.run(["sudo", "-n", "/usr/bin/systemctl", verb],
+                       capture_output=True, text=True, timeout=15)
+    if r.returncode != 0:
+        raise HTTPException(500, "The ROCK refused: " + (r.stderr.strip() or "no permission") +
+                            ". Add the sudoers rule in /etc/sudoers.d/lynx-tx (see README).")
+    return {"success": True, "action": action}
 
 
 class IdentUpdate(BaseModel):
@@ -1591,9 +1790,14 @@ PAGE = """<!DOCTYPE html>
       <div class="card mb-3">
         <div class="card-header">&#x25B6;&#xFE0F; Transmit</div>
         <div class="card-body">
+          <div class="small text-muted mb-1">Mode</div>
+          <div class="btn-group w-100 mb-3" role="group">
+            <button class="btn btn-outline-light" id="mode-dvbs2" onclick="setMode('dvbs2')">DVB-S2</button>
+            <button class="btn btn-outline-light" id="mode-atsc3" onclick="setMode('atsc3')">ATSC 3.0</button>
+          </div>
           <div class="d-grid gap-2 mb-3">
-            <button class="btn btn-success big-btn" onclick="startTx()">Start</button>
-            <button class="btn btn-danger big-btn" onclick="stopTx()">Stop</button>
+            <button class="btn btn-success big-btn" onclick="startTx()">TX On</button>
+            <button class="btn btn-danger big-btn" onclick="stopTx()">TX Off</button>
           </div>
           <table class="table table-sm table-borderless mb-0">
             <tr><td class="text-muted">Transport stream</td>
@@ -1618,6 +1822,10 @@ PAGE = """<!DOCTYPE html>
           <div class="small mt-2" id="libre-patch">LibreSDR script: checking&hellip;</div>
           <button class="btn btn-sm btn-outline-light mt-2" onclick="checkLibre()">Check LibreSDR</button>
           <a href="/monitor" class="btn btn-sm btn-outline-light mt-2 ms-1">&#x1F4C8; TX monitor</a>
+          <div class="d-flex gap-2 mt-3 pt-2" style="border-top:1px solid #0f3460">
+            <button class="btn btn-sm btn-outline-warning flex-fill" onclick="system('restart')">&#x1F504; Restart ROCK</button>
+            <button class="btn btn-sm btn-outline-danger flex-fill" onclick="system('shutdown')">&#x23FB; Shut down ROCK</button>
+          </div>
         </div>
       </div>
 
@@ -1627,6 +1835,46 @@ PAGE = """<!DOCTYPE html>
           <label class="small text-muted">Frequency (MHz)</label>
           <input type="number" step="0.001" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
                  id="m-freq" onchange="saveMod()">
+          <div id="mod-atsc3" style="display:none">
+            <div class="row g-2 mb-2">
+              <div class="col-6">
+                <label class="small text-muted">Constellation</label>
+                <select class="form-select form-select-sm bg-dark text-light border-secondary"
+                        id="a-const" onchange="saveMod()">
+                  <option>QPSK</option><option>16QAM</option>
+                  <option>64QAM</option><option>256QAM</option>
+                </select>
+              </div>
+              <div class="col-6">
+                <label class="small text-muted">Code rate</label>
+                <select class="form-select form-select-sm bg-dark text-light border-secondary"
+                        id="a-rate" onchange="saveMod()">
+                  <option>2/15</option><option>3/15</option><option>4/15</option>
+                  <option>5/15</option><option>6/15</option><option>7/15</option>
+                  <option>8/15</option><option>9/15</option><option>10/15</option>
+                  <option>11/15</option><option>12/15</option><option>13/15</option>
+                </select>
+              </div>
+            </div>
+            <div class="small mb-2">TS rate: <span class="status-value" id="a-tsrate">&mdash;</span></div>
+            <label class="small text-muted">Output filter</label>
+            <select class="form-select form-select-sm bg-dark text-light border-secondary mb-1"
+                    id="a-os" onchange="saveMod()">
+              <option value="1">Off &mdash; DAC at 6.912 MS/s (as proven)</option>
+              <option value="2">2&times; oversample &mdash; DAC at 13.824 MS/s</option>
+            </select>
+            <div class="text-muted small mb-2">
+              The DAC's first image sits at the sample rate less the band edge,
+              &plusmn;4.0 MHz from the carrier. Oversampling moves it out to
+              about &plusmn;10.9 MHz, where the LibreSDR's own filter removes it.
+            </div>
+            <div class="text-muted small mb-2">
+              6 MHz channel, 8K FFT, guard interval 1024, pilots SP3_4: the structure
+              proven on air. Ron Economos W6RZ's gr-atsc3 on the ROCK; the LibreSDR
+              transmits the IQ.
+            </div>
+          </div>
+          <div id="mod-dvbs2">
           <label class="small text-muted">Symbol rate (kS/s)</label>
           <input type="number" class="form-control form-control-sm bg-dark text-light border-secondary mb-1"
                  id="m-sr" onchange="saveMod()">
@@ -1659,13 +1907,14 @@ PAGE = """<!DOCTYPE html>
                    onchange="saveMod()">
             <label class="form-check-label small" for="m-pilots">Pilots</label>
           </div>
+          </div>
           <label class="small text-muted">Power (dB)</label>
           <input type="range" class="form-range" id="m-power" min="-40" max="0"
                  step="0.5" oninput="document.getElementById('m-power-v').textContent=this.value+' dB'"
                  onchange="saveMod()">
           <div class="text-end status-value" id="m-power-v">—</div>
-          <div class="text-muted small">
-            Below &minus;40 dB this firmware drops PTT, which is how Stop
+          <div class="text-muted small" id="m-power-note">
+            Below &minus;40 dB this firmware drops PTT, which is how TX Off
             leaves the carrier off.
           </div>
         </div>
@@ -2090,15 +2339,64 @@ async function checkLibre() {
 }
 
 async function saveMod() {
-  await api('POST', '/api/modulation', {
-    frequency_mhz: parseFloat(document.getElementById('m-freq').value),
-    symbol_rate_ks: parseInt(document.getElementById('m-sr').value, 10),
-    constellation: document.getElementById('m-const').value,
-    fec: document.getElementById('m-fec').value,
-    pilots: document.getElementById('m-pilots').checked,
-    power_db: parseFloat(document.getElementById('m-power').value)
-  });
+  const freq = parseFloat(document.getElementById('m-freq').value);
+  const power = parseFloat(document.getElementById('m-power').value);
+  if (cfg && cfg.mode === 'atsc3') {
+    await api('POST', '/api/atsc3', {
+      frequency_mhz: freq, power_db: power,
+      constellation: document.getElementById('a-const').value,
+      rate: document.getElementById('a-rate').value,
+      oversample: parseInt(document.getElementById('a-os').value, 10),
+    });
+  } else {
+    await api('POST', '/api/modulation', {
+      frequency_mhz: freq,
+      symbol_rate_ks: parseInt(document.getElementById('m-sr').value, 10),
+      constellation: document.getElementById('m-const').value,
+      fec: document.getElementById('m-fec').value,
+      pilots: document.getElementById('m-pilots').checked,
+      power_db: power
+    });
+  }
   poll();
+}
+
+// The Modulation card's values for the current mode. Each mode keeps its
+// own frequency and power: DVB-S2 at 1304 MHz and ATSC 3.0 on 70cm into
+// the HDHomeRun are both normal.
+function fillMod(c, mode) {
+  const m = c.modulation, a = c.atsc3 || {};
+  const at = mode === 'atsc3';
+  document.getElementById('m-freq').value = at ? a.frequency_mhz : m.frequency_mhz;
+  const p = at ? a.power_db : m.power_db;
+  document.getElementById('m-power').value = p;
+  document.getElementById('m-power-v').textContent = p + ' dB';
+  document.getElementById('m-sr').value = m.symbol_rate_ks;
+  document.getElementById('m-const').value = m.constellation;
+  document.getElementById('m-fec').value = m.fec;
+  document.getElementById('m-pilots').checked = m.pilots;
+  document.getElementById('a-const').value = a.constellation;
+  document.getElementById('a-rate').value = a.rate;
+  document.getElementById('a-os').value = String(a.oversample || 1);
+}
+
+let shownMode = null;
+async function setMode(mode) {
+  if (cfg && mode === cfg.mode) return;
+  if (cfg && cfg.transmitting &&
+      !confirm('Changing mode takes the transmitter off air. Carry on?')) return;
+  await api('POST', '/api/mode', {mode});
+  poll();
+}
+
+async function system(action) {
+  const what = action === 'restart' ? 'Restart the ROCK' : 'Shut down the ROCK';
+  const more = action === 'shutdown'
+    ? '\n\nIt will stay off until it is powered again: at a remote site that means a visit, or the mains relay.'
+    : '\n\nThe page comes back in about a minute.';
+  if (!confirm(what + '? The transmitter goes off air first.' + more)) return;
+  const j = await api('POST', '/api/system/' + action);
+  if (j.success) setText('tx-badge', action === 'restart' ? 'RESTARTING' : 'SHUTTING DOWN');
 }
 
 async function saveEnc() {
@@ -2259,16 +2557,33 @@ async function poll() {
   setText('call-badge', cfg.config.callsign);
 
   const L = cfg.libre || {};
-  setText('libre-badge', L.reachable
-    ? (L.modulator_running ? 'LibreSDR ready' : 'LibreSDR idle')
-    : 'LibreSDR unreachable');
-  setStyle('libre-badge', 'background', L.reachable ? (L.modulator_running ? '#16a34a' : '#3a4a63')
-                                                    : '#b91c1c');
+  const AT = cfg.mode === 'atsc3';
+  // Mode: the switch, which Modulation controls show, and their values.
+  for (const md of ['dvbs2', 'atsc3'])
+    setClass('mode-' + md, 'btn ' + (md === cfg.mode ? 'btn-primary' : 'btn-outline-light'));
+  setStyle('mod-atsc3', 'display', AT ? '' : 'none');
+  setStyle('mod-dvbs2', 'display', AT ? 'none' : '');
+  if (shownMode !== cfg.mode) {
+    if (!firstLoad) fillMod(cfg.config, cfg.mode);
+    shownMode = cfg.mode;
+  }
+  setText('m-power-note', AT
+    ? 'Transmit attenuation in the LibreSDR: 0 dB is full output. TX Off sets the most attenuation it has (−89.75 dB).'
+    : 'Below −40 dB this firmware drops PTT, which is how TX Off leaves the carrier off.');
+  if (AT) setText('a-tsrate', (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s');
 
-  setText('s-ts', (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s');
-  setText('s-want', L.ts_bitrate ? (L.ts_bitrate/1e6).toFixed(3) + ' Mb/s' : '—');
-  setText('s-under', (L.underflows === null || L.underflows === undefined) ? '—' : L.underflows);
-  setStyle('s-under', 'color', L.underflows ? '#f87171' : '#4ade80');
+  // In ATSC 3.0 DL1JM's modulator is stopped on purpose: the board is an
+  // IQ transmitter, and "idle" would read as a fault.
+  setText('libre-badge', !L.reachable ? 'LibreSDR unreachable'
+    : AT ? 'LibreSDR IQ' : (L.modulator_running ? 'LibreSDR ready' : 'LibreSDR idle'));
+  setStyle('libre-badge', 'background', !L.reachable ? '#b91c1c'
+    : (AT || L.modulator_running) ? '#16a34a' : '#3a4a63');
+
+  setText('s-ts', (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s' + (AT ? ' (ATSC 3.0)' : ''));
+  setText('s-want', AT ? (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s'
+    : (L.ts_bitrate ? (L.ts_bitrate/1e6).toFixed(3) + ' Mb/s' : '—'));
+  setText('s-under', AT ? '—' : (L.underflows === null || L.underflows === undefined) ? '—' : L.underflows);
+  setStyle('s-under', 'color', (!AT && L.underflows) ? '#f87171' : '#4ade80');
   setText('s-up', cfg.transmitting ? cfg.uptime + ' s' : '—');
 
   const h = cfg.hdmi || {};
@@ -2318,8 +2633,10 @@ async function poll() {
   setStyle('libre-patch', 'color', {ok: '#4ade80', rebooting: '#e8a33d', pending: '#e8a33d',
                                     unknown: '#9fb3d1'}[LP.state] || '#f87171');
   const N = cfg.nit || {};
-  setText('i-nit-status', 'Last build: ' + (N.detail || '—'));
-  setStyle('i-nit-status', 'color', N.ok ? '#4ade80' : '#9fb3d1');
+  setText('i-nit-status', AT
+    ? 'Not sent in ATSC 3.0 mode: the NIT, network ID and LCN are DVB tables an ATSC 3.0 receiver ignores. Names, IDs and PIDs still apply.'
+    : 'Last build: ' + (N.detail || '—'));
+  setStyle('i-nit-status', 'color', (!AT && N.ok) ? '#4ade80' : '#9fb3d1');
 
   const srw = document.getElementById('sr-warning'), hide = cfg.config.modulation.symbol_rate_ks <= 2000;
   if (srw.hidden !== hide) srw.hidden = hide;
@@ -2327,13 +2644,7 @@ async function poll() {
   if (firstLoad) {
     const m = cfg.config.modulation, e = cfg.config.encoder;
     fillIdent(cfg.config.identity, cfg.config);
-    document.getElementById('m-freq').value = m.frequency_mhz;
-    document.getElementById('m-sr').value = m.symbol_rate_ks;
-    document.getElementById('m-const').value = m.constellation;
-    document.getElementById('m-fec').value = m.fec;
-    document.getElementById('m-pilots').checked = m.pilots;
-    document.getElementById('m-power').value = m.power_db;
-    document.getElementById('m-power-v').textContent = m.power_db + ' dB';
+    fillMod(cfg.config, cfg.mode);
     document.getElementById('e-format').value = e.width + 'x' + e.height;
     document.getElementById('e-fps').value = e.fps;
     document.getElementById('e-audio').checked = e.audio;
