@@ -352,16 +352,53 @@ if a.rc in ("buffer", "hybrid"):
             return Gst.PadProbeReturn.DROP          # the receiver repeats the last frame
         rcs["force_key"] = False
         set_qp(q)
+        if os.path.exists("/tmp/rc-trace-on"):         # touch it to trace, rm to stop
+            rcs.setdefault("trace", {})[n] = (
+                f"{n},{int(bool(rc.inflight.get(n, (0, 0, False))[2]))},{q},{rc.why},"
+                f"{rc.B / rc.R:.3f},{len(rc.inflight)},{'none' if fut is None else len(fut)},"
+                f"{''.join('K' if k else '.' for _, _, k in (fut or []))},"
+                f"{rc.cP:.3g},{rc.cK:.3g},{rc.uP or 0:.3g},{rc.uK or 0:.3g},{rc.inflight.get(n, (0, 0))[1]:.0f}")
         rcs["fifo"].append(n)
         rcs["qps"].append(q)
         return Gst.PadProbeReturn.OK
+
+    def is_keyframe(buf):
+        """Is this encoded frame a keyframe? Read from the bitstream itself:
+        an H.265 IRAP picture (NAL types 16-21: IDR, CRA, BLA). The buffer's
+        delta-unit flag is not to be trusted - on air it stopped being set,
+        the controller never saw a keyframe again, believed every frame was
+        an overdue one, and swung the floor 30-51-30 frame by frame: the
+        flicker. Headers come first in a keyframe, so 4 kB is plenty."""
+        if not buf.has_flags(Gst.BufferFlags.DELTA_UNIT):
+            return True
+        ok, mi = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return False
+        try:
+            d = bytes(mi.data[:4096])
+        finally:
+            buf.unmap(mi)
+        i = d.find(b"\x00\x00\x01")
+        while 0 <= i < len(d) - 3:
+            t = (d[i + 3] >> 1) & 0x3F
+            if 16 <= t <= 21:
+                return True
+            if t < 32 and t not in (35, 39, 40):     # a slice of another kind: not a keyframe
+                return False
+            i = d.find(b"\x00\x00\x01", i + 3)
+        return False
 
     def rc_out(pad, info):
         """Each frame out of the encoder - in the order they went in."""
         buf = info.get_buffer()
         if rcs["fifo"]:
-            rc.done(rcs["fifo"].popleft(), buf.get_size() * 8,
-                    not buf.has_flags(Gst.BufferFlags.DELTA_UNIT))
+            m = rcs["fifo"].popleft()
+            bits = buf.get_size() * 8
+            rc.done(m, bits, is_keyframe(buf))
+            line = rcs.get("trace", {}).pop(m, None)
+            if line:
+                with open("/tmp/rc-trace.csv", "a") as tf:
+                    tf.write(f"{line},{bits},{int(is_keyframe(buf))},{int(not buf.has_flags(Gst.BufferFlags.DELTA_UNIT))}\n")
             rcs["peak"] = max(rcs["peak"], rc.B / rc.R)
         now = time.time()
         if now - rcs["last_log"] >= 10 and rcs["qps"]:

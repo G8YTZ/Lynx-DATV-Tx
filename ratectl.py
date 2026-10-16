@@ -37,6 +37,8 @@ class BufferRC:
         self.gop = gop
         self.qp_min, self.qp_max, self.k = qp_min, qp_max, k
         self.qp = qp_start
+        self.why = ""
+        self.key_qp = qp_start                       # QP of the last keyframe
         # Guard (hybrid) mode: the QP chosen is only a FLOOR - the encoder's
         # own rate control may go coarser, and we cannot see by how much. A
         # frame smaller than predicted may just mean it did, so it is weak
@@ -82,6 +84,11 @@ class BufferRC:
             self.done(m, b0, k0)
         pending = sum(b for _, b, _ in self.inflight.values())
         Bp = max(0.0, self.B + pending - self.drain * len(self.inflight))
+        # Safety: never believe a keyframe is overdue for long. If none has
+        # been seen for two GOPs, the signal was lost (it happened on air):
+        # assume the encoder kept its own GOP and start counting again.
+        if self.since_key >= 2 * self.gop:
+            self.since_key = 0
         key = key or self.since_key + 1 >= self.gop
         target = self.Bt
         # Make room for the next planned keyframe in the frames before it.
@@ -98,9 +105,12 @@ class BufferRC:
             # Even the coarsest frame would make the stream late: skip.
             if not key:
                 self.stats["skips"] += 1
+                self.why = "skip"
                 return None
             q = self.qp_max
+            self.why = "key-nofit"
         elif key and self.guard:
+            self.why = "key"
             # Guard: keyframes at the plain-cbr anchor (34) unless that
             # would not fit - and then only as coarse as fits short of
             # real overflow (0.95), never straight to 51 on the 0.9 mark.
@@ -110,6 +120,7 @@ class BufferRC:
                 q += 1
             while q > self.qp_min and self.cost(q - 1, True) <= hard and q > self.qp + 6:
                 q -= 1
+            self.key_qp = q
         elif key:
             # A keyframe at the running QP + 2: the frames after it are built
             # on it, so a mushy one spoils a whole GOP. Coarser only if it
@@ -120,6 +131,7 @@ class BufferRC:
         else:
             planned = self.plan(n, key, future)
             q = planned if planned is not None else math.ceil(self.qp_for(max(allowed, 1.0), key))
+            self.why = f"plan={planned}" if planned is not None else f"allowed={allowed:.0f}->{q}"
             # At most +3 a frame, unless the buffer really is about to
             # overflow; at most -1 a frame on the way back. 'Really' is the
             # 0.95 mark: on air, using the 0.9 mark here let the floor leap
@@ -129,6 +141,13 @@ class BufferRC:
             if q > self.qp + 3 and self.cost(self.qp + 3, False) <= hard:
                 q = self.qp + 3
             q = max(self.qp - 1, q)
+            if self.guard:
+                # Never finer than the keyframe the GOP hangs on. On a still,
+                # P-frames refine the picture towards the floor; if the floor
+                # is finer than the keyframe (which had to be coarser to fit),
+                # each new keyframe snaps the picture back - a flicker once a
+                # GOP. Broadcast encoders hold P at or above I for this reason.
+                q = max(q, self.key_qp)
         q = max(self.qp_min, min(self.qp_max, q))
         self.qp = q
         pred = self.cost(q, key)
@@ -154,9 +173,25 @@ class BufferRC:
         pending = sum(b for _, b, _ in self.inflight.values())
         B0 = max(0.0, self.B + pending - self.drain * len(self.inflight))
 
+        def key_bits(B):
+            """A keyframe ahead, costed as choose() will code it: at its own
+            QP - the finest that fits the room then - not at the P floor
+            being planned. Planning it at the P floor made the controller
+            push P-frames to QP 51 every time a costly keyframe came into
+            view (half of every 1 s GOP on a still test card), though
+            coarser P-frames on a still save nothing: the flicker."""
+            room = self.Bmax * 0.9 - B + self.drain
+            for qk in range(self.qp_min, self.qp_max + 1):
+                if self.cost(qk, True) <= room:
+                    return self.cost(qk, True)
+            return min(self.cost(self.qp_max, True), max(room, 0.0))
+
         def fits(q, strict=True):
             B = B0
             for i, (aP, aK, k) in enumerate(future):
+                if k and self.guard:
+                    B = max(0.0, B + key_bits(B) - self.drain)
+                    continue
                 bits = (uK * aK if k else self.uP * aP) * 2 ** (-q / self.k)
                 B = max(0.0, B + bits - self.drain)
                 if B > (self.Bceil if strict else self.Bmax * 0.92):

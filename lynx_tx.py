@@ -351,6 +351,14 @@ def libre_host() -> str:
     return lib["host"]
 
 
+# One SSH connection, kept open and reused. Every new connection costs the
+# LibreSDR's 667 MHz ARM a key exchange - the same CPU that runs the DVB-S2
+# modulator. Polled every 2 s from each open web page, those handshakes
+# stole enough time from pluto_dvb to make the picture flicker.
+SSH_KEEP = ["-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/lynx-ssh-%r@%h:%p",
+            "-o", "ControlPersist=120"]
+
+
 def libre_ssh(cmd: str, timeout: int = 8) -> str:
     """Run a command on the LibreSDR over SSH.
 
@@ -362,7 +370,7 @@ def libre_ssh(cmd: str, timeout: int = 8) -> str:
     lib = config["libre"]
     try:
         r = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+            ["ssh", *SSH_KEEP, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
              "-o", "StrictHostKeyChecking=accept-new",
              f"{lib['user']}@{libre_host()}", cmd],
             capture_output=True, text=True, timeout=timeout)
@@ -417,26 +425,51 @@ def write_libre_settings() -> bool:
     return True
 
 
+_libre_cache = {"t": 0.0, "v": None, "off": 0, "under": 0}
+_libre_lock = threading.Lock()
+
+
 def libre_status() -> dict:
-    """What the board says about itself, for the status strip."""
-    out = libre_ssh(
-        "grep -a TsBitrate /tmp/udpts.log 2>/dev/null | tail -1; "
-        "grep -ac Underflow /tmp/udpts.log 2>/dev/null; "
-        "pgrep -c pluto_dvb 2>/dev/null")
-    parts = (out or "").strip().split("\n")
+    """What the board says about itself, for the status strip.
 
-    def _int(i):
-        try:
-            return int(parts[i].strip().split()[-1])
-        except (IndexError, ValueError):
-            return None
+    At most once every 10 s, however many pages poll, and cheap on the
+    board: its log grows all the time it runs, and grepping the whole of
+    it every 2 s (twice) grew more costly by the hour - work taken from the
+    modulator. Now only the bytes added since last time are read."""
+    with _libre_lock:
+        c = _libre_cache
+        if c["v"] is not None and time.time() - c["t"] < 10:
+            return c["v"]
+        out = libre_ssh(
+            "f=/tmp/udpts.log; s=$(wc -c < $f 2>/dev/null || echo 0); echo $s; "
+            f"if [ $s -ge {c['off']} ]; then tail -c +{c['off'] + 1} $f | grep -ac Underflow; "
+            "else echo RESET; fi; "
+            "tail -c 4000 $f 2>/dev/null | grep -a TsBitrate | tail -1; "
+            "pgrep -c pluto_dvb 2>/dev/null")
+        parts = (out or "").strip().split("\n")
 
-    return {
-        "reachable": bool(out),
-        "ts_bitrate": _int(0),
-        "underflows": _int(1),
-        "modulator_running": bool(_int(2)),
-    }
+        def _int(i):
+            try:
+                return int(parts[i].strip().split()[-1])
+            except (IndexError, ValueError):
+                return None
+
+        size, new_under = _int(0), None
+        if len(parts) > 1 and parts[1].strip() == "RESET":
+            c["off"], c["under"] = 0, 0          # the board restarted: log is new
+        else:
+            new_under = _int(1)
+        if size is not None and new_under is not None:
+            c["under"] += new_under
+            c["off"] = size
+        v = {
+            "reachable": bool(out),
+            "ts_bitrate": _int(2),
+            "underflows": c["under"] if out else None,
+            "modulator_running": bool(_int(3)),
+        }
+        c["t"], c["v"] = time.time(), v
+        return v
 
 
 # ── Keeping the LibreSDR's script compatible ─────────────────
@@ -471,7 +504,7 @@ def libre_ssh_full(cmd: str, stdin: Optional[str] = None,
     lib = config["libre"]
     try:
         r = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+            ["ssh", *SSH_KEEP, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
              "-o", "StrictHostKeyChecking=accept-new",
              f"{lib['user']}@{libre_host()}", cmd],
             input=stdin, capture_output=True, text=True, timeout=timeout)
@@ -655,7 +688,20 @@ def hdmi_framerate(device: str) -> Optional[str]:
     return f"{round(f)}/1"
 
 
+_hdmi_cache = {"t": 0.0, "v": {}}
+
+
 def hdmi_format() -> dict:
+    """Cached for 5 s: the page asks every 2 s, and each ask is a query to
+    the HDMI receiver while it may be capturing on air."""
+    if time.time() - _hdmi_cache["t"] < 5:
+        return _hdmi_cache["v"]
+    v = _hdmi_format()
+    _hdmi_cache.update(t=time.time(), v=v)
+    return v
+
+
+def _hdmi_format() -> dict:
     """What the camera is actually sending, or {} when nothing is.
 
     The live signal timing (--query-dv-timings), not the capture format:
@@ -935,7 +981,7 @@ def build_pipeline() -> str:
     # pipeline that has to be got right separately.
     if src["kind"] == "camera":
         device = config["video_device"]
-        fmt = hdmi_format()
+        fmt = _hdmi_format()          # fresh at key-up, never the page's cache
         if fmt.get("width"):
             w, h = fmt["width"], fmt["height"]
         # NV16 is what the HDMI receiver gives; asking for anything
@@ -1041,7 +1087,7 @@ def build_pipeline() -> str:
         #
         # Programme size follows the HDMI input, or UHD with no signal
         # (the Camera input shows colour bars until one arrives).
-        fmt = hdmi_format()
+        fmt = _hdmi_format()          # fresh at key-up, never the page's cache
         w, h = (fmt["width"], fmt["height"]) if fmt.get("width") else (3840, 2160)
         clip = src.get("file") or ""
         if clip and not (MEDIA_DIR / clip).is_file():
@@ -1965,10 +2011,14 @@ async function loadMedia(file) {
   setTimeout(poll, 400);
 }
 
+let mediaKey = null;
 function showMedia() {
   const el = document.getElementById('media-list');
   if (!cfg) return;
   const files = cfg.media || [];
+  const key = JSON.stringify([files, cfg.config.source.file]);
+  if (key === mediaKey) return;                 // nothing changed: leave it alone
+  mediaKey = key;
   if (!files.length) {
     el.innerHTML = '<div class="text-muted small">Nothing in /srv/lynxdeck/media</div>';
     return;
@@ -2182,100 +2232,97 @@ async function resetTweaks() {
   poll();
 }
 
+// Redraw only what changed. The page polls every 2 s; rewriting every
+// element (and rebuilding the media list) each time made the whole page
+// flicker, and is needless work for the browser.
+function setText(id, v) {
+  const e = typeof id === 'string' ? document.getElementById(id) : id;
+  v = String(v);
+  if (e && e.textContent !== v) e.textContent = v;
+}
+function setStyle(e, k, v) {
+  if (typeof e === 'string') e = document.getElementById(e);
+  if (e && e.dataset['s_' + k] !== v) { e.dataset['s_' + k] = v; e.style[k] = v; }
+}
+function setClass(e, v) {
+  if (typeof e === 'string') e = document.getElementById(e);
+  if (e && e.className !== v) e.className = v;
+}
+
 async function poll() {
   try {
     cfg = await (await fetch('/api/status')).json();
   } catch (e) { return; }
 
-  const tx = document.getElementById('tx-badge');
-  tx.textContent = cfg.transmitting ? 'ON AIR' : 'IDLE';
-  tx.style.background = cfg.transmitting ? '#16a34a' : '#3a4a63';
+  setText('tx-badge', cfg.transmitting ? 'ON AIR' : 'IDLE');
+  setStyle('tx-badge', 'background', cfg.transmitting ? '#16a34a' : '#3a4a63');
+  setText('call-badge', cfg.config.callsign);
 
-  document.getElementById('call-badge').textContent = cfg.config.callsign;
-
-  const lb = document.getElementById('libre-badge');
   const L = cfg.libre || {};
-  lb.textContent = L.reachable
+  setText('libre-badge', L.reachable
     ? (L.modulator_running ? 'LibreSDR ready' : 'LibreSDR idle')
-    : 'LibreSDR unreachable';
-  lb.style.background = L.reachable ? (L.modulator_running ? '#16a34a' : '#3a4a63')
-                                    : '#b91c1c';
+    : 'LibreSDR unreachable');
+  setStyle('libre-badge', 'background', L.reachable ? (L.modulator_running ? '#16a34a' : '#3a4a63')
+                                                    : '#b91c1c');
 
-  document.getElementById('s-ts').textContent =
-    (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s';
-  document.getElementById('s-want').textContent =
-    L.ts_bitrate ? (L.ts_bitrate/1e6).toFixed(3) + ' Mb/s' : '—';
-  const u = document.getElementById('s-under');
-  u.textContent = (L.underflows === null || L.underflows === undefined)
-    ? '—' : L.underflows;
-  u.style.color = L.underflows ? '#f87171' : '#4ade80';
-  document.getElementById('s-up').textContent =
-    cfg.transmitting ? cfg.uptime + ' s' : '—';
+  setText('s-ts', (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s');
+  setText('s-want', L.ts_bitrate ? (L.ts_bitrate/1e6).toFixed(3) + ' Mb/s' : '—');
+  setText('s-under', (L.underflows === null || L.underflows === undefined) ? '—' : L.underflows);
+  setStyle('s-under', 'color', L.underflows ? '#f87171' : '#4ade80');
+  setText('s-up', cfg.transmitting ? cfg.uptime + ' s' : '—');
 
   const h = cfg.hdmi || {};
-  document.getElementById('hdmi-info').textContent = h.width
-    ? `HDMI in: ${h.width}\\u00d7${h.height}`
-    : 'HDMI in: nothing detected';
+  setText('hdmi-info', h.width ? `HDMI in: ${h.width}×${h.height}` : 'HDMI in: nothing detected');
 
   // Programme bus: red = on air, blue = what starts at key-up.
   const SW = cfg.switcher, onAir = !!(cfg.transmitting && SW);
   const pgm = onAir ? SW.on : (cfg.config.source.program ||
               (cfg.config.source.kind === 'camera' ? 'cam' : 'med'));
   for (const b of ['cam', 'med'])
-    document.getElementById('pgm-' + b).className = 'btn btn-lg flex-fill ' +
-      (b === pgm ? (onAir ? 'btn-danger' : 'btn-primary') : 'btn-outline-light');
-  const pi = document.getElementById('pgm-info');
+    setClass('pgm-' + b, 'btn btn-lg flex-fill ' +
+      (b === pgm ? (onAir ? 'btn-danger' : 'btn-primary') : 'btn-outline-light'));
   if (onAir) {
     let t = 'ON AIR: ' + (SW.on === 'cam' ? 'Camera' : 'Media');
-    if (SW.camera === 'bars') t += ' \u00b7 no HDMI signal \u2014 Camera shows colour bars';
-    if ((SW.media_state || '').startsWith('error')) t += ' \u00b7 media ' + SW.media_state;
-    pi.textContent = t; pi.style.color = '#f87171';
+    if (SW.camera === 'bars') t += ' · no HDMI signal — Camera shows colour bars';
+    if ((SW.media_state || '').startsWith('error')) t += ' · media ' + SW.media_state;
+    setText('pgm-info', t); setStyle('pgm-info', 'color', '#f87171');
   } else {
-    pi.textContent = cfg.transmitting ? 'Single-source mode' : 'Off air \u2014 starts on ' +
-      (pgm === 'cam' ? 'Camera' : 'Media');
-    pi.style.color = '#9fb3d1';
+    setText('pgm-info', cfg.transmitting ? 'Single-source mode' : 'Off air — starts on ' +
+      (pgm === 'cam' ? 'Camera' : 'Media'));
+    setStyle('pgm-info', 'color', '#9fb3d1');
   }
   showMedia();
 
-  // Which of the two appears. The format controls only mean
-  // anything for media, where the file is genuinely scaled on the
-  // way in; with the camera the HDMI input decides and the page
-  // should say so rather than pretend otherwise.
   // In switcher mode the programme follows the HDMI input, as the camera does.
   const isCam = cfg.use_switcher || cfg.config.source.kind === 'camera';
-  document.getElementById('camera-format').style.display = isCam ? '' : 'none';
-  document.getElementById('media-format').style.display = isCam ? 'none' : '';
+  setStyle('camera-format', 'display', isCam ? '' : 'none');
+  setStyle('media-format', 'display', isCam ? 'none' : '');
   if (isCam) {
     const hf = cfg.hdmi || {};
-    document.getElementById('camera-format-value').textContent =
-      hf.width ? hf.width + '\u00d7' + hf.height : 'nothing detected';
+    setText('camera-format-value', hf.width ? hf.width + '×' + hf.height : 'nothing detected');
   }
 
   const LP = cfg.libre_patch || {};
-  // Buffer: how far ahead of need the pictures are sent. About 2 s at
-  // rest; it drains when the encoder overshoots; at zero receivers glitch.
-  const bl = document.getElementById('buffer-line'), B = cfg.buffer;
+  // Buffer: how far ahead of need the pictures are sent.
+  const B = cfg.buffer;
   drawBuffer(B, Number((cfg.config.encoder || {}).slack) || 0.6);
-  bl.style.display = B ? 'block' : 'none';
+  setStyle('buffer-line', 'display', B ? 'block' : 'none');
   if (B) {
     const lo = B.min_60s ?? B.slack;
-    const tr = cfg.switcher && cfg.switcher.trim ? ' \u00b7 trimming \u2212' + cfg.switcher.trim + '%' : '';
-    bl.textContent = 'Buffer: ' + B.slack.toFixed(2) + ' s' + tr + '  (lowest in the last minute ' +
-      lo.toFixed(2) + ' s' + (B.late ? ', ' + B.late + ' late frames since key-up' : '') + ')';
-    bl.style.color = lo <= 0 ? '#f87171' : lo < 0.5 ? '#fbbf24' : '#4ade80';
+    const tr = cfg.switcher && cfg.switcher.trim ? ' · trimming −' + cfg.switcher.trim + '%' : '';
+    setText('buffer-line', 'Buffer: ' + B.slack.toFixed(2) + ' s' + tr + '  (lowest in the last minute ' +
+      lo.toFixed(2) + ' s' + (B.late ? ', ' + B.late + ' late frames since key-up' : '') + ')');
+    setStyle('buffer-line', 'color', lo <= 0 ? '#f87171' : lo < 0.5 ? '#fbbf24' : '#4ade80');
   }
-  const lp = document.getElementById('libre-patch');
-  const lpColour = {ok: '#4ade80', rebooting: '#e8a33d', pending: '#e8a33d',
-                    unknown: '#9fb3d1'}[LP.state] || '#f87171';
-  lp.textContent = 'LibreSDR script: ' + (LP.detail || '\u2014');
-  lp.style.color = lpColour;
+  setText('libre-patch', 'LibreSDR script: ' + (LP.detail || '—'));
+  setStyle('libre-patch', 'color', {ok: '#4ade80', rebooting: '#e8a33d', pending: '#e8a33d',
+                                    unknown: '#9fb3d1'}[LP.state] || '#f87171');
   const N = cfg.nit || {};
-  const ns = document.getElementById('i-nit-status');
-  ns.textContent = 'Last build: ' + (N.detail || '\u2014');
-  ns.style.color = N.ok ? '#4ade80' : '#9fb3d1';
+  setText('i-nit-status', 'Last build: ' + (N.detail || '—'));
+  setStyle('i-nit-status', 'color', N.ok ? '#4ade80' : '#9fb3d1');
 
-  document.getElementById('sr-warning').hidden =
-    cfg.config.modulation.symbol_rate_ks <= 2000;
+  const srw = document.getElementById('sr-warning'), hide = cfg.config.modulation.symbol_rate_ks <= 2000;
+  if (srw.hidden !== hide) srw.hidden = hide;
 
   if (firstLoad) {
     const m = cfg.config.modulation, e = cfg.config.encoder;
@@ -2297,7 +2344,6 @@ async function poll() {
     firstLoad = false;
   }
 }
-
 poll();
 // Buffer bar and two-minute history. Drawn here in the browser from the
 // once-a-second reading the text line uses: no cost on the ROCK.
@@ -2330,7 +2376,9 @@ function drawBuffer(B, target) {
   // The history: one bar per reading, the last two minutes, with its own axes.
   bufHist.push(B.slack); if (bufHist.length > 60) bufHist.shift();
   const dpr = devicePixelRatio, c = document.getElementById('bb-hist'),
-        W = c.width = c.clientWidth * dpr, H = c.height = 150 * dpr, x = c.getContext('2d');
+        W = c.clientWidth * dpr, H = 150 * dpr, x = c.getContext('2d');
+  if (c.width !== W) c.width = W;
+  if (c.height !== H) c.height = H;
   const L = 34 * dpr, Bm = 14 * dpr, T = 4 * dpr;                       // margins for the labels
   const bottom = -target * 0.35;                                         // room below zero for late frames
   const Y = v => T + (top - Math.max(bottom, Math.min(top, v))) / (top - bottom) * (H - T - Bm);

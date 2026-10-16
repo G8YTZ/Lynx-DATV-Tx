@@ -5,3 +5,4 @@ __pycache__/
 fix*.py
 patch_*.py
 run/
+config/

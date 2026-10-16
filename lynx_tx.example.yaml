@@ -1,0 +1,51 @@
+callsign: MYCALL UHD
+provider: MYCALL Location
+libre:
+  host: 192.168.254.2
+  user: root
+video_device: /dev/video0
+audio_device: hw:CARD=rockchiphdmiin,DEV=0
+modulation:
+  frequency_mhz: 1304.0
+  symbol_rate_ks: 2000
+  constellation: QPSK
+  fec: 3/4
+  pilots: true
+  rolloff: '0.35'
+  power_db: 0.0
+encoder:
+  width: 1024
+  height: 576
+  fps: 50
+  audio: false
+  audio_bitrate: 192000
+  content: balanced
+  rate_control: hybrid
+  slack: 0.9
+  qp_floor: 30
+  gop: 50
+  rc_target: 0.3
+  look_ahead: 0.5
+  hybrid_aim: 0.97
+  picture_share: 0.92
+  sound_priority: true
+source:
+  kind: switcher
+  file: test.mp4
+  program: cam
+identity:
+  network_name: MYCALL DATV
+  network_id: 65281
+  original_network_id: 65281
+  ts_id: 1
+  service_id: 1
+  service_type: digital_tv
+  nit: true
+  lcn: 1
+  lcn_visible: true
+  pmt_pid: 256
+  video_pid: 257
+  audio_pid: 258
+  polarization: horizontal
+monitor:
+  enabled: false
