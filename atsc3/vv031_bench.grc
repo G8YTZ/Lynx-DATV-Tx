@@ -1,0 +1,522 @@
+options:
+  parameters:
+    author: drmpeg
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: ''
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: no_gui
+    hier_block_src_path: '.:'
+    id: vv031_bench
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: run
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: ATSC 3.0 transmitter
+    window_size: (1000,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: center_freq
+  id: variable
+  parameters:
+    comment: ''
+    value: 429e6
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 288
+    - 12.0
+    rotation: 0
+    state: enabled
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: ''
+    value: 384000 * (16 + 2)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 184
+    - 12
+    rotation: 0
+    state: enabled
+- name: atsc3_alpbbheader_bb_0
+  id: atsc3_alpbbheader_bb
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    framesize: FECFRAME_NORMAL
+    llsmode: LLS_OFF
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    rate: C9_15
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 624
+    - 28.0
+    rotation: 0
+    state: true
+- name: atsc3_bbscrambler_bb_0
+  id: atsc3_bbscrambler_bb
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    fecmode: PLP_FEC_BCH
+    framesize: FECFRAME_NORMAL
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    rate: C9_15
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 856
+    - 28.0
+    rotation: 0
+    state: true
+- name: atsc3_bch_bb_0
+  id: atsc3_bch_bb
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    fecmode: PLP_FEC_BCH
+    framesize: FECFRAME_NORMAL
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    rate: C9_15
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1096
+    - 28.0
+    rotation: 0
+    state: true
+- name: atsc3_bootstrap_cc_0
+  id: atsc3_bootstrap_cc
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    fftsize: FFTSIZE_8K
+    flen: '100'
+    flmode: FLM_SYMBOL_ALIGNED
+    frameinterval: MTTN_100
+    guardinterval: GI_5_1024
+    l1bmode: L1_FEC_MODE_1
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    numpayloadsyms: '72'
+    numpreamblesyms: '2'
+    outputmode: BOOTSTRAP_INTERPOLATION
+    pilotpattern: PILOT_SP3_4
+    showlevels: SHOWLEVELS_OFF
+    vclip: '3.3'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 952
+    - 252.0
+    rotation: 0
+    state: true
+- name: atsc3_framemapper_cc_0
+  id: atsc3_framemapper_cc
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    constellation1: MOD_256QAM
+    constellation2: MOD_QPSK
+    cred: CRED_0
+    fecmode: PLP_FEC_BCH
+    fftsize: FFTSIZE_8K
+    fimode: FREQ_PREAMBLE_ONLY
+    firstsbs: SBS_OFF
+    flen: '100'
+    flmode: FLM_SYMBOL_ALIGNED
+    framesize: FECFRAME_NORMAL
+    guardinterval: GI_5_1024
+    l1bmode: L1_FEC_MODE_1
+    l1dmode: L1_FEC_MODE_1
+    llsmode: LLS_OFF
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    misomode: MISO_OFF
+    numpayloadsyms: '72'
+    numpreamblesyms: '2'
+    paprmode: PAPR_OFF
+    pilotboost1: SPB_0
+    pilotboost10: SPB_0
+    pilotboost11: SPB_0
+    pilotboost12: SPB_0
+    pilotboost13: SPB_0
+    pilotboost14: SPB_0
+    pilotboost15: SPB_0
+    pilotboost16: SPB_0
+    pilotboost2: SPB_4
+    pilotboost3: SPB_0
+    pilotboost4: SPB_0
+    pilotboost5: SPB_0
+    pilotboost6: SPB_0
+    pilotboost7: SPB_0
+    pilotboost8: SPB_0
+    pilotboost9: SPB_0
+    pilotpattern: PILOT_SP3_4
+    rate: C9_15
+    tiblocks: '2'
+    tidepth: TI_DEPTH_512
+    tifecblocks: '14'
+    tifecblocksmax: '14'
+    tifmode: TIF_NOT_INCLUDED
+    timode: TI_MODE_OFF
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 176
+    - 92.0
+    rotation: 180
+    state: true
+- name: atsc3_freqinterleaver_cc_0
+  id: atsc3_freqinterleaver_cc
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    cred: CRED_0
+    fftsize: FFTSIZE_8K
+    firstsbs: SBS_OFF
+    guardinterval: GI_5_1024
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    mode: FREQ_PREAMBLE_ONLY
+    numpayloadsyms: '72'
+    numpreamblesyms: '2'
+    paprmode: PAPR_OFF
+    pilotpattern: PILOT_SP3_4
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 144
+    - 444.0
+    rotation: 0
+    state: enabled
+- name: atsc3_interleaver_bb_0
+  id: atsc3_interleaver_bb
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    constellation1: MOD_256QAM
+    constellation2: MOD_QPSK
+    framesize: FECFRAME_NORMAL
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    rate: C9_15
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 856
+    - 164.0
+    rotation: 180
+    state: true
+- name: atsc3_ldpc_bb_0
+  id: atsc3_ldpc_bb
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    framesize: FECFRAME_NORMAL
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    rate: C9_15
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1088
+    - 172.0
+    rotation: 180
+    state: true
+- name: atsc3_modulator_bc_0
+  id: atsc3_modulator_bc
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    constellation1: MOD_256QAM
+    constellation2: MOD_QPSK
+    framesize: FECFRAME_NORMAL
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    rate: C9_15
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 624
+    - 164.0
+    rotation: 180
+    state: true
+- name: atsc3_pilotgenerator_cc_0
+  id: atsc3_pilotgenerator_cc
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    cred: CRED_0
+    fftsize: FFTSIZE_8K
+    firstsbs: SBS_OFF
+    guardinterval: GI_5_1024
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    misomode: MISO_OFF
+    misotxid: MISO_TX_1_OF_2
+    numpayloadsyms: '72'
+    numpreamblesyms: '2'
+    outputmode: PILOTGENERATOR_TIME
+    paprmode: PAPR_OFF
+    pilotboost1: SPB_0
+    pilotboost10: SPB_0
+    pilotboost11: SPB_0
+    pilotboost12: SPB_0
+    pilotboost13: SPB_0
+    pilotboost14: SPB_0
+    pilotboost15: SPB_0
+    pilotboost16: SPB_0
+    pilotboost2: SPB_4
+    pilotboost3: SPB_0
+    pilotboost4: SPB_0
+    pilotboost5: SPB_0
+    pilotboost6: SPB_0
+    pilotboost7: SPB_0
+    pilotboost8: SPB_0
+    pilotboost9: SPB_0
+    pilotpattern: PILOT_SP3_4
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 424
+    - 428.0
+    rotation: 0
+    state: true
+- name: blocks_file_source_0
+  id: blocks_file_source
+  parameters:
+    affinity: ''
+    alias: ''
+    begin_tag: pmt.PMT_NIL
+    comment: ''
+    file: advatsc3.ts
+    length: '0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    repeat: 'True'
+    type: byte
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 416
+    - 12.0
+    rotation: 0
+    state: true
+- name: blocks_multiply_const_xx_0
+  id: blocks_multiply_const_xx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    const: '0.2'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: complex
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1228.0
+    - 400
+    rotation: 270
+    state: true
+- name: digital_ofdm_cyclic_prefixer_0
+  id: digital_ofdm_cyclic_prefixer
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    cp_len: '1024'
+    input_size: '8192'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    rolloff: '0'
+    tagname: ''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 712
+    - 492.0
+    rotation: 0
+    state: true
+- name: virtual_sink_0
+  id: virtual_sink
+  parameters:
+    alias: ''
+    comment: ''
+    stream_id: frame_freq
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 12.0
+    - 312
+    rotation: 270
+    state: true
+- name: virtual_source_0
+  id: virtual_source
+  parameters:
+    alias: ''
+    comment: ''
+    stream_id: frame_freq
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 68.0
+    - 312
+    rotation: 270
+    state: true
+- name: head_0
+  id: blocks_head
+  parameters:
+    type: complex
+    num_items: '414720000'
+    vlen: '1'
+  states: &id001
+    coordinate:
+    - 0
+    - 0
+    rotation: 0
+    state: enabled
+- name: null_0
+  id: blocks_null_sink
+  parameters:
+    type: complex
+    vlen: '1'
+    num_inputs: '1'
+    bus_structure_sink: '[[0,],]'
+  states: *id001
+connections:
+- - atsc3_alpbbheader_bb_0
+  - '0'
+  - atsc3_bbscrambler_bb_0
+  - '0'
+- - atsc3_bbscrambler_bb_0
+  - '0'
+  - atsc3_bch_bb_0
+  - '0'
+- - atsc3_bch_bb_0
+  - '0'
+  - atsc3_ldpc_bb_0
+  - '0'
+- - atsc3_bootstrap_cc_0
+  - '0'
+  - blocks_multiply_const_xx_0
+  - '0'
+- - atsc3_framemapper_cc_0
+  - '0'
+  - virtual_sink_0
+  - '0'
+- - atsc3_freqinterleaver_cc_0
+  - '0'
+  - atsc3_pilotgenerator_cc_0
+  - '0'
+- - atsc3_interleaver_bb_0
+  - '0'
+  - atsc3_modulator_bc_0
+  - '0'
+- - atsc3_ldpc_bb_0
+  - '0'
+  - atsc3_interleaver_bb_0
+  - '0'
+- - atsc3_modulator_bc_0
+  - '0'
+  - atsc3_framemapper_cc_0
+  - '0'
+- - atsc3_pilotgenerator_cc_0
+  - '0'
+  - digital_ofdm_cyclic_prefixer_0
+  - '0'
+- - blocks_file_source_0
+  - '0'
+  - atsc3_alpbbheader_bb_0
+  - '0'
+- - digital_ofdm_cyclic_prefixer_0
+  - '0'
+  - atsc3_bootstrap_cc_0
+  - '0'
+- - virtual_source_0
+  - '0'
+  - atsc3_freqinterleaver_cc_0
+  - '0'
+- - blocks_multiply_const_xx_0
+  - '0'
+  - head_0
+  - '0'
+- - head_0
+  - '0'
+  - null_0
+  - '0'
+metadata:
+  file_format: 1
+  grc_version: v3.11.0.0git-402-g54d199a2
