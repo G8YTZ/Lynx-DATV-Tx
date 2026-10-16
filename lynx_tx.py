@@ -2392,8 +2392,8 @@ async function setMode(mode) {
 async function system(action) {
   const what = action === 'restart' ? 'Restart the ROCK' : 'Shut down the ROCK';
   const more = action === 'shutdown'
-    ? '\n\nIt will stay off until it is powered again: at a remote site that means a visit, or the mains relay.'
-    : '\n\nThe page comes back in about a minute.';
+    ? '\\n\\nIt will stay off until it is powered again: at a remote site that means a visit, or the mains relay.'
+    : '\\n\\nThe page comes back in about a minute.';
   if (!confirm(what + '? The transmitter goes off air first.' + more)) return;
   const j = await api('POST', '/api/system/' + action);
   if (j.success) setText('tx-badge', action === 'restart' ? 'RESTARTING' : 'SHUTTING DOWN');
