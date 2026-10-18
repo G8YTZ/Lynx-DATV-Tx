@@ -2090,6 +2090,8 @@ PAGE = """<!DOCTYPE html>
           style="background:#3a4a63;color:#fff;cursor:default">—</span>
     <span class="btn btn-sm" id="libre-badge"
           style="background:#3a4a63;color:#fff;cursor:default">LibreSDR ?</span>
+    <span class="btn btn-sm" id="ref-badge"
+          style="background:#3a4a63;color:#fff;cursor:default;display:none">10 MHz Reference</span>
   </div>
 
   <div class="row g-3">
@@ -2114,8 +2116,7 @@ PAGE = """<!DOCTYPE html>
                    id="sdr-add" placeholder="Another address, e.g. 192.168.0.117">
             <button class="btn btn-sm btn-outline-light" onclick="addSdr()">Use</button>
           </div>
-          <div class="small text-muted" id="sdr-info">&mdash;</div>
-            <div class="small mb-3" id="sdr-ref"></div>
+          <div class="small text-muted mb-3" id="sdr-info">&mdash;</div>
           <div class="d-grid gap-2 mb-3">
             <button class="btn btn-secondary big-btn" id="btn-txon" onclick="startTx()">TX On</button>
             <button class="btn btn-secondary big-btn" id="btn-txoff" onclick="stopTx()">TX Off</button>
@@ -2990,13 +2991,14 @@ async function poll() {
   setText('sdr-info', here
     ? 'Using ' + here.model + (here.firmware ? ', ' + here.firmware : '') + ' at ' + here.host
     : 'Using ' + S.uri + (S.last_scan ? ' (not found in the last scan)' : ''));
-  const R = S.ref, refEl = document.getElementById('sdr-ref');
-  if (!R) { refEl.textContent = ''; }
-  else {
-    const st = R.state || (R.locked ? 'locked' : ((R.present === '1' || /^(10mhz|pps)$/.test(R.source || '')) ? 'acquiring' : 'absent'));
-    refEl.textContent = '10 MHz reference: ' + (R.locked ? 'locked' : st)
-      + (R.mode && R.mode !== 'auto' ? ' (' + R.mode + ')' : '');
-    refEl.style.color = R.locked ? '#16a34a' : (st === 'absent' ? '' : '#d97706');
+  // 10 MHz reference: green when the SDR's loop is locked, red when it is
+  // not (no lock, or no 10 MHz feed). Hidden when the board cannot say
+  // (DL1JM's firmware, or no answer yet).
+  const R = S.ref;
+  setStyle('ref-badge', 'display', R ? '' : 'none');
+  if (R) {
+    setText('ref-badge', '10 MHz Reference ' + (R.locked ? 'Locked' : 'Unlocked'));
+    setStyle('ref-badge', 'background', R.locked ? '#16a34a' : '#b91c1c');
   }
 
   // As an IQ transmitter DL1JM's modulator is stopped on purpose (or absent),
