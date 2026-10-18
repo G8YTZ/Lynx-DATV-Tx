@@ -11,5 +11,5 @@ if [ ! -s "$TS" ]; then
     -t 20 -c:v libx264 -b:v 1500k -maxrate 1500k -bufsize 1500k -g 50 \
     -c:a aac -b:a 128k -f mpegts -muxrate 2800000 "$TS" || exit 1
 fi
-exec python3 tools/dvbs2_iq.py --uri ip:192.168.0.117 --freq 1249 --sr 2000 --fec 3/4 \
+exec python3 tools/dvbs2_iq.py --uri ip:192.168.254.2 --freq 1249 --sr 2000 --fec 3/4 \
   --rolloff 0.35 --gain -10 --ts "$TS" "$@"

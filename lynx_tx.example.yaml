@@ -17,7 +17,7 @@ encoder:
   width: 1024
   height: 576
   fps: 50
-  audio: false
+  audio: true
   audio_bitrate: 192000
   content: balanced
   rate_control: hybrid

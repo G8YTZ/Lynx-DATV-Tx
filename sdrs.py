@@ -3,7 +3,7 @@
 Any Pluto-class board running iiod will do: the PlutoSky R2 and the LibreSDR
 (both proven 18 Oct 2026), an ADALM-Pluto, a spare. Each is asked for its
 own model and firmware - the IIO context attributes - so the page can say
-"PlutoSky Rev.2, tezuka-v0.3.5, 192.168.0.117" and nobody keeps a table of
+"PlutoSky Rev.2, tezuka-v0.3.5, 192.168.254.2" and nobody keeps a table of
 boards up to date by hand.
 
 Where to look, in order:

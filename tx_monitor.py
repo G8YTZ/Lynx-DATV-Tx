@@ -210,7 +210,7 @@ def _run(get_config):
     except (TypeError, ValueError):
         rolloff = 0.35
     mon = cfg.get("monitor") or {}
-    uri = mon.get("uri") or f"ip:{cfg.get('libre', {}).get('host', '192.168.0.172')}"
+    uri = mon.get("uri") or f"ip:{cfg.get('libre', {}).get('host', '192.168.254.2')}"
     own = None
     if mon.get("own_clock"):
         centre = float(mon.get("centre_mhz") or m.get("frequency_mhz", 1304)) * 1e6

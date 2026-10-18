@@ -121,7 +121,7 @@ STILL_EXT = {".png", ".jpg", ".jpeg", ".bmp"}
 DEFAULT_CONFIG = {
     "callsign": "NOCALL",
     "provider": "HD",
-    "libre": {"host": "192.168.0.172", "user": "root"},
+    "libre": {"host": "192.168.254.2", "user": "root"},
     "video_device": "/dev/video0",
     # By name, not number: the HDMI receiver's card number moves
     # between boots (it has been 2, 3 and 4).
@@ -2113,7 +2113,7 @@ PAGE = """<!DOCTYPE html>
           </div>
           <div class="d-flex gap-2 mb-1">
             <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
-                   id="sdr-add" placeholder="Another address, e.g. 192.168.0.117">
+                   id="sdr-add" placeholder="Another address, e.g. 192.168.1.50">
             <button class="btn btn-sm btn-outline-light" onclick="addSdr()">Use</button>
           </div>
           <div class="small text-muted mb-3" id="sdr-info">&mdash;</div>

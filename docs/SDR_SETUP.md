@@ -71,7 +71,7 @@ cd ~/lynx-tx
 python3 tools/dvbs2_iq.py --uri ip:192.168.254.2 --freq 1249 --tone 100   # a tone 100 kHz above, to zero-beat
 ```
 
-These scripts assume the SDR addresses in the scripts themselves; edit `--uri` to suit.
+Both scripts send to 192.168.254.2. If the ROCK gave your board another address (the Transmit card shows it), add `--uri ip:<address>`.
 
 ## Receiving
 

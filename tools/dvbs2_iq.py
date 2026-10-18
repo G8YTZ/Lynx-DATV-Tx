@@ -5,7 +5,7 @@ Bench tool, not part of the Web UI yet. The PlutoSky R2's Tezuka/Maia image
 has no FPGA modulator, so the ROCK does the DVB-S2 (GNU Radio's gr-dtv) and
 streams IQ to the SDR - the same split as ATSC 3.0 mode.
 
-    tools/dvbs2_iq.py --uri ip:192.168.0.117 --freq 1304 --sr 2000 --ts clip.ts
+    tools/dvbs2_iq.py --uri ip:192.168.254.2 --freq 1304 --sr 2000 --ts clip.ts
 
 The TS is looped and paced only by the SDR's DAC pulling IQ, so this is for
 lock and MER, not for watching a programme: a file muxed at another rate will
@@ -87,7 +87,7 @@ def iio(uri, *a):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--uri", default="ip:192.168.0.117")
+    p.add_argument("--uri", default="ip:192.168.254.2")
     p.add_argument("--freq", type=float, default=1304.0, help="MHz")
     p.add_argument("--sr", type=float, default=2000, help="symbol rate, kS/s")
     p.add_argument("--fec", default="3/4", choices=FECS)
