@@ -21,7 +21,7 @@ What a Lynx-Tx transmitter is built from. Exact part numbers and suppliers marke
 |---|---|---|
 | Leo Bodnar LBE-1420 GPSDO | 1 | GNSS-disciplined 10 MHz reference, complete kit with antenna. Puts the carrier on frequency and holds it there; the PlutoSky's own crystal was 10 ppm high |
 | GNSS antenna | 1 | Included in the LBE-1420 kit. Needs a view of the sky |
-| 10 MHz lead, SMA to MMCX, 50 Ω | 1 | From the LBE-1420 to the SDR's 10 MHz input (MMCX on the PlutoSky R2 and the LibreSDR). A panel SMA on the SDR's case keeps it tidy |
+| 10 MHz lead: MMCX male to SMA male, RG316 | 1 | 15 cm (6 inch) used here; length to suit. From the LBE-1420's SMA output to the SDR's MMCX 10 MHz input (PlutoSky R2 and LibreSDR). A panel SMA on the SDR's case keeps it tidy |
 
 ## Source
 
