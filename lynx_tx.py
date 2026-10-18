@@ -644,8 +644,17 @@ def libre_uri() -> str:
 
 
 def sdr_uri() -> str:
-    """The SDR chosen on the Transmit card, else the LibreSDR."""
-    return (config.get("sdr") or {}).get("uri") or libre_uri()
+    """The SDR chosen on the Transmit card; with none chosen, the first board
+    the last scan found on the direct link (so a new SDR just works),
+    else the LibreSDR."""
+    chosen = (config.get("sdr") or {}).get("uri")
+    if chosen:
+        return chosen
+    direct = set(sdrs.direct_hosts(config["libre"].get("direct_if", "enP4p65s0")))
+    for d in sdrs.found():
+        if d["host"] in direct:
+            return d["uri"]
+    return libre_uri()
 
 
 def sdr_identity() -> Optional[dict]:
@@ -681,7 +690,9 @@ def sdr_host() -> str:
 def sdr_hosts() -> list:
     """Where to look for SDRs: the direct link first, then the LAN."""
     lib = config["libre"]
-    hosts = [lib.get("direct_host", "192.168.254.2"), lib.get("host")]
+    hosts = [lib.get("direct_host", "192.168.254.2")]
+    hosts += sdrs.direct_hosts(lib.get("direct_if", "enP4p65s0"))
+    hosts.append(lib.get("host"))
     hosts += list((config.get("sdr") or {}).get("hosts") or [])
     u = (config.get("sdr") or {}).get("uri") or ""
     if u:

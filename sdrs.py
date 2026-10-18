@@ -7,8 +7,10 @@ own model and firmware - the IIO context attributes - so the page can say
 boards up to date by hand.
 
 Where to look, in order:
-  1. the direct link: the ROCK's second Ethernet port, SDR at 192.168.254.2
-     (the supported way to connect one - see README.md);
+  1. the direct link: the ROCK's second Ethernet port, where the ROCK's
+     DHCP server gives the SDR its address (the supported way to connect
+     one - see README.md): its leases, its neighbours, and on a small
+     subnet every address;
   2. addresses listed in the config (sdr.hosts), for an SDR on the LAN;
   3. whatever libiio's own network scan (mDNS) turns up.
 """
@@ -85,6 +87,59 @@ def _mdns_uris() -> list:
     except (subprocess.TimeoutExpired, OSError):
         return []
     return sorted(set(re.findall(r"\[(ip:[^\]\s]+)\]", r.stdout)))
+
+
+_direct_cache: dict = {}   # port -> (time, hosts)
+
+
+def direct_hosts(port: str) -> list:
+    """Cached for 10 s: asked on every status poll when no SDR is chosen."""
+    t, hosts = _direct_cache.get(port, (0.0, []))
+    if time.time() - t > 10:
+        hosts = _direct_hosts(port)
+        _direct_cache[port] = (time.time(), hosts)
+    return hosts
+
+
+def _direct_hosts(port: str) -> list:
+    """Every address an SDR could have on the direct link: what the ROCK's
+    DHCP server leased on that port, what the port has heard from, and, on
+    a small subnet (/28 or smaller), every address in it. The ROCK's own
+    address is left out."""
+    out = []
+    for path in (f"/var/lib/NetworkManager/dnsmasq-{port}.leases",
+                 "/var/lib/misc/dnsmasq.leases"):
+        try:
+            for line in open(path):
+                f = line.split()
+                if len(f) >= 3:
+                    out.append(f[2])
+        except OSError:
+            pass
+    own = None
+    try:
+        r = subprocess.run(["ip", "-4", "-o", "neigh", "show", "dev", port],
+                           capture_output=True, text=True, timeout=3)
+        for line in r.stdout.splitlines():
+            if "FAILED" not in line and "INCOMPLETE" not in line:
+                out.append(line.split()[0])
+        r = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", port],
+                           capture_output=True, text=True, timeout=3)
+        m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/(\d+)", r.stdout)
+        if m:
+            import ipaddress
+            own = m.group(1)
+            net = ipaddress.ip_network(f"{own}/{m.group(2)}", strict=False)
+            if net.prefixlen >= 28:
+                out += [str(h) for h in net.hosts()]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    seen, hosts = set(), []
+    for h in out:
+        if h != own and h not in seen:
+            seen.add(h)
+            hosts.append(h)
+    return hosts
 
 
 def scan(hosts: list) -> list:
