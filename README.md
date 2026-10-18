@@ -48,9 +48,9 @@ Setting both ends up: [docs/INSTALL.md](docs/INSTALL.md) and [docs/SDR_SETUP.md]
 
 | Mode | Modulator | SDR | Receiver |
 |---|---|---|---|
-| DVB-S2 | ROCK: gr-dtv (default) | Any Pluto-class, Tezuka recommended | Picotuner, MiniTiouner, satellite receivers |
+| DVB-S2 | ROCK: gr-dtv (default) | Any Pluto-class with Ethernet, Tezuka recommended | Picotuner, MiniTiouner, satellite receivers |
 | DVB-S2 | LibreSDR on board: DL1JM's firmware (fallback) | LibreSDR with DL1JM firmware only | As above |
-| ATSC 3.0 | ROCK: gr-atsc3 | Any Pluto-class | HDHomeRun (ATSC 3.0 model) |
+| ATSC 3.0 | ROCK: gr-atsc3 | Any Pluto-class with Ethernet | HDHomeRun (ATSC 3.0 model) |
 
 ## Safety
 
