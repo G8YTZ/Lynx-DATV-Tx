@@ -7,7 +7,7 @@ On a Radxa ROCK 5T running Radxa's Debian 12 image, logged in as `radxa`. About 
 ```bash
 sudo apt update
 sudo apt install -y git python3-fastapi python3-uvicorn python3-yaml python3-numpy \
-    ffmpeg gnuradio libiio-utils
+    ffmpeg gnuradio libiio-utils mosquitto-clients
 ```
 
 **TSDuck** (`tsp`, `tstabcomp`) is not in Debian: install the arm64 `.deb` for Debian 12 from the [TSDuck releases](https://github.com/tsduck/tsduck/releases).

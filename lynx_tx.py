@@ -716,6 +716,30 @@ def sdr_scan_watch():
         time.sleep(60)
 
 
+sdr_ref: dict = {}   # host -> sdrs.refclk() result, for the page
+
+
+def _ref_now():
+    """The chosen board's reference, if heard from in the last 20 s."""
+    r = sdr_ref.get(sdr_host())
+    return r if r and time.time() - r["seen"] < 20 else None
+
+
+def sdr_ref_watch():
+    """The chosen board's 10 MHz reference lock, every 5 s, from Tezuka's
+    own MQTT state. Boards without it (DL1JM's firmware) are not asked."""
+    while True:
+        try:
+            d = sdr_identity()
+            if d and d.get("tezuka"):
+                r = sdrs.refclk(d["host"])
+                if r:
+                    sdr_ref[d["host"]] = r
+        except Exception as e:
+            print(f"[sdr] ref: {e}")
+        time.sleep(5)
+
+
 def atsc3_release_libre():
     """Stop DL1JM's modulator (and the scripts that would restart it) on the
     chosen SDR - wherever it was reached."""
@@ -1652,6 +1676,7 @@ def api_status():
         "sdr": {"uri": sdr_uri(), "chosen": (config.get("sdr") or {}).get("uri", ""),
                 "is_libre": sdr_is_libre(), "found": sdrs.found(),
                 "last_scan": sdrs.last_scan(),
+                "ref": _safe(lambda: _ref_now()),
                 "dac_rate": _safe(lambda: dvbs2mod.dac_rate(m)) if dvbs2_rock() else None},
         "atsc3_choices": {"constellations": atsc3mod.CONSTELLATIONS,
                           "rates": atsc3mod.CODE_RATES, "ts_rates": atsc3mod.TS_RATES},
@@ -2089,7 +2114,8 @@ PAGE = """<!DOCTYPE html>
                    id="sdr-add" placeholder="Another address, e.g. 192.168.0.117">
             <button class="btn btn-sm btn-outline-light" onclick="addSdr()">Use</button>
           </div>
-          <div class="small text-muted mb-3" id="sdr-info">&mdash;</div>
+          <div class="small text-muted" id="sdr-info">&mdash;</div>
+            <div class="small mb-3" id="sdr-ref"></div>
           <div class="d-grid gap-2 mb-3">
             <button class="btn btn-secondary big-btn" id="btn-txon" onclick="startTx()">TX On</button>
             <button class="btn btn-secondary big-btn" id="btn-txoff" onclick="stopTx()">TX Off</button>
@@ -2964,6 +2990,14 @@ async function poll() {
   setText('sdr-info', here
     ? 'Using ' + here.model + (here.firmware ? ', ' + here.firmware : '') + ' at ' + here.host
     : 'Using ' + S.uri + (S.last_scan ? ' (not found in the last scan)' : ''));
+  const R = S.ref, refEl = document.getElementById('sdr-ref');
+  if (!R) { refEl.textContent = ''; }
+  else {
+    const st = R.state || (R.locked ? 'locked' : ((R.present === '1' || /^(10mhz|pps)$/.test(R.source || '')) ? 'acquiring' : 'absent'));
+    refEl.textContent = '10 MHz reference: ' + (R.locked ? 'locked' : st)
+      + (R.mode && R.mode !== 'auto' ? ' (' + R.mode + ')' : '');
+    refEl.style.color = R.locked ? '#16a34a' : (st === 'absent' ? '' : '#d97706');
+  }
 
   // As an IQ transmitter DL1JM's modulator is stopped on purpose (or absent),
   // so "idle" would read as a fault: the badge shows the SDR instead.
@@ -3382,4 +3416,5 @@ if __name__ == "__main__":
     print(f"    LibreSDR: {libre_host()}")
     threading.Thread(target=libre_patch_watch, daemon=True).start()
     threading.Thread(target=sdr_scan_watch, daemon=True).start()
+    threading.Thread(target=sdr_ref_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")

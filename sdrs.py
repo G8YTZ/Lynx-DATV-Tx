@@ -167,6 +167,31 @@ def scan(hosts: list) -> list:
     return unique
 
 
+def refclk(host: str) -> dict | None:
+    """The board's 10 MHz reference, as Tezuka reports it over MQTT
+    (retained state/system/clkref/* topics, refreshed every couple of
+    seconds): present, lock, state (absent/acquire/locked/recheck on the
+    PlutoSky R2), mode (auto/external/internal), source. None if the board
+    has no broker or mosquitto_sub is missing."""
+    if not shutil.which("mosquitto_sub"):
+        return None
+    try:
+        r = subprocess.run(["mosquitto_sub", "-h", host, "-t", "state/system/clkref/#",
+                            "-v", "-W", "2"], capture_output=True, text=True, timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    out = {}
+    for line in r.stdout.splitlines():
+        topic, _, value = line.partition(" ")
+        if topic.startswith("state/system/clkref/"):
+            out[topic.rsplit("/", 1)[1]] = value.strip()
+    if not out:
+        return None
+    out["locked"] = out.get("lock") == "1"
+    out["seen"] = time.time()
+    return out
+
+
 def found() -> list:
     with _lock:
         return list(_found.values())
