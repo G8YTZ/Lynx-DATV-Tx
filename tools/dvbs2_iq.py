@@ -99,7 +99,7 @@ def main():
     p.add_argument("--sr", type=float, default=2000, help="symbol rate, kS/s")
     p.add_argument("--fec", default="3/4", choices=FECS)
     p.add_argument("--mod", default="qpsk", choices=list(MODS))
-    p.add_argument("--rolloff", default="0.20", choices=list(ROLLOFFS))
+    p.add_argument("--rolloff", default="0.35", choices=list(ROLLOFFS))
     p.add_argument("--no-pilots", dest="pilots", action="store_false")
     p.add_argument("--gain", type=float, default=-10.0,
                    help="AD9361 TX gain in dB (0 is full, -89.75 is mute)")
