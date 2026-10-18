@@ -2,13 +2,14 @@
 
 A 4K DATV transmitter you drive from a web page. A Radxa ROCK 5T mixes, encodes and modulates; a Pluto-class SDR on its own cable puts it on air. DVB-S2 and ATSC 3.0 from one box, with DVB-T2 coming soon: a true multi-mode television transmitter.
 
-Companion to the [Lynx DATV receiver](https://github.com/G8YTZ/lynx-datv-receiver) (same family, opposite direction) and [Lynx-Deck](https://github.com/G8YTZ/lynx-deck), the family's media player.
+Companion to the [Lynx DATV receiver](https://github.com/G8YTZ/lynx-datv-receiver): same family, opposite direction.
 
 ![Lynx-Tx wiring](docs/wiring.svg)
 
 ## What it does
 
 - **Vision mixer:** Camera (HDMI, up to 4K) and media run all the time; the cut happens in front of the encoder, with no break on air.
+- **Built-in Lynx-Deck media player, in 4K:** Upload clips and stills on the page and play them out like a HyperDeck, at up to 3840×2160. No second box: the separate [Lynx-Deck](https://github.com/G8YTZ/lynx-deck) on a Pi 4 is HD only.
 - **Hardware HEVC:** The RK3588's encoder does 4K25 at about a quarter of one core.
 - **Frame-by-frame rate control:** Every picture's QP is chosen so the receiver's buffer is never late.
 - **Sound priority:** Tables, then sound, then pictures. A picture burst cannot push the sound out.

@@ -2,7 +2,7 @@
 
 ## The house standard
 
-Every file played out by Lynx-Tx should be **3840×2160, 25p, H.265 Main (8-bit), Rec.709 standard range, with AAC 48 kHz stereo audio**. Lynx-Tx re-encodes it to about 3.8 Mb/s for transmission, so the master only needs to be clean and correct, not small.
+Lynx-Tx has the Lynx-Deck media player built in, playing 4K files from the page's **Manage media** link. Every file played out by Lynx-Tx should be **3840×2160, 25p, H.265 Main (8-bit), Rec.709 standard range, with AAC 48 kHz stereo audio**. Lynx-Tx re-encodes it to about 3.8 Mb/s for transmission, so the master only needs to be clean and correct, not small.
 
 What goes wrong when a file is off-standard:
 
