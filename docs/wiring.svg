@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" width="1200" height="640" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrRF" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b45309"/>
+    </marker>
+    <marker id="arrRef" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#047857"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="640" fill="#ffffff"/>
+  <text x="40" y="44" font-size="24" font-weight="700" fill="#0f172a">Lynx-Tx wiring</text>
+  <text x="40" y="70" font-size="14" fill="#475569">Supported: the SDR on its own cable to the ROCK's second Ethernet port. On the LAN also works, unsupported.</text>
+
+  <!-- Source -->
+  <rect x="40" y="250" width="170" height="80" rx="10" fill="#f1f5f9" stroke="#334155" stroke-width="2"/>
+  <text x="125" y="284" font-size="16" font-weight="700" text-anchor="middle" fill="#0f172a">Camera</text>
+  <text x="125" y="306" font-size="13" text-anchor="middle" fill="#475569">HDMI source, up to 4K</text>
+
+  <!-- ROCK -->
+  <rect x="300" y="200" width="270" height="200" rx="12" fill="#e0f2fe" stroke="#0369a1" stroke-width="2.5"/>
+  <text x="435" y="234" font-size="18" font-weight="700" text-anchor="middle" fill="#0c4a6e">Radxa ROCK 5T</text>
+  <text x="435" y="256" font-size="13" text-anchor="middle" fill="#0c4a6e">Lynx-Tx: mixer, HEVC encoder,</text>
+  <text x="435" y="274" font-size="13" text-anchor="middle" fill="#0c4a6e">DVB-S2 / ATSC 3.0 modulator</text>
+  <text x="312" y="314" font-size="12" fill="#0c4a6e">HDMI in</text>
+  <text x="560" y="314" font-size="12" text-anchor="end" fill="#0c4a6e">Ethernet 2 (far right)</text>
+  <text x="560" y="330" font-size="12" text-anchor="end" fill="#0c4a6e">192.168.254.1</text>
+  <text x="312" y="384" font-size="12" fill="#0c4a6e">Ethernet 1: your LAN</text>
+
+  <!-- LAN -->
+  <rect x="300" y="480" width="270" height="70" rx="10" fill="#f1f5f9" stroke="#334155" stroke-width="2"/>
+  <text x="435" y="510" font-size="16" font-weight="700" text-anchor="middle" fill="#0f172a">Home network</text>
+  <text x="435" y="531" font-size="13" text-anchor="middle" fill="#475569">Web UI at http://rock:8080, updates</text>
+
+  <!-- SDR -->
+  <rect x="680" y="200" width="230" height="200" rx="12" fill="#ede9fe" stroke="#6d28d9" stroke-width="2.5"/>
+  <text x="795" y="234" font-size="18" font-weight="700" text-anchor="middle" fill="#4c1d95">SDR</text>
+  <text x="795" y="256" font-size="13" text-anchor="middle" fill="#4c1d95">PlutoSky R2 or LibreSDR</text>
+  <text x="795" y="274" font-size="13" text-anchor="middle" fill="#4c1d95">Tezuka firmware</text>
+  <text x="692" y="314" font-size="12" fill="#4c1d95">Ethernet</text>
+  <text x="692" y="330" font-size="12" fill="#4c1d95">192.168.254.2</text>
+  <text x="898" y="314" font-size="12" text-anchor="end" fill="#4c1d95">TX1</text>
+  <text x="795" y="388" font-size="12" text-anchor="middle" fill="#4c1d95">10 MHz in</text>
+
+  <!-- GNSS reference -->
+  <rect x="680" y="500" width="230" height="80" rx="10" fill="#ecfdf5" stroke="#047857" stroke-width="2"/>
+  <text x="795" y="532" font-size="16" font-weight="700" text-anchor="middle" fill="#064e3b">Leo Bodnar</text>
+  <text x="795" y="553" font-size="13" text-anchor="middle" fill="#065f46">GNSS reference, 10 MHz out</text>
+  <rect x="980" y="515" width="170" height="50" rx="10" fill="#ecfdf5" stroke="#047857" stroke-width="2"/>
+  <text x="1065" y="545" font-size="14" text-anchor="middle" fill="#064e3b">GNSS antenna</text>
+
+  <!-- RF chain -->
+  <rect x="980" y="110" width="170" height="60" rx="10" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+  <text x="1065" y="136" font-size="15" font-weight="700" text-anchor="middle" fill="#78350f">Band-pass filter</text>
+  <text x="1065" y="155" font-size="12" text-anchor="middle" fill="#92400e">optional, recommended</text>
+  <rect x="980" y="215" width="170" height="70" rx="10" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+  <text x="1065" y="243" font-size="15" font-weight="700" text-anchor="middle" fill="#78350f">Power amplifier</text>
+  <text x="1065" y="263" font-size="12" text-anchor="middle" fill="#92400e">about 1 mW drive</text>
+  <rect x="980" y="330" width="170" height="60" rx="10" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+  <text x="1065" y="365" font-size="15" font-weight="700" text-anchor="middle" fill="#78350f">Antenna</text>
+  <rect x="980" y="420" width="170" height="60" rx="10" fill="#f1f5f9" stroke="#334155" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="1065" y="446" font-size="13" font-weight="700" text-anchor="middle" fill="#0f172a">PTT sequencer</text>
+  <text x="1065" y="465" font-size="12" text-anchor="middle" fill="#475569">keys the PA</text>
+
+  <!-- links -->
+  <line x1="210" y1="290" x2="298" y2="290" stroke="#334155" stroke-width="2.5" marker-end="url(#arr)"/>
+  <text x="254" y="280" font-size="12" text-anchor="middle" fill="#334155">HDMI</text>
+  <line x1="435" y1="402" x2="435" y2="478" stroke="#334155" stroke-width="2.5" marker-start="url(#arr)" marker-end="url(#arr)"/>
+  <text x="445" y="445" font-size="12" fill="#334155">Cat 6</text>
+  <line x1="572" y1="300" x2="678" y2="300" stroke="#6d28d9" stroke-width="3.5" marker-start="url(#arr)" marker-end="url(#arr)"/>
+  <text x="625" y="290" font-size="12" text-anchor="middle" fill="#4c1d95">Cat 6, direct</text>
+  <text x="625" y="326" font-size="11" text-anchor="middle" fill="#4c1d95">IQ, ~130 Mb/s</text>
+  <text x="625" y="340" font-size="11" text-anchor="middle" fill="#4c1d95">at 2 MS/s</text>
+
+  <line x1="978" y1="540" x2="912" y2="540" stroke="#047857" stroke-width="2" marker-end="url(#arrRef)"/>
+  <line x1="795" y1="498" x2="795" y2="402" stroke="#047857" stroke-width="2.5" marker-end="url(#arrRef)"/>
+  <text x="805" y="455" font-size="12" fill="#065f46">10 MHz, SMA to MMCX</text>
+
+  <path d="M912,300 L945,300 L945,140 L978,140" fill="none" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrRF)"/>
+  <line x1="1065" y1="172" x2="1065" y2="213" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrRF)"/>
+  <line x1="1065" y1="287" x2="1065" y2="328" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrRF)"/>
+  <path d="M912,360 L960,360 L960,450 L978,450" fill="none" stroke="#334155" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arr)"/>
+  <text x="916" y="352" font-size="11" fill="#475569">PTT (GPIO)</text>
+  <path d="M1152,450 L1170,450 L1170,250 L1152,250" fill="none" stroke="#334155" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arr)"/>
+
+  <text x="40" y="610" font-size="12" fill="#475569">Bench testing: replace the filter, PA and antenna with a 30 to 40 dB attenuator into a receiver. The PlutoSky is powered from USB; unplug USB to restart it.</text>
+</svg>

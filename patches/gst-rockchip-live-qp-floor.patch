@@ -1,0 +1,22 @@
+diff --git a/gst/rockchipmpp/gstmpph265enc.c b/gst/rockchipmpp/gstmpph265enc.c
+index 7e59eba..fac95d8 100644
+--- a/gst/rockchipmpp/gstmpph265enc.c
++++ b/gst/rockchipmpp/gstmpph265enc.c
+@@ -233,6 +233,17 @@ gst_mpp_h265_enc_apply_properties (GstVideoEncoder * encoder)
+         self->qp_max_i ? self->qp_max_i : 51);
+     mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "rc:qp_ip",
+         self->qp_ip >= 0 ? self->qp_ip : 2);
++    /* Lynx-Tx: MPP's rate control steers by the FRAME-level limits, which it
++     * only copies from qp_min/qp_max at start-up. Set them too, so a live
++     * change of the QP floor or ceiling takes effect on the next frame. */
++    mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "rc:fqp_min_p",
++        self->qp_min ? self->qp_min : 10);
++    mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "rc:fqp_max_p",
++        self->qp_max ? self->qp_max : 51);
++    mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "rc:fqp_min_i",
++        self->qp_min_i ? self->qp_min_i : 10);
++    mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "rc:fqp_max_i",
++        self->qp_max_i ? self->qp_max_i : 51);
+   }
+ 
+   if (!gst_mpp_enc_apply_properties (encoder))

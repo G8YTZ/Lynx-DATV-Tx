@@ -1,0 +1,8 @@
+config/lynx_tx.yaml
+__pycache__/
+*.pyc
+*.bak-*
+fix*.py
+patch_*.py
+run/
+config/
