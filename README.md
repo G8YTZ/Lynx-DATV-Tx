@@ -45,6 +45,8 @@ Nothing else shares that cable, so the IQ stream (about 130 Mb/s at 2 MS/s, 260 
 
 Setting both ends up: [docs/INSTALL.md](docs/INSTALL.md) and [docs/SDR_SETUP.md](docs/SDR_SETUP.md).
 
+Preparing video files to play out: [docs/MEDIA.md](docs/MEDIA.md), the house standard and a DaVinci Resolve walkthrough.
+
 ## Modes
 
 | Mode | Modulator | SDR | Receiver |

@@ -126,6 +126,8 @@ On a cable, through a 30 to 40 dB attenuator into a receiver:
 2. **Modulation:** 1249 MHz, 2000 kS/s, QPSK, 3/4, pilots on, roll-off 0.35, power −20 dB.
 3. **TX On.** The receiver should lock within a couple of seconds.
 
+Media files to play out: Upload them on the page's **Manage media** link. [MEDIA.md](MEDIA.md) says how to prepare them.
+
 No camera to hand? `tools/test_plutosky.sh` and `tools/test_libresdr.sh` send colour bars and a −18 dBFS tone without the rest of Lynx-Tx.
 
 ## Updating
