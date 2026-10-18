@@ -2993,14 +2993,14 @@ async function poll() {
   setText('sdr-info', here ? ''
     : 'Using ' + S.uri + (S.last_scan ? ' (not found in the last scan)' : ''));
   // 10 MHz reference: green when the SDR's loop is locked, red when it is
-  // not (no lock, or no 10 MHz feed). Hidden when the board cannot say
-  // (DL1JM's firmware, or no answer yet).
+  // not (no lock, or no 10 MHz feed), grey when the board cannot say
+  // (DL1JM's firmware has no way to report it). Always shown, so its
+  // absence is never mistaken for an answer.
   const R = S.ref;
-  setStyle('ref-badge', 'display', R ? '' : 'none');
-  if (R) {
-    setText('ref-badge', '10 MHz Reference ' + (R.locked ? 'Locked' : 'Unlocked'));
-    setStyle('ref-badge', 'background', R.locked ? '#16a34a' : '#b91c1c');
-  }
+  setText('ref-badge', R ? '10 MHz Reference ' + (R.locked ? 'Locked' : 'Unlocked')
+                         : '10 MHz Reference: not reported');
+  setStyle('ref-badge', 'background', R ? (R.locked ? '#16a34a' : '#b91c1c') : '#3a4a63');
+  setStyle('ref-badge', 'display', '');
 
   // As an IQ transmitter DL1JM's modulator is stopped on purpose (or absent),
   // so "idle" would read as a fault: the badge shows the SDR instead.
