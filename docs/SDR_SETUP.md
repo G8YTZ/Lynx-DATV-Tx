@@ -25,7 +25,7 @@ Do not use the `.frm` flashing method: Tezuka boots from the card.
 
 Tezuka keeps its settings in the board's own flash, not on the SD card, so they cannot be put on the card when you make it. You set them once, from a computer, through the board's USB drive.
 
-1. **Card in, USB lead from the board to your computer.** The board powers up from USB. After a minute or so a drive called **PlutoSDR** appears.
+1. **Card in, USB lead from the board to your computer.** The board powers up from USB. After a minute or so a drive called **TEZUKA** appears (**PlutoSDR** on older firmware).
 2. **Check it is the right board:** Open `info.html` on the drive. It shows the model, the firmware version and the addresses.
 3. **Open `config.txt` on the drive** in a plain text editor (TextEdit on a Mac, Notepad on Windows) and change these lines, leaving everything else alone:
 
