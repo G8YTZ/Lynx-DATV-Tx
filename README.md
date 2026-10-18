@@ -60,7 +60,7 @@ Preparing video files to play out: [docs/MEDIA.md](docs/MEDIA.md), the house sta
 
 | Mode | Modulator | SDR | Receiver |
 |---|---|---|---|
-| DVB-S2 | ROCK: gr-dtv (default) | Any Pluto-class with Ethernet, Tezuka recommended | [BATC PicoTuner (Ethernet)](https://wiki.batc.org.uk/PicoTuner_Ethernet_Interface), MiniTiouner, satellite receivers |
+| DVB-S2 | ROCK: gr-dtv (default) | Any Pluto-class with Ethernet, Tezuka preferred | [BATC PicoTuner (Ethernet)](https://wiki.batc.org.uk/PicoTuner_Ethernet_Interface), MiniTiouner, satellite receivers |
 | DVB-S2 | LibreSDR on board: DL1JM's firmware (fallback) | LibreSDR with DL1JM firmware only | As above |
 | ATSC 3.0 | ROCK: gr-atsc3 | Any Pluto-class with Ethernet | [HDHomeRun FLEX 4K (HDFX-4K)](https://shop.silicondust.com/shop/product/hdfx-4k/) |
 | DVB-T2 (coming soon) | ROCK: gr-dtv | Any Pluto-class with Ethernet | DVB-T2 receivers, Lynx DVB-T2 Receiver |

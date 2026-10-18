@@ -2,7 +2,7 @@
 
 Lynx-Tx uses the SDR as a plain IQ transmitter: the ROCK makes DVB-S2 or ATSC 3.0 and the board only converts it to RF. Any Pluto-class board with Gigabit Ethernet and running iiod works (not the original ADALM-Pluto, which has only USB). Two are proven: the **PlutoSky R2** and the **LibreSDR**.
 
-**Recommended firmware: [Tezuka](https://github.com/F5OEO/tezuka_fw)** by Evariste F5OEO, on both boards. It keys PTT by itself whenever IQ is flowing, so the same setup works for either board.
+**Preferred firmware: [Tezuka](https://github.com/F5OEO/tezuka_fw)** by Evariste F5OEO, on both boards. It keys PTT by itself whenever IQ is flowing, disciplines the board's crystal to a 10 MHz reference, and reports that lock to the page's **10 MHz Reference** lamp. The same setup works for either board.
 
 ## Making the SD card
 
@@ -51,9 +51,9 @@ Proven 18 October 2026 with Tezuka v0.3.5 (April 2026). v0.3.141592653 (July 202
 
 ## LibreSDR notes
 
-- **With Tezuka:** Set it up exactly as the PlutoSky above. Use a new card and keep the board's original, so its old firmware is a card swap away. Its device tree is already `rgmii-id`, and settings live in the board's flash, not on the card.
+- **With Tezuka (preferred):** Set it up exactly as the PlutoSky above. Use a new card and keep the board's original, so its old firmware is a card swap away. Its device tree is already `rgmii-id`, and settings live in the board's flash, not on the card.
 - **Overclock:** The card's `overclock` folder holds faster boot files. Leave them alone unless the Ethernet stalls at high symbol rates; the CPU950 one is the gentle first step.
-- **With DL1JM's firmware:** A good choice if the board also works with Portsdown, which uses DL1JM's firmware: one card does both. Lynx-Tx finds it on the direct link like any other (it lists as "LibreSDR (DL1JM firmware)") and uses it two ways. As an IQ transmitter (Modulator: ROCK, the recommended way), Lynx-Tx stops DL1JM's modulator for the duration; **PTT is not keyed** in this mode, so key your PA another way. Or with DL1JM's own modulator (Modulator: LibreSDR on board), the original path, where the firmware keys PTT from the power setting.
+- **With DL1JM's firmware:** Supported, for a LibreSDR that also works with Portsdown, which uses DL1JM's firmware. Keep each on its own card and swap as needed. On DL1JM's firmware the 10 MHz Reference lamp reads "not reported", because the firmware cannot say. Lynx-Tx finds it on the direct link like any other (it lists as "LibreSDR (DL1JM firmware)") and uses it two ways. As an IQ transmitter (Modulator: ROCK, the recommended way), Lynx-Tx stops DL1JM's modulator for the duration; **PTT is not keyed** in this mode, so key your PA another way. Or with DL1JM's own modulator (Modulator: LibreSDR on board), the original path, where the firmware keys PTT from the power setting.
 
 ## Checking a board from the ROCK
 
