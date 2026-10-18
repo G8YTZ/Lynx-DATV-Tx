@@ -376,7 +376,7 @@ SSH_KEEP = ["-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/lynx-ssh-%r@%h:%
             "-o", "ControlPersist=120"]
 
 
-def libre_ssh(cmd: str, timeout: int = 8) -> str:
+def libre_ssh(cmd: str, timeout: int = 8, host: Optional[str] = None) -> str:
     """Run a command on the LibreSDR over SSH.
 
     Key-based, non-interactive: a transmitter that stops to ask for a
@@ -389,7 +389,7 @@ def libre_ssh(cmd: str, timeout: int = 8) -> str:
         r = subprocess.run(
             ["ssh", *SSH_KEEP, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
              "-o", "StrictHostKeyChecking=accept-new",
-             f"{lib['user']}@{libre_host()}", cmd],
+             f"{lib['user']}@{host or libre_host()}", cmd],
             capture_output=True, text=True, timeout=timeout)
         return r.stdout
     except Exception as e:
@@ -648,12 +648,34 @@ def sdr_uri() -> str:
     return (config.get("sdr") or {}).get("uri") or libre_uri()
 
 
+def sdr_identity() -> Optional[dict]:
+    """What the chosen SDR says it is: from the last scan, else asked now."""
+    uri = sdr_uri()
+    for d in sdrs.found():
+        if d["uri"] == uri:
+            return d
+    return sdrs.probe(uri)
+
+
 def sdr_is_libre() -> bool:
-    """Is the chosen SDR the configured LibreSDR (the one DL1JM's modulator,
-    if fitted, has to be stopped on)?"""
+    """Could the chosen SDR be running DL1JM's firmware - the only board the
+    "on board" modulator exists on, and the only one it must be stopped on?
+
+    Decided by what the board says it is, not by its address: the direct
+    link is for any SDR, and the LibreSDR can be reached by several names.
+    A board that answers as a PlutoSky, or runs Tezuka, is not. One that
+    cannot be asked is judged by address, as before."""
+    d = sdr_identity()
+    if d:
+        return d["kind"] == "libresdr" and not d["tezuka"]
     u = (config.get("sdr") or {}).get("uri") or ""
     return not u or u == libre_uri() or u.split(":", 1)[-1] in (
         config["libre"].get("host"), config["libre"].get("direct_host", "192.168.254.2"))
+
+
+def sdr_host() -> str:
+    u = sdr_uri()
+    return u.split(":", 1)[1] if u.startswith("ip:") else libre_host()
 
 
 def sdr_hosts() -> list:
@@ -684,9 +706,10 @@ def sdr_scan_watch():
 
 
 def atsc3_release_libre():
-    """Stop DL1JM's modulator (and the scripts that would restart it)."""
+    """Stop DL1JM's modulator (and the scripts that would restart it) on the
+    chosen SDR - wherever it was reached."""
     libre_ssh("killall rtmppluto.sh udpts.sh pluto_dvb 2>/dev/null; sleep 1; "
-              "killall -9 pluto_dvb 2>/dev/null; true", timeout=10)
+              "killall -9 pluto_dvb 2>/dev/null; true", timeout=10, host=sdr_host())
 
 
 def _iio(cmd: list) -> str:
@@ -696,7 +719,7 @@ def _iio(cmd: list) -> str:
     return r.stdout.strip()
 
 
-def atsc3_set_radio(live_only: bool = False):
+def atsc3_set_radio(live_only: bool = False, hold_power: bool = False):
     """Frequency, sample rate, filter and power, straight to the AD9361 of
     the chosen SDR - for ATSC 3.0 or ROCK-made DVB-S2, whichever is on.
     live_only: just frequency and power, changed on air with no break."""
@@ -713,11 +736,47 @@ def atsc3_set_radio(live_only: bool = False):
         cmds = (dvbs2mod.radio_live_commands(uri, m) if live_only
                 else dvbs2mod.iio_commands(uri, m))
         what = "DVB-S2"
+    if hold_power:
+        # Key-up: everything but the power. It stays at the mute level until
+        # IQ is actually flowing (see iq_guard), so the DAC never sits at
+        # operating power on its DDS or a stale buffer.
+        cmds = [c for c in cmds if c[-2] != "hardwaregain"]
     try:
         for cmd in cmds:
             _iio(cmd)
     except Exception as e:
         raise HTTPException(500, f"The SDR at {uri} would not take the {what} settings: {e}")
+
+
+def iq_power_db() -> float:
+    return float((config["atsc3"] if is_atsc3() else config["modulation"])["power_db"])
+
+
+def iq_guard(proc: subprocess.Popen):
+    """Bring the power up once IQ is flowing, and mute if the chain dies.
+
+    Up: when iio_writedev is running and has had 2 s to fill the SDR's
+    buffers. Down: if this pipeline ends without TX Off - a crashed
+    flowgraph, a dead link - the SDR is muted rather than left keyed with
+    nothing sensible to send."""
+    deadline = time.time() + 20
+    while time.time() < deadline and proc.poll() is None:
+        if subprocess.run(["pgrep", "-f", "iio_writedev"], capture_output=True).returncode == 0:
+            time.sleep(2)
+            break
+        time.sleep(0.5)
+    if proc.poll() is None and tx_proc is proc:
+        try:
+            _iio(atsc3mod.mute_command(sdr_uri())[:-1] + [f"{iq_power_db():g}"])
+            print(f"[iq] on air at {iq_power_db():g} dB")
+        except Exception as e:
+            print(f"[iq] power up: {e}")
+    while proc.poll() is None:
+        time.sleep(1)
+    if tx_proc is proc:
+        # Ended by itself, not by TX Off (which clears tx_proc first).
+        print("[iq] pipeline ended on its own - muting")
+        atsc3_mute()
 
 
 def atsc3_mute():
@@ -1421,6 +1480,9 @@ def build_pipeline() -> str:
 def start_tx() -> dict:
     global tx_proc, tx_started_at, tx_last_command
     with tx_lock:
+        if iq_mode() and tx_running():
+            # A restart: mute while the old IQ is still flowing.
+            atsc3_mute()
         stop_tx_locked()
         # Whatever the source is, make sure it is actually being fed.
         # Starting the encoder against a loopback nothing is writing to
@@ -1442,7 +1504,8 @@ def start_tx() -> dict:
                     raise HTTPException(400, f"DVB-S2: {e}")
             if sdr_is_libre():
                 atsc3_release_libre()
-            atsc3_set_radio()
+            atsc3_mute()
+            atsc3_set_radio(hold_power=True)
             try:
                 cmd = build_pipeline()
             except RuntimeError as e:
@@ -1460,6 +1523,8 @@ def start_tx() -> dict:
             cmd, shell=True, preexec_fn=os.setsid,
             stdout=subprocess.DEVNULL, stderr=open("/tmp/lynx-tx-pipeline.log", "ab"))
         tx_started_at = time.time()
+        if iq_mode():
+            threading.Thread(target=iq_guard, args=(tx_proc,), daemon=True).start()
         print(f"[tx] started: {cmd[:120]}...")
         return {"success": True}
 
@@ -1550,16 +1615,21 @@ class SourceUpdate(BaseModel):
     file: str = ""
 
 
+def _safe(f, default=None):
+    """A status figure that must never take the whole status down."""
+    try:
+        return f()
+    except Exception:
+        return default
+
+
 @app.get("/api/status")
 def api_status():
     m = config["modulation"]
     if is_atsc3():
         theoretical = atsc3mod.ts_rate(config["atsc3"])
     elif dvbs2_rock():
-        try:
-            theoretical = dvbs2mod.ts_rate(m)
-        except KeyError:
-            theoretical = 0
+        theoretical = _safe(lambda: dvbs2mod.ts_rate(m), 0)
     else:
         theoretical = ts_bitrate(m["symbol_rate_ks"], m["constellation"],
                                  m["fec"], m["pilots"])
@@ -1571,7 +1641,7 @@ def api_status():
         "sdr": {"uri": sdr_uri(), "chosen": (config.get("sdr") or {}).get("uri", ""),
                 "is_libre": sdr_is_libre(), "found": sdrs.found(),
                 "last_scan": sdrs.last_scan(),
-                "dac_rate": dvbs2mod.dac_rate(m) if dvbs2_rock() else None},
+                "dac_rate": _safe(lambda: dvbs2mod.dac_rate(m)) if dvbs2_rock() else None},
         "atsc3_choices": {"constellations": atsc3mod.CONSTELLATIONS,
                           "rates": atsc3mod.CODE_RATES, "ts_rates": atsc3mod.TS_RATES},
         "transmitting": tx_running(),
@@ -1817,6 +1887,8 @@ def api_modulation(req: ModulationUpdate):
     for k, v in req.model_dump().items():
         if v is not None:
             new[k] = v
+    if "rolloff" in new:
+        new["rolloff"] = dvbs2mod.norm_rolloff(new["rolloff"])
     if dvbs2_rock():
         # Refuse what the ROCK's modulator cannot make (8PSK 1/2, say)
         # before it reaches the config, with the reason.
@@ -1827,7 +1899,10 @@ def api_modulation(req: ModulationUpdate):
     config["modulation"] = new
     save_config(config)
     if tx_running():
-        live = ("frequency_mhz", "power_db")
+        # Power is always live. Frequency too, unless the NIT is on: it
+        # carries the frequency, so a live change would leave it telling
+        # receivers the old one - restart and rebuild it instead.
+        live = ("power_db",) if config["identity"].get("nit", True) else ("frequency_mhz", "power_db")
         if dvbs2_rock() and all(new[k] == old.get(k) for k in new if k not in live):
             # Frequency and power go straight to the AD9361, no break.
             atsc3_set_radio(live_only=True)
@@ -2608,15 +2683,20 @@ function fillMod(c, mode) {
 }
 
 async function setSdr(uri) {
+  const sel = document.getElementById('sdr-select');
+  sel.blur(); sdrKey = null;
   if (cfg && cfg.transmitting &&
       !confirm('Changing the SDR takes the transmitter off air. Carry on?')) { poll(); return; }
   await api('POST', '/api/sdr', {uri});
+  sdrKey = null;
   poll();
 }
 
 async function addSdr() {
   const v = document.getElementById('sdr-add').value.trim();
   if (!v) return;
+  if (cfg && cfg.transmitting &&
+      !confirm('Changing the SDR takes the transmitter off air. Carry on?')) return;
   setText('sdr-info', 'Asking ' + v + '...');
   const j = await api('POST', '/api/sdr', {uri: v});
   if (j.success) { document.getElementById('sdr-add').value = ''; await api('POST', '/api/sdr/scan'); }

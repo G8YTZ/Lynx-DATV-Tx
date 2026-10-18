@@ -65,7 +65,7 @@ def ts_rate(m: dict) -> int:
 def sps(m: dict) -> int:
     """Samples per symbol: 2 (the image well clear of the channel), more
     when the symbol rate is low enough to put the DAC below its minimum."""
-    sr = int(m["symbol_rate_ks"]) * 1000
+    sr = max(1, int(m["symbol_rate_ks"])) * 1000
     return max(2, math.ceil(MIN_DAC / sr))
 
 
@@ -73,15 +73,29 @@ def dac_rate(m: dict) -> int:
     return int(m["symbol_rate_ks"]) * 1000 * sps(m)
 
 
+def norm_rolloff(v) -> str:
+    """0.2, "0.2" and "0.20" are all the same roll-off."""
+    try:
+        return f"{float(v):.2f}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
 def check(m: dict):
     """Refuse settings the modulator cannot make, with the reason."""
+    try:
+        sr_ks = float(m["symbol_rate_ks"])
+    except (TypeError, ValueError, KeyError):
+        raise ValueError("symbol rate must be a number of kS/s")
+    if sr_ks < 25:
+        raise ValueError("symbol rate must be at least 25 kS/s")
     c = m["constellation"].upper()
     if c not in BITS_PER_SYMBOL:
         raise ValueError(f"unknown constellation {m['constellation']}")
     if m["fec"] not in ALLOWED[c]:
         raise ValueError(f"{c} has no FEC {m['fec']} in DVB-S2 "
                          f"(it takes {', '.join(sorted(ALLOWED[c]))})")
-    if str(m.get("rolloff", "0.35")) not in ROLLOFFS:
+    if norm_rolloff(m.get("rolloff", "0.35")) not in ROLLOFFS:
         raise ValueError(f"roll-off must be one of {', '.join(ROLLOFFS)}")
     if dac_rate(m) > 30_000_000:
         raise ValueError("symbol rate too high for the IQ link")
@@ -90,7 +104,7 @@ def check(m: dict):
 def iio_commands(uri: str, m: dict) -> list:
     """iio_attr calls that set the SDR up for this channel."""
     sr = int(m["symbol_rate_ks"]) * 1000
-    occupied = sr * (1 + float(m.get("rolloff", "0.35")))
+    occupied = sr * (1 + float(norm_rolloff(m.get("rolloff", "0.35"))))
     bw = int(min(max(occupied, 1_500_000), 40_000_000))
     base = ["iio_attr", "-u", uri, "-o", "-c", "ad9361-phy"]
     return [
@@ -116,7 +130,7 @@ def flowgraph_command(app_dir: Path, m: dict) -> str:
         "--in", TS_FIFO, "--out", IQ_FIFO,
         "--sr", str(int(m["symbol_rate_ks"]) * 1000),
         "--fec", m["fec"], "--constellation", m["constellation"].upper(),
-        "--rolloff", str(m.get("rolloff", "0.35")), "--sps", str(sps(m)),
+        "--rolloff", norm_rolloff(m.get("rolloff", "0.35")), "--sps", str(sps(m)),
     ]
     if not m.get("pilots", True):
         args.append("--no-pilots")
