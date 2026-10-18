@@ -34,7 +34,22 @@ def fec_const(dtv, fec):
     return getattr(dtv, "C" + fec.replace("/", "_"))
 
 
+def build_tone(args, out_path):
+    """A single tone at +offset from the carrier: for zero-beating against a
+    trusted receiver. Offset, so the LO leakage cannot be mistaken for it."""
+    from gnuradio import analog, blocks, gr
+    dac = args.sr * 1e3 * 2
+    tb = gr.top_block()
+    src = analog.sig_source_c(dac, analog.GR_COS_WAVE, args.tone * 1e3, args.level, 0)
+    to_s16 = blocks.complex_to_interleaved_short(False, 32767)
+    sink = blocks.file_sink(gr.sizeof_short, out_path, False)
+    tb.connect(src, to_s16, sink)
+    return tb
+
+
 def build(args, out_path):
+    if args.tone is not None:
+        return build_tone(args, out_path)
     from gnuradio import blocks, dtv, filter as grfilter, gr
     from gnuradio.filter import firdes
 
@@ -86,9 +101,13 @@ def main():
                    help="AD9361 TX gain in dB (0 is full, -89.75 is mute)")
     p.add_argument("--level", type=float, default=0.5,
                    help="digital level, 0-1 of full scale")
-    p.add_argument("--ts", required=True, help="transport stream file, looped")
+    p.add_argument("--ts", help="transport stream file, looped")
+    p.add_argument("--tone", type=float, metavar="KHZ",
+                   help="send a plain tone this many kHz above --freq instead")
     p.add_argument("--file", help="write IQ (int16 I/Q) here instead of the SDR")
     args = p.parse_args()
+    if args.tone is None and not args.ts:
+        p.error("--ts is required (or --tone for a test tone)")
 
     if args.file:
         build(args, args.file).run()
@@ -110,7 +129,12 @@ def main():
     tb = build(args, fifo)
     tb.start()
     iio(args.uri, "voltage0", "hardwaregain", f"{args.gain:g}")
-    print(f"On air: {args.freq:g} MHz, {args.sr:g} kS/s, {args.mod.upper()} "
+    if args.tone is not None:
+        print(f"Tone on air at {args.freq * 1e3 + args.tone:.3f} kHz "
+              f"(carrier {args.freq:g} MHz + {args.tone:g} kHz), gain {args.gain:g} dB. "
+              f"Ctrl-C to stop.", flush=True)
+    else:
+        print(f"On air: {args.freq:g} MHz, {args.sr:g} kS/s, {args.mod.upper()} "
           f"{args.fec}, roll-off {args.rolloff}, pilots "
           f"{'on' if args.pilots else 'off'}, DAC {dac} S/s, gain {args.gain:g} dB. "
           f"Ctrl-C to stop.", flush=True)
