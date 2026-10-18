@@ -1,0 +1,70 @@
+# Setting up the SDR
+
+Lynx-Tx uses the SDR as a plain IQ transmitter: the ROCK makes DVB-S2 or ATSC 3.0 and the board only converts it to RF. Any Pluto-class board running iiod works. Two are proven: the **PlutoSky R2** and the **LibreSDR**.
+
+**Recommended firmware: [Tezuka](https://github.com/F5OEO/tezuka_fw)** by Evariste F5OEO, on both boards. It keys PTT by itself whenever IQ is flowing, so the same setup works for either board.
+
+## Login and the USB drive
+
+- **Login:** `root` / `analog`.
+- **USB:** Plugged into a computer, the board appears as a network adapter (board 192.168.2.1) and as a small drive. The drive holds `info.html` (model, firmware, addresses) and `config.txt`. Edit `config.txt`, save it, then **eject** the drive: ejecting is what applies it.
+- **Restarting:** The PlutoSky is powered from USB. Unplug USB to restart it: unplugging Ethernet or the 10 MHz does not.
+
+## Network settings for the direct link
+
+In `config.txt`:
+
+```ini
+[USB_ETHERNET]
+ipaddr_eth = 192.168.254.2
+netmask_eth = 255.255.255.0
+gateway_eth =
+```
+
+Eject, wait for the drive to come back, then restart the board.
+
+**On a Mac:** Set `usb_ethernet_mode = ecm` under `[SYSTEM]`. The default, RNDIS, is not supported by macOS. If your home network uses 192.168.2.x anywhere, also move the USB address (`ipaddr = 192.168.12.1`, `ipaddr_host = 192.168.12.10` under `[NETWORK]`): otherwise you will be talking to your router, not the SDR.
+
+## PlutoSky R2 notes
+
+Proven 18 October 2026 with Tezuka v0.3.5 (April 2026). v0.3.141592653 (July 2026) has been inspected but not yet run.
+
+- **Ethernet on v0.3.5 receives but never transmits:** No DHCP lease, no ping, a 169.254.x.x address. The supplied `devicetree.dtb` has `phy-mode = "rgmii-rxid"`; this board needs `"rgmii-id"`. Fixed in v0.3.141592653. On v0.3.5, replace `devicetree.dtb` on the SD card with a corrected one (keep the original):
+
+  ```bash
+  dtc -I dtb -O dts devicetree.dtb -o dt.dts
+  sed -i 's/rgmii-rxid/rgmii-id/' dt.dts
+  dtc -I dts -O dtb dt.dts -o devicetree.dtb
+  ```
+
+- **Settings on v0.3.5 live on the SD card** (`uboot.env`), and `uEnv.txt` sets the USB address on every boot. A `config.txt` change can be lost if the power goes too soon. The reliable way: over SSH, `fw_setenv ...`, edit `/boot/uEnv.txt` if the USB address is changing, then `sync`, then unplug. Newer Tezuka keeps settings in the board's flash.
+- **Internal reference:** 40 MHz, about 10 ppm high on one board (13 kHz at 1249 MHz). It locks without a reference, but feed it 10 MHz for an on-frequency signal: the board switches to an external 10 MHz by itself.
+- **Password refused?** A password saved in the board's flash overrides `analog`. Add `revert_passwd = 1` under `[ACTIONS]` in `config.txt`, eject, then restart.
+- **SD socket:** The push-push latch can let the card ride out. Push it fully home before powering up.
+
+## LibreSDR notes
+
+- **With Tezuka:** Set it up exactly as the PlutoSky above. Back up the board's current SD card first, so its old firmware is a card swap away.
+- **With DL1JM's firmware:** Lynx-Tx can still use it two ways. As an IQ transmitter (Modulator: ROCK), Lynx-Tx stops DL1JM's modulator for the duration; **PTT is not keyed** in this mode. Or with DL1JM's own modulator (Modulator: LibreSDR on board), the original path, where the firmware keys PTT from the power setting.
+
+## Checking a board from the ROCK
+
+```bash
+iio_attr -u ip:192.168.254.2 -C                       # model and firmware
+iio_attr -u ip:192.168.254.2 -o -c ad9361-phy voltage0 sampling_frequency
+```
+
+## Bench test without Lynx-Tx
+
+```bash
+cd ~/lynx-tx
+./tools/test_plutosky.sh            # or test_libresdr.sh
+./tools/test_plutosky.sh --sr 4000  # any option overrides
+python3 tools/dvbs2_iq.py --uri ip:192.168.254.2 --freq 1249 --tone 100   # a tone 100 kHz above, to zero-beat
+```
+
+These scripts assume the SDR addresses in the scripts themselves; edit `--uri` to suit.
+
+## Receiving
+
+The Picotuner (Serit tuner) locks to Lynx-Tx's DVB-S2 at roll-off 0.35, **not 0.20** (0.25 not yet tried). It also will not declare lock on a stream of nothing but null packets: always send a real programme.

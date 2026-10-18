@@ -3,7 +3,7 @@
 Lynx-Tx has two modes, chosen on the Transmit card:
 
 - **DVB-S2**: DL1JM's modulator on the LibreSDR, exactly as before.
-- **ATSC 3.0**: Ron Economos W6RZ's [gr-atsc3](https://github.com/drmpeg/gr-atsc3) runs on the ROCK, and the LibreSDR transmits the IQ.
+- **ATSC 3.0**: Ron Economos W6RZ's [gr-atsc3](https://github.com/drmpeg/gr-atsc3) runs on the ROCK, and the SDR chosen on the Transmit card (LibreSDR, PlutoSky R2 or any Pluto-class board) transmits the IQ.
 
 Everything up to the remux (switcher, encoder, hybrid rate control, sound priority) is shared. In ATSC 3.0 the last stage is different:
 
