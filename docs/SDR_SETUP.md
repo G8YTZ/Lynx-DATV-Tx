@@ -6,13 +6,14 @@ Lynx-Tx uses the SDR as a plain IQ transmitter: the ROCK makes DVB-S2 or ATSC 3.
 
 ## Making the SD card
 
-1. **Open the releases page:** [github.com/F5OEO/tezuka_fw/releases](https://github.com/F5OEO/tezuka_fw/releases). The newest release is at the top.
-2. **Under Assets, download the zip for your board.** It must match the board: the wrong one drives the wrong pins.
+1. **Download the zip for your board.** Each link fetches it from Tezuka's newest release. It must match the board: the wrong one drives the wrong pins.
 
-   | Board | File |
+   | Board | Download |
    |---|---|
-   | PlutoSky R2 | `plutoskyr2.zip` |
-   | LibreSDR | `libre.zip` |
+   | PlutoSky R2 | [plutoskyr2.zip](https://github.com/F5OEO/tezuka_fw/releases/latest/download/plutoskyr2.zip) |
+   | LibreSDR | [libre.zip](https://github.com/F5OEO/tezuka_fw/releases/latest/download/libre.zip) |
+
+2. **If a link fails,** open the [releases page](https://github.com/F5OEO/tezuka_fw/releases), scroll down to **Assets** under the newest release, click **Show all assets**, and pick the file from the table.
 
 3. **Format a microSD card as FAT32** (on a Mac: Disk Utility, MS-DOS (FAT), Master Boot Record).
 4. **Unzip, and copy the contents of the `sdimg` folder to the root of the card:** `BOOT.bin`, `devicetree.dtb`, `uImage` and the rest sit at the top level, not in a folder.
