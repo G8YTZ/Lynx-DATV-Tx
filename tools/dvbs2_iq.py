@@ -16,6 +16,14 @@ zero-stuffs to 2 samples per symbol): the DAC runs at twice the symbol
 rate, which moves its image out to where the AD9361's own analogue
 filter removes it (the ATSC 3.0 lesson, 16 Oct 2026).
 
+Use a real programme stream. A TS of nothing but null packets is perfectly
+valid DVB-S2, but the Picotuner (Serit) will not declare lock on it. Bars
+and tone, 20 s, muxed to fit QPSK 3/4 at 2 MS/s:
+
+    ffmpeg -f lavfi -i smptehdbars=size=1280x720:rate=25 -f lavfi -i sine=1000 \
+      -t 20 -c:v libx264 -b:v 1500k -maxrate 1500k -bufsize 1500k -g 50 \
+      -c:a aac -b:a 128k -f mpegts -muxrate 2800000 /tmp/testcard.ts
+
 Ctrl-C stops it and mutes the SDR.
 """
 import argparse
