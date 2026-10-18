@@ -20,9 +20,13 @@ Use a real programme stream. A TS of nothing but null packets is perfectly
 valid DVB-S2, but the Picotuner (Serit) will not declare lock on it. Bars
 and tone, 20 s, muxed to fit QPSK 3/4 at 2 MS/s:
 
-    ffmpeg -f lavfi -i smptehdbars=size=1280x720:rate=25 -f lavfi -i sine=1000 \
+    ffmpeg -f lavfi -i smptehdbars=size=1280x720:rate=25 \
+      -f lavfi -i "aevalsrc=0.125893*sin(2*PI*1000*t)|0.125893*sin(2*PI*1000*t):s=48000:c=stereo" \
       -t 20 -c:v libx264 -b:v 1500k -maxrate 1500k -bufsize 1500k -g 50 \
       -c:a aac -b:a 128k -f mpegts -muxrate 2800000 /tmp/testcard.ts
+
+The tone is stereo at -18 dBFS on each leg, UK alignment level. (ffmpeg's
+sine source is mono at -18 dBFS, which reads -21 once spread over two.)
 
 Ctrl-C stops it and mutes the SDR.
 """
