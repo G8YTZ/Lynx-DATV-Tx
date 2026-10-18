@@ -44,4 +44,5 @@ What a Lynx-Tx transmitter is built from. Exact part numbers and suppliers marke
 | Item | Qty | Notes |
 |---|---|---|
 | Attenuator, 30 to 40 dB | 1 | SDR straight to a receiver, never without one |
-| Receiver: Picotuner with Lynx Rx, or an ATSC 3.0 HDHomeRun | 1 | To check lock and MER |
+| DVB-S2 receiver: [BATC PicoTuner (Ethernet)](https://wiki.batc.org.uk/PicoTuner_Ethernet_Interface) with Lynx Rx | 1 | To check lock and MER |
+| ATSC 3.0 receiver: [SiliconDust HDHomeRun FLEX 4K (HDFX-4K)](https://shop.silicondust.com/shop/product/hdfx-4k/) | 1 | For ATSC 3.0 mode |
