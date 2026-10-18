@@ -2,7 +2,7 @@
 
 A 4K DATV transmitter you drive from a web page. A Radxa ROCK 5T mixes, encodes and modulates; a Pluto-class SDR on its own cable puts it on air. DVB-S2 and ATSC 3.0 from one box, with DVB-T2 coming soon: a true multi-mode television transmitter.
 
-Companion to the [Lynx DATV receiver](https://github.com/G8YTZ/lynx-datv-receiver): same family, opposite direction.
+Companion to the [Lynx DATV receiver](https://github.com/G8YTZ/lynx-datv-receiver) (same family, opposite direction) and [Lynx-Deck](https://github.com/G8YTZ/lynx-deck), the family's media player.
 
 ![Lynx-Tx wiring](docs/wiring.svg)
 

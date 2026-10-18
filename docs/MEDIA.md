@@ -97,7 +97,7 @@ Three settings matter most:
 
 ## 4b. HD masters for Lynx-Deck
 
-Lynx-Deck v1 (Pi 4) plays out 1080p over HDMI, so it gets its own HD master. Render it from the same 3840×2160 timeline: Resolve scales the full 4K picture down, which looks sharper than editing in HD.
+[Lynx-Deck](https://github.com/G8YTZ/lynx-deck) v1 (Pi 4), the Lynx family's HyperDeck-style media player, plays out 1080p over HDMI, so it gets its own HD master. Render it from the same 3840×2160 timeline: Resolve scales the full 4K picture down, which looks sharper than editing in HD.
 
 | Setting                              | 4K master (Lynx-Tx)          | HD master (Lynx-Deck)                        |
 |--------------------------------------|------------------------------|----------------------------------------------|
