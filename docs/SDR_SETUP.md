@@ -21,34 +21,16 @@ Lynx-Tx uses the SDR as a plain IQ transmitter: the ROCK makes DVB-S2 or ATSC 3.
 
 Do not use the `.frm` flashing method: Tezuka boots from the card.
 
-## First boot: setting the address
+## Connecting it
 
-Tezuka keeps its settings in the board's own flash, not on the SD card, so they cannot be put on the card when you make it. You set them once, from a computer, through the board's USB drive.
+Nothing to set on the board. Out of the box Tezuka asks for an address by DHCP, and the ROCK's second port answers with 192.168.254.2 (see [INSTALL.md](INSTALL.md)).
 
-1. **Card in, USB lead from the board to your computer.** The board powers up from USB. After a minute or so a drive called **TEZUKA** appears (**PlutoSDR** on older firmware).
-2. **Check it is the right board:** Open `info.html` on the drive. It shows the model, the firmware version and the addresses.
-3. **Open `config.txt` on the drive** in a plain text editor (TextEdit on a Mac, Notepad on Windows) and change these lines, leaving everything else alone:
+1. **Card in.**
+2. **Ethernet** from the board to the ROCK's second port.
+3. **Power:** The board runs from its USB socket. Any USB supply will do, or a USB port on the ROCK; it does not need a computer.
+4. **Check:** Within a minute or so the board appears on the Transmit card with its model and firmware. Or from the ROCK, see [Checking a board from the ROCK](#checking-a-board-from-the-rock).
 
-   ```ini
-   [USB_ETHERNET]
-   ipaddr_eth = 192.168.254.2
-   netmask_eth = 255.255.255.0
-   gateway_eth =
-
-   [SYSTEM]
-   usb_ethernet_mode = ecm
-   ```
-
-   `gateway_eth` stays empty on purpose: the direct link goes nowhere else. `ecm` lets a Mac use the USB network; Windows and Linux work with it too.
-4. **Save, then eject the drive.** Ejecting is what applies the settings: the drive disappears for a few seconds while the board writes them to flash, then comes back.
-5. **Restart the board:** Unplug the USB lead and plug it in again. (Unplugging Ethernet or the 10 MHz does not restart it.)
-6. **Check:** Open `info.html` again. **ETH IP** should now read 192.168.254.2.
-
-Then connect the board's Ethernet to the ROCK's second port and check from the ROCK (see [Checking a board from the ROCK](#checking-a-board-from-the-rock)).
-
-**Logging in:** If you ever need it, the board answers SSH on its USB address (`ssh root@192.168.2.1`), password `analog`.
-
-**If your home network uses 192.168.2.x:** The board's USB address clashes with it and you will reach your router instead of the SDR. Move it in `config.txt` under `[NETWORK]`: `ipaddr = 192.168.12.1` and `ipaddr_host = 192.168.12.10`.
+**If you need to get into the board:** Plugged into a computer's USB, it appears as a drive called **TEZUKA** (**PlutoSDR** on older firmware) holding `info.html` (model, firmware, addresses) and `config.txt` (settings: edit, save, then eject the drive to apply). It also answers SSH on 192.168.2.1, login `root`, password `analog`. On a Mac, set `usb_ethernet_mode = ecm` under `[SYSTEM]` for SSH over USB to work.
 
 ## PlutoSky R2 notes
 

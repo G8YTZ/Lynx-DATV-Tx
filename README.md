@@ -36,7 +36,7 @@ See [docs/BOM.md](docs/BOM.md). In short: a ROCK 5T, a PlutoSky R2 or LibreSDR r
 | | Address |
 |---|---|
 | ROCK, second port | 192.168.254.1 / 24 |
-| SDR | 192.168.254.2 / 24, no gateway |
+| SDR | 192.168.254.2, given by the ROCK (DHCP) |
 
 Nothing else shares that cable, so the IQ stream (about 130 Mb/s at 2 MS/s, 260 Mb/s at 4 MS/s) never meets your other traffic.
 

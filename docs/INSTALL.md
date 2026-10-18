@@ -59,11 +59,13 @@ Find the port's name with the cable in and the SDR powered: it is the one showin
 ip -br link
 ```
 
-On the ROCK 5T it is usually `enP4p65s0`. Give it a fixed address and no gateway, so your internet traffic never tries to leave through it:
+On the ROCK 5T it is usually `enP4p65s0`. The ROCK takes 192.168.254.1 on it and hands the SDR its address by DHCP, so the SDR needs no setting up. One address in the pool, so the SDR is always 192.168.254.2:
 
 ```bash
+echo 'dhcp-range=192.168.254.2,192.168.254.2,12h' | \
+    sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf
 sudo nmcli con add type ethernet ifname enP4p65s0 con-name lynx-sdr \
-    ipv4.method manual ipv4.addresses 192.168.254.1/24 ipv4.never-default yes ipv6.method disabled
+    ipv4.method shared ipv4.addresses 192.168.254.1/24 ipv6.method disabled
 sudo nmcli con up lynx-sdr
 ```
 
