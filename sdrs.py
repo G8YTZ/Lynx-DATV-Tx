@@ -67,7 +67,12 @@ def probe(uri: str) -> dict | None:
     if r.returncode != 0:
         return None
     a = _attrs(r.stdout)
-    model = a.get("hw_model") or a.get("hw_model_variant") or "Unknown SDR"
+    # DL1JM's LibreSDR firmware gives no hw_model at all, only its kernel
+    # (seen 18 Oct 2026: just local,kernel 6.1.70-...). ADI's and Tezuka's
+    # firmware always name the board, so a nameless board is taken to be a
+    # LibreSDR on DL1JM's firmware.
+    model = (a.get("hw_model") or a.get("hw_model_variant")
+             or "LibreSDR (DL1JM firmware)")
     fw = a.get("fw_version") or a.get("local,kernel") or ""
     host = uri.split(":", 1)[1] if uri.startswith("ip:") else uri
     return {
