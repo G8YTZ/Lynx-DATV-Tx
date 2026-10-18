@@ -18,9 +18,9 @@ sudo apt install ./tsduck_*_arm64.deb
 
 The hardware encoder comes from Radxa's image (`gst-inspect-1.0 mpph265enc` should list it). For hybrid rate control, apply the encoder patch in `patches/`; without it Lynx-Tx falls back to plain CBR and says so on the page.
 
-## 2. ATSC 3.0 (optional)
+## 2. The ATSC 3.0 modulator
 
-DVB-S2 needs nothing more: its modulator is GNU Radio's own. ATSC 3.0 needs Ron Economos W6RZ's gr-atsc3:
+Lynx-Tx is a multi-mode transmitter, and every mode is part of the install. DVB-S2 uses GNU Radio's own gr-dtv, installed above. ATSC 3.0 uses Ron Economos W6RZ's gr-atsc3, built from source (about half an hour on the ROCK):
 
 ```bash
 sudo apt install -y gnuradio-dev cmake build-essential pybind11-dev python3-pybind11
