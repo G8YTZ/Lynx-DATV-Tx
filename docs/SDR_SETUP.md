@@ -4,6 +4,22 @@ Lynx-Tx uses the SDR as a plain IQ transmitter: the ROCK makes DVB-S2 or ATSC 3.
 
 **Recommended firmware: [Tezuka](https://github.com/F5OEO/tezuka_fw)** by Evariste F5OEO, on both boards. It keys PTT by itself whenever IQ is flowing, so the same setup works for either board.
 
+## Making the SD card
+
+1. **Open the releases page:** [github.com/F5OEO/tezuka_fw/releases](https://github.com/F5OEO/tezuka_fw/releases). The newest release is at the top.
+2. **Under Assets, download the zip for your board.** It must match the board: the wrong one drives the wrong pins.
+
+   | Board | File |
+   |---|---|
+   | PlutoSky R2 | `plutoskyr2.zip` |
+   | LibreSDR | `libre.zip` |
+
+3. **Format a microSD card as FAT32** (on a Mac: Disk Utility, MS-DOS (FAT), Master Boot Record).
+4. **Unzip, and copy the contents of the `sdimg` folder to the root of the card:** `BOOT.bin`, `devicetree.dtb`, `uImage` and the rest sit at the top level, not in a folder.
+5. **Keep the board's original card:** Put it away as your way back.
+
+Do not use the `.frm` flashing method: Tezuka boots from the card.
+
 ## Login and the USB drive
 
 - **Login:** `root` / `analog`.
@@ -44,7 +60,8 @@ Proven 18 October 2026 with Tezuka v0.3.5 (April 2026). v0.3.141592653 (July 202
 
 ## LibreSDR notes
 
-- **With Tezuka:** Set it up exactly as the PlutoSky above. Back up the board's current SD card first, so its old firmware is a card swap away.
+- **With Tezuka:** Set it up exactly as the PlutoSky above. Use a new card and keep the board's original, so its old firmware is a card swap away. Its device tree is already `rgmii-id`, and settings live in the board's flash, not on the card.
+- **Overclock:** The card's `overclock` folder holds faster boot files. Leave them alone unless the Ethernet stalls at high symbol rates; the CPU950 one is the gentle first step.
 - **With DL1JM's firmware:** Lynx-Tx can still use it two ways. As an IQ transmitter (Modulator: ROCK), Lynx-Tx stops DL1JM's modulator for the duration; **PTT is not keyed** in this mode. Or with DL1JM's own modulator (Modulator: LibreSDR on board), the original path, where the firmware keys PTT from the power setting.
 
 ## Checking a board from the ROCK

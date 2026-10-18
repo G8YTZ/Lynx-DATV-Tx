@@ -24,7 +24,7 @@ Beta. Proven on the bench on 18 October 2026: PlutoSky R2 and LibreSDR, 1249 MHz
 
 ## Hardware
 
-See [docs/BOM.md](docs/BOM.md). In short: a ROCK 5T, a PlutoSky R2 or LibreSDR running Tezuka firmware, a Cat 6 cable between them, and ideally a 10 MHz GNSS reference.
+See [docs/BOM.md](docs/BOM.md). In short: a ROCK 5T, a PlutoSky R2 or LibreSDR running [Tezuka firmware](https://github.com/F5OEO/tezuka_fw/releases), a Cat 6 cable between them, and ideally a 10 MHz GNSS reference.
 
 ## Connecting the SDR
 
