@@ -28,7 +28,7 @@ See [docs/BOM.md](docs/BOM.md). In short: a ROCK 5T, a PlutoSky R2 or LibreSDR r
 
 ## Connecting the SDR
 
-**Supported:** The SDR on its own Cat 6 cable to the ROCK's second Ethernet port (the RJ45 at the far edge of the board). On fixed addresses:
+**Supported:** The SDR on its own Cat 6 cable to the ROCK's second Ethernet port (the RJ45 at the far edge of the board). The ROCK gives the SDR its address, so the SDR needs no setting up:
 
 <img src="docs/img/rock5t-ports.jpg" alt="ROCK 5T Ethernet ports: LAN on the left, SDR on the right" width="420">
 
