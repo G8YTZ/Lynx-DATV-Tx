@@ -31,7 +31,7 @@ cd ~/src/gr-atsc3 && mkdir -p build && cd build && cmake .. && make -j8 && sudo 
 ## 3. Lynx-Tx
 
 ```bash
-git clone https://github.com/G8YTZ/lynx-tx ~/lynx-tx
+git clone https://github.com/G8YTZ/Lynx-DATV-Tx ~/lynx-tx
 cd ~/lynx-tx
 mkdir -p config && cp lynx_tx.example.yaml config/lynx_tx.yaml
 sudo mkdir -p /srv/lynxdeck/media && sudo chown radxa: /srv/lynxdeck/media
