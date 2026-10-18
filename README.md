@@ -14,14 +14,14 @@ Companion to the [Lynx DATV receiver](https://github.com/G8YTZ/lynx-datv-receive
 - **Sound priority:** Tables, then sound, then pictures. A picture burst cannot push the sound out.
 - **Proper identity:** PAT, PMT, SDT and NIT written here, with your names, IDs and channel number.
 - **DVB-S2 made on the ROCK:** Ron Economos W6RZ's gr-dtv, from 333 kS/s up, QPSK to 32APSK, exact stream rate, clean 2× oversampled spectrum.
-- **ATSC 3.0:** Ron's gr-atsc3, 6 MHz, received by a shop-bought HDHomeRun.
+- **ATSC 3.0:** Ron's gr-atsc3, 6 MHz, received by a shop-bought HDHomeRun FLEX 4K.
 - **DVB-T2: Coming soon.** Ron's gr-dtv again, on the same IQ path, for terrestrial and narrowband DATV.
 - **Any Pluto-class SDR with Ethernet:** Found automatically on the direct link, the LAN or by mDNS, with its model and firmware shown.
 - **One page:** Source, encoder, identity, frequency, power, TX on and off, restart and shut down.
 
 ## Status
 
-Beta. Proven on the bench on 18 October 2026: PlutoSky R2 and LibreSDR, 1249 MHz, QPSK 3/4 at 2000 and 4000 kS/s, the whole ROCK under 20% busy. MER on a Picotuner: 51.1 dB from the LibreSDR, 38 dB from the PlutoSky on Tezuka v0.3.24.
+Beta. Proven on the bench on 18 October 2026: PlutoSky R2 and LibreSDR, 1249 MHz, QPSK 3/4 at 2000 and 4000 kS/s, the whole ROCK under 20% busy. MER on a BATC PicoTuner: 51.1 dB from the LibreSDR, 38 dB from the PlutoSky on Tezuka v0.3.24.
 
 ## Hardware
 
@@ -49,9 +49,9 @@ Setting both ends up: [docs/INSTALL.md](docs/INSTALL.md) and [docs/SDR_SETUP.md]
 
 | Mode | Modulator | SDR | Receiver |
 |---|---|---|---|
-| DVB-S2 | ROCK: gr-dtv (default) | Any Pluto-class with Ethernet, Tezuka recommended | Picotuner, MiniTiouner, satellite receivers |
+| DVB-S2 | ROCK: gr-dtv (default) | Any Pluto-class with Ethernet, Tezuka recommended | [BATC PicoTuner (Ethernet)](https://wiki.batc.org.uk/PicoTuner_Ethernet_Interface), MiniTiouner, satellite receivers |
 | DVB-S2 | LibreSDR on board: DL1JM's firmware (fallback) | LibreSDR with DL1JM firmware only | As above |
-| ATSC 3.0 | ROCK: gr-atsc3 | Any Pluto-class with Ethernet | HDHomeRun (ATSC 3.0 model) |
+| ATSC 3.0 | ROCK: gr-atsc3 | Any Pluto-class with Ethernet | [HDHomeRun FLEX 4K (HDFX-4K)](https://shop.silicondust.com/shop/product/hdfx-4k/) |
 | DVB-T2 (coming soon) | ROCK: gr-dtv | Any Pluto-class with Ethernet | DVB-T2 receivers, Lynx DVB-T2 Receiver |
 
 ## Safety
