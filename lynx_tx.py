@@ -164,8 +164,8 @@ DEFAULT_CONFIG = {
     # an IQ transmitter - dvbs2mod.py) or "board" (DL1JM's modulator on the
     # LibreSDR, the original path, kept as a fallback).
     "dvbs2_engine": "rock",
-    # The SDR transmitting the IQ. uri "" = the LibreSDR as configured
-    # under "libre" (on the direct link when its cable is in). hosts = other
+    # The SDR transmitting the IQ. uri "" = automatic: the first board found
+    # on the direct link, else the LibreSDR under "libre". hosts = other
     # addresses to look for one at, e.g. a PlutoSky on the LAN; the direct
     # link and mDNS are always searched. See sdrs.py.
     "sdr": {"uri": "", "hosts": []},
@@ -1735,7 +1735,7 @@ class SdrUpdate(BaseModel):
 
 @app.post("/api/sdr")
 def api_sdr(req: SdrUpdate):
-    """Choose the SDR that transmits. "" = the LibreSDR as configured. Off
+    """Choose the SDR that transmits. "" = automatic. Off
     air first: the IQ stream cannot move boards mid-transmission."""
     uri = req.uri.strip()
     if uri and not uri.startswith(("ip:", "usb:")):
@@ -2736,7 +2736,7 @@ let sdrKey = null;
 function fillSdr(S) {
   const sel = document.getElementById('sdr-select');
   const found = S.found || [];
-  const key = JSON.stringify([S.chosen, found.map(d => d.uri + d.firmware)]);
+  const key = JSON.stringify([S.chosen, S.uri, found.map(d => d.uri + d.firmware)]);
   if (key === sdrKey || document.activeElement === sel) return;
   sdrKey = key;
   sel.innerHTML = '';
@@ -2744,9 +2744,10 @@ function fillSdr(S) {
     const o = document.createElement('option');
     o.value = value; o.textContent = label; sel.appendChild(o);
   };
-  add('', 'LibreSDR (as configured)');
-  for (const d of found)
-    add(d.uri, d.model + (d.firmware ? ', ' + d.firmware : '') + ' at ' + d.host);
+  const label = d => d.model + (d.firmware ? ', ' + d.firmware : '') + ' at ' + d.host;
+  const auto = found.find(d => d.uri === S.uri);
+  add('', 'Automatic: ' + (auto ? label(auto) : 'none found yet, press Scan'));
+  for (const d of found) add(d.uri, label(d));
   if (S.chosen && !found.some(d => d.uri === S.chosen)) add(S.chosen, S.chosen + ' (not answering)');
   sel.value = S.chosen || '';
 }
