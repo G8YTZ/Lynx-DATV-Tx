@@ -104,6 +104,8 @@ def main():
     p.add_argument("--ts", help="transport stream file, looped")
     p.add_argument("--tone", type=float, metavar="KHZ",
                    help="send a plain tone this many kHz above --freq instead")
+    p.add_argument("--buffer", type=int, default=1048576,
+                   help="iio_writedev buffer, samples (default 1048576)")
     p.add_argument("--file", help="write IQ (int16 I/Q) here instead of the SDR")
     args = p.parse_args()
     if args.tone is None and not args.ts:
@@ -124,7 +126,7 @@ def main():
     fifo = os.path.join(tempfile.mkdtemp(), "iq")
     os.mkfifo(fifo)
     writer = subprocess.Popen(
-        f"iio_writedev -u {args.uri} -b 1048576 cf-ad9361-dds-core-lpc "
+        f"iio_writedev -u {args.uri} -b {args.buffer} cf-ad9361-dds-core-lpc "
         f"voltage0 voltage1 < {fifo}", shell=True, start_new_session=True)
     tb = build(args, fifo)
     tb.start()
