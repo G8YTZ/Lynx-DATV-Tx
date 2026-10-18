@@ -20,7 +20,7 @@ Companion to the [Lynx DATV receiver](https://github.com/G8YTZ/lynx-datv-receive
 
 ## Status
 
-Beta. Proven on the bench on 18 October 2026: PlutoSky R2 and LibreSDR, 1249 MHz, QPSK 3/4 at 2000 and 4000 kS/s, 31.4 dB MER on a Picotuner, the whole ROCK under 20% busy.
+Beta. Proven on the bench on 18 October 2026: PlutoSky R2 and LibreSDR, 1249 MHz, QPSK 3/4 at 2000 and 4000 kS/s, the whole ROCK under 20% busy. MER on a Picotuner: 51.1 dB from the LibreSDR, 38 dB from the PlutoSky on Tezuka v0.3.24.
 
 ## Hardware
 
