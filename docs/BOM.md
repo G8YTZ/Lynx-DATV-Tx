@@ -13,7 +13,7 @@ What a Lynx-Tx transmitter is built from. Exact part numbers and suppliers marke
 | SDR: PlutoSky R2 **or** LibreSDR | 1 | Tezuka firmware recommended on either |
 | microSD card for the SDR | 1 | 8 GB or more, FAT32. Keep a spare with a known-good image |
 | Cat 6 patch lead | 2 | One ROCK to SDR (the direct link), one ROCK to the LAN |
-| USB lead for the SDR | 1 | The PlutoSky is powered from it; also its setup port |
+| USB power supply and lead for the SDR | 1 | TBC rating. The SDR is powered from its USB socket |
 
 ## Reference
 

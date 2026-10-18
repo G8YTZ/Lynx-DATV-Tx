@@ -27,7 +27,7 @@ Nothing to set on the board. Out of the box Tezuka asks for an address by DHCP, 
 
 1. **Card in.**
 2. **Ethernet** from the board to the ROCK's second port.
-3. **Power:** The board runs from its USB socket. Any USB supply will do, or a USB port on the ROCK; it does not need a computer.
+3. **Power:** A USB power supply into the board's USB socket. Not a computer: it is only power.
 4. **Check:** Within a minute or so the board appears on the Transmit card with its model and firmware. Or from the ROCK, see [Checking a board from the ROCK](#checking-a-board-from-the-rock).
 
 **If you need to get into the board:** Plugged into a computer's USB, it appears as a drive called **TEZUKA** (**PlutoSDR** on older firmware) holding `info.html` (model, firmware, addresses) and `config.txt` (settings: edit, save, then eject the drive to apply). It also answers SSH on 192.168.2.1, login `root`, password `analog`. On a Mac, set `usb_ethernet_mode = ecm` under `[SYSTEM]` for SSH over USB to work.
