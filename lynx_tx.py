@@ -2988,8 +2988,9 @@ async function poll() {
   }
   const here = (S.found || []).find(d => d.uri === S.uri);
   const name = here ? here.model.split(' (')[0] : (S.is_libre ? 'LibreSDR' : 'SDR');
-  setText('sdr-info', here
-    ? 'Using ' + here.model + (here.firmware ? ', ' + here.firmware : '') + ' at ' + here.host
+  // The list already names the board in use; this line only speaks up
+  // when something is wrong.
+  setText('sdr-info', here ? ''
     : 'Using ' + S.uri + (S.last_scan ? ' (not found in the last scan)' : ''));
   // 10 MHz reference: green when the SDR's loop is locked, red when it is
   // not (no lock, or no 10 MHz feed). Hidden when the board cannot say
