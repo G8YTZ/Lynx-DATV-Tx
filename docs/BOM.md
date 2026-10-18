@@ -7,7 +7,7 @@ What a Lynx-Tx transmitter is built from. Exact part numbers and suppliers marke
 | Item | Qty | Notes |
 |---|---|---|
 | Radxa ROCK 5T (RK3588) | 1 | 8 GB used for development; 4 GB is enough for the transmitter alone. Two Ethernet ports: one for the LAN, one for the SDR |
-| ROCK 5T power supply | 1 | TBC |
+| ROCK 5T power supply | 1 | RS PRO ECD-65-12, 12 V 5 A (60 W) desktop adaptor, C14 mains inlet. RS stock no. 304-023 |
 | Heatsink or fan for the ROCK | 1 | TBC. Runs at about 35 °C on the bench at 4 MS/s |
 | NVMe SSD (optional) | 1 | For media and logs; a 500 GB WD Blue is in use. Saves wear on the eMMC or SD card |
 | SDR: PlutoSky R2 **or** LibreSDR | 1 | Tezuka firmware recommended on either |
@@ -19,9 +19,9 @@ What a Lynx-Tx transmitter is built from. Exact part numbers and suppliers marke
 
 | Item | Qty | Notes |
 |---|---|---|
-| Leo Bodnar GNSS reference, 10 MHz out | 1 | TBC model. Puts the carrier on frequency; the PlutoSky's own reference was 10 ppm high |
-| GNSS antenna | 1 | TBC |
-| SMA lead, 50 Ω, 10 MHz to the SDR | 1 | A panel SMA on the SDR's case keeps it tidy |
+| Leo Bodnar LBE-1420 GPSDO | 1 | GNSS-disciplined 10 MHz reference, complete kit with antenna. Puts the carrier on frequency and holds it there; the PlutoSky's own crystal was 10 ppm high |
+| GNSS antenna | 1 | Included in the LBE-1420 kit. Needs a view of the sky |
+| 10 MHz lead, SMA to MMCX, 50 Ω | 1 | From the LBE-1420 to the SDR's 10 MHz input (MMCX on the PlutoSky R2 and the LibreSDR). A panel SMA on the SDR's case keeps it tidy |
 
 ## Source
 
