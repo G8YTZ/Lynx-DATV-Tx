@@ -11,8 +11,9 @@ The TS is looped and paced only by the SDR's DAC pulling IQ, so this is for
 lock and MER, not for watching a programme: a file muxed at another rate will
 stutter even with a perfect RF lock.
 
-2x oversampled with a root-raised-cosine filter: the DAC runs at twice the
-symbol rate, which moves its image out to where the AD9361's own analogue
+2x oversampled with a root-raised-cosine filter (gr-dtv's framer already
+zero-stuffs to 2 samples per symbol): the DAC runs at twice the symbol
+rate, which moves its image out to where the AD9361's own analogue
 filter removes it (the ATSC 3.0 lesson, 16 Oct 2026).
 
 Ctrl-C stops it and mutes the SDR.
@@ -71,9 +72,12 @@ def build(args, out_path):
     mapper = dtv.dvbs2_modulator_bc(frame, fec, mod, dtv.INTERPOLATION_OFF)
     pl = dtv.dvbs2_physical_cc(frame, fec, mod,
                                dtv.PILOTS_ON if args.pilots else dtv.PILOTS_OFF, 0)
+    # The framer already outputs 2 samples per symbol (each symbol followed
+    # by a zero), so the RRC runs at 2 sps and does not interpolate again.
+    # Gain 2 restores the level the zero-stuffing halves.
     taps = firdes.root_raised_cosine(float(sps), sps * sr, sr,
                                      float(args.rolloff), 20 * sps + 1)
-    rrc = grfilter.interp_fir_filter_ccf(sps, taps)
+    rrc = grfilter.fft_filter_ccf(1, taps)
     amp = blocks.multiply_const_cc(args.level)
     to_s16 = blocks.complex_to_interleaved_short(False, 32767)
     sink = blocks.file_sink(gr.sizeof_short, out_path, False)
@@ -99,7 +103,7 @@ def main():
     p.add_argument("--no-pilots", dest="pilots", action="store_false")
     p.add_argument("--gain", type=float, default=-10.0,
                    help="AD9361 TX gain in dB (0 is full, -89.75 is mute)")
-    p.add_argument("--level", type=float, default=0.5,
+    p.add_argument("--level", type=float, default=0.35,
                    help="digital level, 0-1 of full scale")
     p.add_argument("--ts", help="transport stream file, looped")
     p.add_argument("--tone", type=float, metavar="KHZ",
