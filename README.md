@@ -44,7 +44,15 @@ Nothing else shares that cable, so the IQ stream (about 130 Mb/s at 2 MS/s, 260 
 
 **Also works, not supported:** The SDR on your LAN. Type its address into the Transmit card. Expect trouble on a busy or Wi-Fi-bridged network.
 
-Setting both ends up: [docs/INSTALL.md](docs/INSTALL.md) and [docs/SDR_SETUP.md](docs/SDR_SETUP.md).
+## Install
+
+On the ROCK 5T, one command does everything:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/G8YTZ/Lynx-DATV-Tx/main/install.sh | bash
+```
+
+Details, and the same steps by hand: [docs/INSTALL.md](docs/INSTALL.md). The SDR: [docs/SDR_SETUP.md](docs/SDR_SETUP.md).
 
 Preparing video files to play out: [docs/MEDIA.md](docs/MEDIA.md), the house standard and a DaVinci Resolve walkthrough.
 
