@@ -8,7 +8,7 @@ What a Lynx-Tx transmitter is built from. Exact part numbers and suppliers marke
 |---|---|---|
 | Radxa ROCK 5T (RK3588) | 1 | 8 GB used for development; 4 GB is enough for the transmitter alone. Two Ethernet ports: one for the LAN, one for the SDR |
 | ROCK 5T power supply | 1 | RS PRO ECD-65-12, 12 V 5 A (60 W) desktop adaptor, C14 mains inlet. RS stock no. 304-023 |
-| Heatsink or fan for the ROCK | 1 | TBC. Runs at about 35 °C on the bench at 4 MS/s |
+| Heatsink for the ROCK | 1 | Radxa Heatsink 6240B (compact, with PWM fan), or Radxa Heatsink 4025A (fanless). Both fit the ROCK 5B, 5B+ and 5T. The ROCK ran at about 35 °C on the bench at 4 MS/s; in a closed cabinet, choose the fan |
 | NVMe SSD (optional) | 1 | For media and logs; a 500 GB WD Blue is in use. Saves wear on the eMMC or SD card |
 | SDR: PlutoSky R2 **or** LibreSDR | 1 | Tezuka firmware recommended on either |
 | microSD card for the SDR | 1 | 8 GB or more, FAT32. Keep a spare with a known-good image |
