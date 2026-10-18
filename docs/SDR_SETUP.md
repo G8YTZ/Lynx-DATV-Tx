@@ -21,26 +21,34 @@ Lynx-Tx uses the SDR as a plain IQ transmitter: the ROCK makes DVB-S2 or ATSC 3.
 
 Do not use the `.frm` flashing method: Tezuka boots from the card.
 
-## Login and the USB drive
+## First boot: setting the address
 
-- **Login:** `root` / `analog`.
-- **USB:** Plugged into a computer, the board appears as a network adapter (board 192.168.2.1) and as a small drive. The drive holds `info.html` (model, firmware, addresses) and `config.txt`. Edit `config.txt`, save it, then **eject** the drive: ejecting is what applies it.
-- **Restarting:** The PlutoSky is powered from USB. Unplug USB to restart it: unplugging Ethernet or the 10 MHz does not.
+Tezuka keeps its settings in the board's own flash, not on the SD card, so they cannot be put on the card when you make it. You set them once, from a computer, through the board's USB drive.
 
-## Network settings for the direct link
+1. **Card in, USB lead from the board to your computer.** The board powers up from USB. After a minute or so a drive called **PlutoSDR** appears.
+2. **Check it is the right board:** Open `info.html` on the drive. It shows the model, the firmware version and the addresses.
+3. **Open `config.txt` on the drive** in a plain text editor (TextEdit on a Mac, Notepad on Windows) and change these lines, leaving everything else alone:
 
-In `config.txt`:
+   ```ini
+   [USB_ETHERNET]
+   ipaddr_eth = 192.168.254.2
+   netmask_eth = 255.255.255.0
+   gateway_eth =
 
-```ini
-[USB_ETHERNET]
-ipaddr_eth = 192.168.254.2
-netmask_eth = 255.255.255.0
-gateway_eth =
-```
+   [SYSTEM]
+   usb_ethernet_mode = ecm
+   ```
 
-Eject, wait for the drive to come back, then restart the board.
+   `gateway_eth` stays empty on purpose: the direct link goes nowhere else. `ecm` lets a Mac use the USB network; Windows and Linux work with it too.
+4. **Save, then eject the drive.** Ejecting is what applies the settings: the drive disappears for a few seconds while the board writes them to flash, then comes back.
+5. **Restart the board:** Unplug the USB lead and plug it in again. (Unplugging Ethernet or the 10 MHz does not restart it.)
+6. **Check:** Open `info.html` again. **ETH IP** should now read 192.168.254.2.
 
-**On a Mac:** Set `usb_ethernet_mode = ecm` under `[SYSTEM]`. The default, RNDIS, is not supported by macOS. If your home network uses 192.168.2.x anywhere, also move the USB address (`ipaddr = 192.168.12.1`, `ipaddr_host = 192.168.12.10` under `[NETWORK]`): otherwise you will be talking to your router, not the SDR.
+Then connect the board's Ethernet to the ROCK's second port and check from the ROCK (see [Checking a board from the ROCK](#checking-a-board-from-the-rock)).
+
+**Logging in:** If you ever need it, the board answers SSH on its USB address (`ssh root@192.168.2.1`), password `analog`.
+
+**If your home network uses 192.168.2.x:** The board's USB address clashes with it and you will reach your router instead of the SDR. Move it in `config.txt` under `[NETWORK]`: `ipaddr = 192.168.12.1` and `ipaddr_host = 192.168.12.10`.
 
 ## PlutoSky R2 notes
 
