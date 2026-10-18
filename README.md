@@ -15,7 +15,7 @@ Companion to the [Lynx DATV receiver](https://github.com/G8YTZ/lynx-datv-receive
 - **Proper identity:** PAT, PMT, SDT and NIT written here, with your names, IDs and channel number.
 - **DVB-S2 made on the ROCK:** Ron Economos W6RZ's gr-dtv, from 333 kS/s up, QPSK to 32APSK, exact stream rate, clean 2× oversampled spectrum.
 - **ATSC 3.0:** Ron's gr-atsc3, 6 MHz, received by a shop-bought HDHomeRun.
-- **Any Pluto-class SDR:** Found automatically on the direct link, the LAN or by mDNS, with its model and firmware shown.
+- **Any Pluto-class SDR with Ethernet:** Found automatically on the direct link, the LAN or by mDNS, with its model and firmware shown.
 - **One page:** Source, encoder, identity, frequency, power, TX on and off, restart and shut down.
 
 ## Status
