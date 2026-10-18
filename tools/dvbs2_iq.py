@@ -37,6 +37,9 @@ import subprocess
 import sys
 import tempfile
 
+# The modulator lives beside lynx_tx.py, one level up.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
 FECS = ["1/4", "1/3", "2/5", "1/2", "3/5", "2/3", "3/4", "4/5", "5/6", "8/9", "9/10"]
 MODS = {"qpsk": "MOD_QPSK", "8psk": "MOD_8PSK", "16apsk": "MOD_16APSK", "32apsk": "MOD_32APSK"}
 ROLLOFFS = {"0.35": "RO_0_35", "0.25": "RO_0_25", "0.20": "RO_0_20"}
@@ -51,7 +54,7 @@ def build_tone(args, out_path):
     """A single tone at +offset from the carrier: for zero-beating against a
     trusted receiver. Offset, so the LO leakage cannot be mistaken for it."""
     from gnuradio import analog, blocks, gr
-    dac = args.sr * 1e3 * 2
+    dac = args.sr * 1e3 * _sps(args)
     tb = gr.top_block()
     src = analog.sig_source_c(dac, analog.GR_COS_WAVE, args.tone * 1e3, args.level, 0)
     to_s16 = blocks.complex_to_interleaved_short(False, 32767)
@@ -60,42 +63,20 @@ def build_tone(args, out_path):
     return tb
 
 
+def _sps(args):
+    """Samples per symbol, from the same rule Lynx-Tx uses (dvbs2mod)."""
+    import dvbs2mod
+    return dvbs2mod.sps({"symbol_rate_ks": args.sr})
+
+
 def build(args, out_path):
     if args.tone is not None:
         return build_tone(args, out_path)
-    from gnuradio import blocks, dtv, filter as grfilter, gr
-    from gnuradio.filter import firdes
-
-    fec = fec_const(dtv, args.fec)
-    mod = getattr(dtv, MODS[args.mod])
-    ro = getattr(dtv, ROLLOFFS[args.rolloff])
-    frame = dtv.FECFRAME_NORMAL
-    sps = 2
-    sr = args.sr * 1e3
-
-    tb = gr.top_block()
-    src = blocks.file_source(gr.sizeof_char, args.ts, True)
-    bbh = dtv.dvb_bbheader_bb(dtv.STANDARD_DVBS2, frame, fec, ro,
-                              dtv.INPUTMODE_NORMAL, dtv.INBAND_OFF, 168, 4000000)
-    scr = dtv.dvb_bbscrambler_bb(dtv.STANDARD_DVBS2, frame, fec)
-    bch = dtv.dvb_bch_bb(dtv.STANDARD_DVBS2, frame, fec)
-    ldpc = dtv.dvb_ldpc_bb(dtv.STANDARD_DVBS2, frame, fec, dtv.MOD_OTHER)
-    il = dtv.dvbs2_interleaver_bb(frame, fec, mod)
-    mapper = dtv.dvbs2_modulator_bc(frame, fec, mod, dtv.INTERPOLATION_OFF)
-    pl = dtv.dvbs2_physical_cc(frame, fec, mod,
-                               dtv.PILOTS_ON if args.pilots else dtv.PILOTS_OFF, 0)
-    # The framer already outputs 2 samples per symbol (each symbol followed
-    # by a zero), so the RRC runs at 2 sps and does not interpolate again.
-    # Gain 2 restores the level the zero-stuffing halves.
-    taps = firdes.root_raised_cosine(float(sps), sps * sr, sr,
-                                     float(args.rolloff), 20 * sps + 1)
-    rrc = grfilter.fft_filter_ccf(1, taps)
-    amp = blocks.multiply_const_cc(args.level)
-    to_s16 = blocks.complex_to_interleaved_short(False, 32767)
-    sink = blocks.file_sink(gr.sizeof_short, out_path, False)
-    sink.set_unbuffered(False)
-    tb.connect(src, bbh, scr, bch, ldpc, il, mapper, pl, rrc, amp, to_s16, sink)
-    return tb
+    # One modulator for Lynx-Tx and this tool: dvbs2_flowgraph.py.
+    import dvbs2_flowgraph
+    return dvbs2_flowgraph.build(args.ts, out_path, args.sr * 1e3, args.fec,
+                                 args.mod.upper(), args.rolloff, args.pilots,
+                                 _sps(args), args.level, repeat=True)
 
 
 def iio(uri, *a):
@@ -131,9 +112,7 @@ def main():
         build(args, args.file).run()
         return
 
-    dac = int(args.sr * 1e3 * 2)
-    if dac < 2083334:
-        sys.exit(f"DAC rate {dac} S/s is below the AD9361's minimum: raise --sr")
+    dac = int(args.sr * 1e3 * _sps(args))
     iio(args.uri, "voltage0", "hardwaregain", f"{MUTE_DB:g}")
     iio(args.uri, "altvoltage1", "frequency", str(int(round(args.freq * 1e6))))
     iio(args.uri, "voltage0", "sampling_frequency", str(dac))

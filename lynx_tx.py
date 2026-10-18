@@ -88,6 +88,8 @@ from pydantic import BaseModel
 import uvicorn
 
 import atsc3mod
+import dvbs2mod
+import sdrs
 
 # ── Paths and configuration ───────────────────────────────────
 
@@ -155,10 +157,18 @@ DEFAULT_CONFIG = {
         "sound_priority": True,
     },
     "source": {"kind": "camera", "file": ""},
-    # Transmission system: "dvbs2" (DL1JM's modulator on the LibreSDR) or
-    # "atsc3" (gr-atsc3 on the ROCK, the LibreSDR as an IQ transmitter).
-    # Everything up to the remux is shared; see atsc3mod.py.
+    # Transmission system: "dvbs2" or "atsc3". Everything up to the remux
+    # is shared; see atsc3mod.py and dvbs2mod.py.
     "mode": "dvbs2",
+    # Who makes DVB-S2: "rock" (Ron W6RZ's gr-dtv on the ROCK, any SDR as
+    # an IQ transmitter - dvbs2mod.py) or "board" (DL1JM's modulator on the
+    # LibreSDR, the original path, kept as a fallback).
+    "dvbs2_engine": "rock",
+    # The SDR transmitting the IQ. uri "" = the LibreSDR as configured
+    # under "libre" (on the direct link when its cable is in). hosts = other
+    # addresses to look for one at, e.g. a PlutoSky on the LAN; the direct
+    # link and mDNS are always searched. See sdrs.py.
+    "sdr": {"uri": "", "hosts": []},
     "atsc3": dict(atsc3mod.DEFAULTS),
     # DVB service information. Network > multiplex > provider > service.
     # The triplet original_network_id / ts_id / service_id is what a TV
@@ -593,7 +603,11 @@ def libre_patch_watch():
     time.sleep(5)
     while True:
         try:
-            ensure_libre_patched(apply=True)
+            # Only DL1JM's path uses the board's udpts.sh. With the SDR as an
+            # IQ transmitter there is nothing to patch, and a corrective
+            # reboot would only take the board away.
+            if not iq_mode():
+                ensure_libre_patched(apply=True)
         except Exception as e:
             _set_libre("error", str(e))
         time.sleep(600)
@@ -611,8 +625,62 @@ def is_atsc3() -> bool:
     return config.get("mode") == "atsc3"
 
 
+def dvbs2_rock() -> bool:
+    """DVB-S2 made on the ROCK (dvbs2mod.py) rather than by DL1JM's
+    modulator on the LibreSDR."""
+    # DL1JM's modulator exists only on the LibreSDR: any other SDR is
+    # always driven from the ROCK, whatever the saved choice says.
+    return not is_atsc3() and (config.get("dvbs2_engine", "rock") != "board"
+                               or not sdr_is_libre())
+
+
+def iq_mode() -> bool:
+    """The SDR is a plain IQ transmitter: ATSC 3.0, or DVB-S2 from the ROCK."""
+    return is_atsc3() or dvbs2_rock()
+
+
 def libre_uri() -> str:
     return f"ip:{libre_host()}"
+
+
+def sdr_uri() -> str:
+    """The SDR chosen on the Transmit card, else the LibreSDR."""
+    return (config.get("sdr") or {}).get("uri") or libre_uri()
+
+
+def sdr_is_libre() -> bool:
+    """Is the chosen SDR the configured LibreSDR (the one DL1JM's modulator,
+    if fitted, has to be stopped on)?"""
+    u = (config.get("sdr") or {}).get("uri") or ""
+    return not u or u == libre_uri() or u.split(":", 1)[-1] in (
+        config["libre"].get("host"), config["libre"].get("direct_host", "192.168.254.2"))
+
+
+def sdr_hosts() -> list:
+    """Where to look for SDRs: the direct link first, then the LAN."""
+    lib = config["libre"]
+    hosts = [lib.get("direct_host", "192.168.254.2"), lib.get("host")]
+    hosts += list((config.get("sdr") or {}).get("hosts") or [])
+    u = (config.get("sdr") or {}).get("uri") or ""
+    if u:
+        hosts.insert(0, u)
+    out = []
+    for h in hosts:
+        if h and h not in out:
+            out.append(h)
+    return out
+
+
+def sdr_scan_watch():
+    """Look for SDRs at start-up and every minute while off air. Not on air:
+    the board in use is plainly there, and a scan costs it a connection."""
+    while True:
+        if not tx_running():
+            try:
+                sdrs.scan(sdr_hosts())
+            except Exception as e:
+                print(f"[sdr] scan: {e}")
+        time.sleep(60)
 
 
 def atsc3_release_libre():
@@ -628,24 +696,36 @@ def _iio(cmd: list) -> str:
     return r.stdout.strip()
 
 
-def atsc3_set_radio():
-    """Frequency, sample rate, filter and power, straight to the AD9361."""
+def atsc3_set_radio(live_only: bool = False):
+    """Frequency, sample rate, filter and power, straight to the AD9361 of
+    the chosen SDR - for ATSC 3.0 or ROCK-made DVB-S2, whichever is on.
+    live_only: just frequency and power, changed on air with no break."""
     if not shutil.which("iio_attr"):
         raise HTTPException(500, "iio_attr is not installed on the ROCK: "
                                  "sudo apt install libiio-utils")
+    uri = sdr_uri()
+    if is_atsc3():
+        cmds, what = atsc3mod.iio_commands(uri, config["atsc3"]), "ATSC 3.0"
+        if live_only:
+            cmds = [c for c in cmds if c[-2] in ("frequency", "hardwaregain")]
+    else:
+        m = config["modulation"]
+        cmds = (dvbs2mod.radio_live_commands(uri, m) if live_only
+                else dvbs2mod.iio_commands(uri, m))
+        what = "DVB-S2"
     try:
-        for cmd in atsc3mod.iio_commands(libre_uri(), config["atsc3"]):
+        for cmd in cmds:
             _iio(cmd)
     except Exception as e:
-        raise HTTPException(500, f"LibreSDR would not take the ATSC 3.0 settings: {e}")
+        raise HTTPException(500, f"The SDR at {uri} would not take the {what} settings: {e}")
 
 
 def atsc3_mute():
     """Most attenuation the AD9361 has. Best effort: never stops a TX Off."""
     try:
-        _iio(atsc3mod.mute_command(libre_uri()))
+        _iio(atsc3mod.mute_command(sdr_uri()))
     except Exception as e:
-        print(f"[atsc3] mute: {e}")
+        print(f"[iq] mute: {e}")
 
 
 def libre_restore_dvbs2():
@@ -973,8 +1053,12 @@ def build_pipeline() -> str:
     # seen to differ from what the modulator asks for.
     # In ATSC 3.0 the modulator is ours, and its rate is exact (atsc3mod).
     atsc3 = is_atsc3()
+    iq = iq_mode()
     if atsc3:
         rate = atsc3mod.ts_rate(config["atsc3"])
+    elif iq:
+        # DVB-S2 from the ROCK: our own modulator, so its rate is exact too.
+        rate = dvbs2mod.ts_rate(m)
     else:
         rate = read_libre_bitrate() or ts_bitrate(
             m["symbol_rate_ks"], m["constellation"], m["fec"], m["pilots"])
@@ -1240,7 +1324,7 @@ def build_pipeline() -> str:
     # modulator's pull. ffmpeg's own -muxrate pads by the stream's clock
     # instead, and against the modulator's FIFO that backed up into the
     # camera capture: 13 frames in 10 s, 96% stuffing (16 Oct 2026).
-    use_prio = (atsc3 or bool(enc.get("sound_priority", True))) and prio.exists()
+    use_prio = (iq or bool(enc.get("sound_priority", True))) and prio.exists()
     # With priority, ffmpeg also passes each piece of sound on at once
     # (-pes_payload_size 0: every 21 ms) instead of gathering ~107 ms
     # blocks: sound that sets off 0.1 s behind arrives late whenever a
@@ -1266,7 +1350,7 @@ def build_pipeline() -> str:
         # underran the DAC (stutter, lost packets at 4K, 16 Oct 2026). 5%
         # refills them in about 2 s; the DAC's pull and the buffers' size
         # still stop it running more than a fraction of a second ahead.
-        pace = " --pace 1.05" if atsc3 else ""
+        pace = " --pace 1.05" if iq else ""
         parts.append(
             f" | python3 {shlex.quote(str(prio))} --rate {rate} --slack {slack} "
             f"--video-pid {ident['video_pid']} --audio-pid {ident['audio_pid']}{pace}")
@@ -1317,7 +1401,14 @@ def build_pipeline() -> str:
         parts.append(
             f" | tsp --buffer-size-mb 0.05 -I file - "
             f"{tap}-O file {atsc3mod.TS_FIFO}")
-        return atsc3mod.modulator_shell(libre_uri(), flowgraph) + "".join(parts)
+        return atsc3mod.modulator_shell(sdr_uri(), flowgraph) + "".join(parts)
+    if iq:
+        # DVB-S2 from the ROCK: as ATSC 3.0 (the DAC's pull is the pace),
+        # but the NIT still rides along - it is a DVB table.
+        parts.append(
+            f" | tsp --buffer-size-mb 0.05 -I file - "
+            f"{nit_stage}{tap}-O file {dvbs2mod.TS_FIFO}")
+        return dvbs2mod.modulator_shell(sdr_uri(), APP_DIR, m) + "".join(parts)
 
     parts.append(
         f" | tsp --realtime --buffer-size-mb 0.05 -I file - "
@@ -1339,17 +1430,24 @@ def start_tx() -> dict:
         # frozen in GStreamer and video is read by ffmpeg inside the
         # pipeline (see build_pipeline). Stop any left from before.
         stop_feeder()
-        if is_atsc3():
-            # DL1JM's modulator lets go, then the AD9361 is set up
-            # directly. Both are quick and idempotent, so every key-up does
-            # them: a board rebooted behind our back is simply taken over.
-            atsc3_release_libre()
+        if iq_mode():
+            # DL1JM's modulator (if the LibreSDR has it) lets go, then the
+            # AD9361 is set up directly. Both are quick and idempotent, so
+            # every key-up does them: a board rebooted behind our back is
+            # simply taken over. A Tezuka board has nothing to stop.
+            if not is_atsc3():
+                try:
+                    dvbs2mod.check(config["modulation"])
+                except ValueError as e:
+                    raise HTTPException(400, f"DVB-S2: {e}")
+            if sdr_is_libre():
+                atsc3_release_libre()
             atsc3_set_radio()
             try:
                 cmd = build_pipeline()
             except RuntimeError as e:
                 atsc3_mute()
-                raise HTTPException(500, f"ATSC 3.0 modulator: {e}")
+                raise HTTPException(500, f"{'ATSC 3.0' if is_atsc3() else 'DVB-S2'} modulator: {e}")
         else:
             write_libre_settings()
             # The board's watcher restarts the modulator on the settings
@@ -1387,13 +1485,14 @@ def stop_tx_locked():
     for pattern in ("gst-launch-1.0", "ffmpeg.*-f mpegts",
                     "tsp --realtime", "switcher.py", "tsprio.py", "tsbuffer.py",
                     f"file {atsc3mod.TS_FIFO}", "iio_writedev",
-                    f"{atsc3mod.FLOWGRAPH_ID}.py"):
+                    f"{atsc3mod.FLOWGRAPH_ID}.py",
+                    f"file {dvbs2mod.TS_FIFO}", dvbs2mod.FLOWGRAPH_ID):
         subprocess.run(["pkill", "-f", pattern], capture_output=True)
 
 
 def stop_tx() -> dict:
     with tx_lock:
-        if is_atsc3():
+        if iq_mode():
             # Attenuate first, while the IQ stream is still flowing, so the
             # DAC is never left at full output once it stops.
             atsc3_mute()
@@ -1421,6 +1520,7 @@ class ModulationUpdate(BaseModel):
     constellation: Optional[str] = None
     fec: Optional[str] = None
     pilots: Optional[bool] = None
+    rolloff: Optional[str] = None
     power_db: Optional[float] = None
 
 
@@ -1455,11 +1555,23 @@ def api_status():
     m = config["modulation"]
     if is_atsc3():
         theoretical = atsc3mod.ts_rate(config["atsc3"])
+    elif dvbs2_rock():
+        try:
+            theoretical = dvbs2mod.ts_rate(m)
+        except KeyError:
+            theoretical = 0
     else:
         theoretical = ts_bitrate(m["symbol_rate_ks"], m["constellation"],
                                  m["fec"], m["pilots"])
     return {
         "mode": "atsc3" if is_atsc3() else "dvbs2",
+        "dvbs2_engine": ("board" if config.get("dvbs2_engine") == "board"
+                         and sdr_is_libre() else "rock"),
+        "iq": iq_mode(),
+        "sdr": {"uri": sdr_uri(), "chosen": (config.get("sdr") or {}).get("uri", ""),
+                "is_libre": sdr_is_libre(), "found": sdrs.found(),
+                "last_scan": sdrs.last_scan(),
+                "dac_rate": dvbs2mod.dac_rate(m) if dvbs2_rock() else None},
         "atsc3_choices": {"constellations": atsc3mod.CONSTELLATIONS,
                           "rates": atsc3mod.CODE_RATES, "ts_rates": atsc3mod.TS_RATES},
         "transmitting": tx_running(),
@@ -1507,9 +1619,69 @@ def api_mode(req: ModeUpdate):
         stop_tx()
     config["mode"] = req.mode
     save_config(config)
-    if req.mode == "dvbs2":
+    if req.mode == "dvbs2" and not dvbs2_rock():
         threading.Thread(target=libre_restore_dvbs2, daemon=True).start()
     return {"success": True, "mode": req.mode}
+
+
+class EngineUpdate(BaseModel):
+    engine: str
+
+
+@app.post("/api/dvbs2_engine")
+def api_dvbs2_engine(req: EngineUpdate):
+    """Who makes DVB-S2: the ROCK ("rock", any SDR) or DL1JM's modulator on
+    the LibreSDR ("board"). Off air first; going to "board" restarts the
+    LibreSDR's own modulator (about a minute)."""
+    if req.engine not in ("rock", "board"):
+        raise HTTPException(400, "engine must be rock or board")
+    if req.engine == "board" and not sdr_is_libre():
+        raise HTTPException(400, "DL1JM's modulator is only on the LibreSDR: choose it as the SDR first")
+    if req.engine == config.get("dvbs2_engine", "rock"):
+        return {"success": True, "engine": req.engine}
+    if tx_running():
+        stop_tx()
+    config["dvbs2_engine"] = req.engine
+    save_config(config)
+    if req.engine == "board" and not is_atsc3():
+        threading.Thread(target=libre_restore_dvbs2, daemon=True).start()
+    return {"success": True, "engine": req.engine}
+
+
+class SdrUpdate(BaseModel):
+    uri: str
+
+
+@app.post("/api/sdr")
+def api_sdr(req: SdrUpdate):
+    """Choose the SDR that transmits. "" = the LibreSDR as configured. Off
+    air first: the IQ stream cannot move boards mid-transmission."""
+    uri = req.uri.strip()
+    if uri and not uri.startswith(("ip:", "usb:")):
+        uri = "ip:" + uri
+    if uri and not sdrs.probe(uri):
+        raise HTTPException(400, f"No SDR answering at {uri}")
+    if uri == (config.get("sdr") or {}).get("uri", ""):
+        return {"success": True, "uri": uri}
+    if tx_running():
+        stop_tx()
+    sd = config.setdefault("sdr", {})
+    sd["uri"] = uri
+    # Remember an address typed in, so later scans look there too.
+    host = uri.split(":", 1)[-1] if uri else ""
+    if host and host not in sdr_hosts():
+        sd["hosts"] = list(sd.get("hosts") or []) + [host]
+    # DL1JM's modulator lives on the LibreSDR only.
+    if not sdr_is_libre():
+        config["dvbs2_engine"] = "rock"
+    save_config(config)
+    return {"success": True, "uri": uri}
+
+
+@app.post("/api/sdr/scan")
+def api_sdr_scan():
+    """Look for SDRs now (the direct link, configured hosts and mDNS)."""
+    return {"success": True, "found": sdrs.scan(sdr_hosts())}
 
 
 class Atsc3Update(BaseModel):
@@ -1542,7 +1714,7 @@ def api_atsc3(req: Atsc3Update):
                 (old["constellation"], old["rate"], old["oversample"])):
             start_tx()
         elif (new["frequency_mhz"], new["power_db"]) != (old["frequency_mhz"], old["power_db"]):
-            atsc3_set_radio()
+            atsc3_set_radio(live_only=True)
     return {"success": True, "atsc3": new, "ts_rate": atsc3mod.ts_rate(new)}
 
 
@@ -1640,13 +1812,29 @@ def api_libre_check():
 
 @app.post("/api/modulation")
 def api_modulation(req: ModulationUpdate):
+    old = dict(config["modulation"])
+    new = dict(old)
     for k, v in req.model_dump().items():
         if v is not None:
-            config["modulation"][k] = v
+            new[k] = v
+    if dvbs2_rock():
+        # Refuse what the ROCK's modulator cannot make (8PSK 1/2, say)
+        # before it reaches the config, with the reason.
+        try:
+            dvbs2mod.check(new)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    config["modulation"] = new
     save_config(config)
     if tx_running():
-        start_tx()   # restart so the change takes effect
-    return {"success": True, "config": config["modulation"]}
+        live = ("frequency_mhz", "power_db")
+        if dvbs2_rock() and all(new[k] == old.get(k) for k in new if k not in live):
+            # Frequency and power go straight to the AD9361, no break.
+            atsc3_set_radio(live_only=True)
+        else:
+            start_tx()   # restart so the change takes effect
+    return {"success": True, "config": config["modulation"],
+            "ts_rate": dvbs2mod.ts_rate(new) if dvbs2_rock() else None}
 
 
 @app.post("/api/encoder")
@@ -1804,6 +1992,18 @@ PAGE = """<!DOCTYPE html>
             <button class="btn btn-outline-light" id="mode-dvbs2" onclick="setMode('dvbs2')">DVB-S2</button>
             <button class="btn btn-outline-light" id="mode-atsc3" onclick="setMode('atsc3')">ATSC 3.0</button>
           </div>
+          <div class="small text-muted mb-1">SDR</div>
+          <div class="d-flex gap-2 mb-1">
+            <select class="form-select form-select-sm bg-dark text-light border-secondary"
+                    id="sdr-select" onchange="setSdr(this.value)"></select>
+            <button class="btn btn-sm btn-outline-light" onclick="scanSdr()">Scan</button>
+          </div>
+          <div class="d-flex gap-2 mb-1">
+            <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                   id="sdr-add" placeholder="Another address, e.g. 192.168.0.117">
+            <button class="btn btn-sm btn-outline-light" onclick="addSdr()">Use</button>
+          </div>
+          <div class="small text-muted mb-3" id="sdr-info">&mdash;</div>
           <div class="d-grid gap-2 mb-3">
             <button class="btn btn-secondary big-btn" id="btn-txon" onclick="startTx()">TX On</button>
             <button class="btn btn-secondary big-btn" id="btn-txoff" onclick="stopTx()">TX Off</button>
@@ -1829,7 +2029,7 @@ PAGE = """<!DOCTYPE html>
             <canvas id="bb-hist" height="150" style="width:100%;display:block;margin-top:2px;background:#0b0f1d;border:1px solid #0f3460;border-radius:4px"></canvas>
           </div>
           <div class="small mt-2" id="libre-patch">LibreSDR script: checking&hellip;</div>
-          <button class="btn btn-sm btn-outline-light mt-2" onclick="checkLibre()">Check LibreSDR</button>
+          <button class="btn btn-sm btn-outline-light mt-2" id="libre-check" onclick="checkLibre()">Check LibreSDR</button>
           <a href="/monitor" class="btn btn-sm btn-outline-light mt-2 ms-1">&#x1F4C8; TX monitor</a>
           <div class="d-flex gap-2 mt-3 pt-2" style="border-top:1px solid #0f3460">
             <button class="btn btn-sm btn-outline-warning flex-fill" onclick="system('restart')">&#x1F504; Restart ROCK</button>
@@ -1884,6 +2084,12 @@ PAGE = """<!DOCTYPE html>
             </div>
           </div>
           <div id="mod-dvbs2">
+          <label class="small text-muted">Modulator</label>
+          <select class="form-select form-select-sm bg-dark text-light border-secondary mb-2"
+                  id="m-engine" onchange="setEngine(this.value)">
+            <option value="rock">ROCK: Ron Economos W6RZ's gr-dtv (any SDR)</option>
+            <option value="board">LibreSDR on board: DL1JM's firmware</option>
+          </select>
           <label class="small text-muted">Symbol rate (kS/s)</label>
           <input type="number" class="form-control form-control-sm bg-dark text-light border-secondary mb-1"
                  id="m-sr" onchange="saveMod()">
@@ -1915,6 +2121,16 @@ PAGE = """<!DOCTYPE html>
             <input class="form-check-input" type="checkbox" id="m-pilots"
                    onchange="saveMod()">
             <label class="form-check-label small" for="m-pilots">Pilots</label>
+          </div>
+          <div id="m-rock-only">
+            <label class="small text-muted">Roll-off</label>
+            <select class="form-select form-select-sm bg-dark text-light border-secondary mb-1"
+                    id="m-rolloff" onchange="saveMod()">
+              <option>0.35</option><option>0.25</option><option>0.20</option>
+            </select>
+            <div class="text-muted small mb-1">The Picotuner's Serit tuner does not take 0.20.</div>
+            <div class="small mb-2">TS rate: <span class="status-value" id="m-tsrate">&mdash;</span>
+              &middot; DAC <span class="status-value" id="m-dac">&mdash;</span></div>
           </div>
           </div>
           <label class="small text-muted">Power (dB)</label>
@@ -2364,6 +2580,7 @@ async function saveMod() {
       constellation: document.getElementById('m-const').value,
       fec: document.getElementById('m-fec').value,
       pilots: document.getElementById('m-pilots').checked,
+      rolloff: document.getElementById('m-rolloff').value,
       power_db: power
     });
   }
@@ -2384,9 +2601,63 @@ function fillMod(c, mode) {
   document.getElementById('m-const').value = m.constellation;
   document.getElementById('m-fec').value = m.fec;
   document.getElementById('m-pilots').checked = m.pilots;
+  document.getElementById('m-rolloff').value = m.rolloff || '0.35';
   document.getElementById('a-const').value = a.constellation;
   document.getElementById('a-rate').value = a.rate;
   document.getElementById('a-os').value = String(a.oversample || 2);
+}
+
+async function setSdr(uri) {
+  if (cfg && cfg.transmitting &&
+      !confirm('Changing the SDR takes the transmitter off air. Carry on?')) { poll(); return; }
+  await api('POST', '/api/sdr', {uri});
+  poll();
+}
+
+async function addSdr() {
+  const v = document.getElementById('sdr-add').value.trim();
+  if (!v) return;
+  setText('sdr-info', 'Asking ' + v + '...');
+  const j = await api('POST', '/api/sdr', {uri: v});
+  if (j.success) { document.getElementById('sdr-add').value = ''; await api('POST', '/api/sdr/scan'); }
+  sdrKey = null;
+  poll();
+}
+
+async function scanSdr() {
+  setText('sdr-info', 'Looking for SDRs on the direct link, the LAN and mDNS...');
+  await api('POST', '/api/sdr/scan');
+  sdrKey = null;
+  poll();
+}
+
+async function setEngine(engine) {
+  if (cfg && engine === cfg.dvbs2_engine) return;
+  if (cfg && cfg.transmitting &&
+      !confirm('Changing the modulator takes the transmitter off air. Carry on?')) { poll(); return; }
+  await api('POST', '/api/dvbs2_engine', {engine});
+  poll();
+}
+
+// The SDR list: the configured LibreSDR, then whatever the scan found.
+// Rebuilt only when what was found changes, so an open list is not shut.
+let sdrKey = null;
+function fillSdr(S) {
+  const sel = document.getElementById('sdr-select');
+  const found = S.found || [];
+  const key = JSON.stringify([S.chosen, found.map(d => d.uri + d.firmware)]);
+  if (key === sdrKey || document.activeElement === sel) return;
+  sdrKey = key;
+  sel.innerHTML = '';
+  const add = (value, label) => {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = label; sel.appendChild(o);
+  };
+  add('', 'LibreSDR (as configured)');
+  for (const d of found)
+    add(d.uri, d.model + (d.firmware ? ', ' + d.firmware : '') + ' at ' + d.host);
+  if (S.chosen && !found.some(d => d.uri === S.chosen)) add(S.chosen, S.chosen + ' (not answering)');
+  sel.value = S.chosen || '';
 }
 
 let shownMode = null;
@@ -2579,23 +2850,46 @@ async function poll() {
     if (!firstLoad) fillMod(cfg.config, cfg.mode);
     shownMode = cfg.mode;
   }
-  setText('m-power-note', AT
-    ? 'Transmit attenuation in the LibreSDR: 0 dB is full output. TX Off sets the most attenuation it has (−89.75 dB).'
+  // IQ: the SDR is a plain transmitter (ATSC 3.0, or DVB-S2 from the ROCK).
+  const IQ = !!cfg.iq, S = cfg.sdr || {};
+  setText('m-power-note', IQ
+    ? 'Transmit attenuation in the SDR: 0 dB is full output. TX Off sets the most attenuation it has (−89.75 dB).'
     : 'Below −40 dB this firmware drops PTT, which is how TX Off leaves the carrier off.');
   if (AT) setText('a-tsrate', (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s');
 
-  // In ATSC 3.0 DL1JM's modulator is stopped on purpose: the board is an
-  // IQ transmitter, and "idle" would read as a fault.
-  setText('libre-badge', !L.reachable ? 'LibreSDR unreachable'
-    : AT ? 'LibreSDR IQ' : (L.modulator_running ? 'LibreSDR ready' : 'LibreSDR idle'));
-  setStyle('libre-badge', 'background', !L.reachable ? '#b91c1c'
-    : (AT || L.modulator_running) ? '#16a34a' : '#3a4a63');
+  // The SDR: the list, and which modulator can drive it.
+  fillSdr(S);
+  const me = document.getElementById('m-engine');
+  if (document.activeElement !== me) me.value = cfg.dvbs2_engine;
+  me.options[1].disabled = !S.is_libre;
+  setStyle('m-rock-only', 'display', (!AT && IQ) ? '' : 'none');
+  if (!AT && IQ) {
+    setText('m-tsrate', (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s');
+    setText('m-dac', S.dac_rate ? (S.dac_rate/1e6).toFixed(3) + ' MS/s' : '—');
+  }
+  const here = (S.found || []).find(d => d.uri === S.uri);
+  const name = here ? here.model.split(' (')[0] : (S.is_libre ? 'LibreSDR' : 'SDR');
+  setText('sdr-info', here
+    ? 'Using ' + here.model + (here.firmware ? ', ' + here.firmware : '') + ' at ' + here.host
+    : 'Using ' + S.uri + (S.last_scan ? ' (not found in the last scan)' : ''));
 
-  setText('s-ts', (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s' + (AT ? ' (ATSC 3.0)' : ''));
-  setText('s-want', AT ? (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s'
+  // As an IQ transmitter DL1JM's modulator is stopped on purpose (or absent),
+  // so "idle" would read as a fault: the badge shows the SDR instead.
+  if (IQ) {
+    setText('libre-badge', here ? name + ' IQ' : name + ' not found');
+    setStyle('libre-badge', 'background', here || cfg.transmitting ? '#16a34a' : '#b91c1c');
+  } else {
+    setText('libre-badge', !L.reachable ? 'LibreSDR unreachable'
+      : (L.modulator_running ? 'LibreSDR ready' : 'LibreSDR idle'));
+    setStyle('libre-badge', 'background', !L.reachable ? '#b91c1c'
+      : L.modulator_running ? '#16a34a' : '#3a4a63');
+  }
+
+  setText('s-ts', (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s' + (AT ? ' (ATSC 3.0)' : IQ ? ' (DVB-S2 from the ROCK)' : ''));
+  setText('s-want', IQ ? (cfg.ts_bitrate/1e6).toFixed(3) + ' Mb/s'
     : (L.ts_bitrate ? (L.ts_bitrate/1e6).toFixed(3) + ' Mb/s' : '—'));
-  setText('s-under', AT ? '—' : (L.underflows === null || L.underflows === undefined) ? '—' : L.underflows);
-  setStyle('s-under', 'color', (!AT && L.underflows) ? '#f87171' : '#4ade80');
+  setText('s-under', IQ ? '—' : (L.underflows === null || L.underflows === undefined) ? '—' : L.underflows);
+  setStyle('s-under', 'color', (!IQ && L.underflows) ? '#f87171' : '#4ade80');
   setText('s-up', cfg.transmitting ? cfg.uptime + ' s' : '—');
 
   const h = cfg.hdmi || {};
@@ -2641,6 +2935,8 @@ async function poll() {
       lo.toFixed(2) + ' s' + (B.late ? ', ' + B.late + ' late frames since key-up' : '') + ')');
     setStyle('buffer-line', 'color', lo <= 0 ? '#f87171' : lo < 0.5 ? '#fbbf24' : '#4ade80');
   }
+  setStyle('libre-patch', 'display', IQ ? 'none' : '');
+  setStyle('libre-check', 'display', IQ ? 'none' : '');
   setText('libre-patch', 'LibreSDR script: ' + (LP.detail || '—'));
   setStyle('libre-patch', 'color', {ok: '#4ade80', rebooting: '#e8a33d', pending: '#e8a33d',
                                     unknown: '#9fb3d1'}[LP.state] || '#f87171');
@@ -2650,7 +2946,7 @@ async function poll() {
     : 'Last build: ' + (N.detail || '—'));
   setStyle('i-nit-status', 'color', (!AT && N.ok) ? '#4ade80' : '#9fb3d1');
 
-  const srw = document.getElementById('sr-warning'), hide = cfg.config.modulation.symbol_rate_ks <= 2000;
+  const srw = document.getElementById('sr-warning'), hide = IQ || cfg.config.modulation.symbol_rate_ks <= 2000;
   if (srw.hidden !== hide) srw.hidden = hide;
 
   if (firstLoad) {
@@ -2993,4 +3289,5 @@ if __name__ == "__main__":
     print(f"    media:  {MEDIA_DIR}")
     print(f"    LibreSDR: {libre_host()}")
     threading.Thread(target=libre_patch_watch, daemon=True).start()
+    threading.Thread(target=sdr_scan_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
