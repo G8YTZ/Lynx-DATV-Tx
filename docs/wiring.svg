@@ -76,7 +76,7 @@
 
   <line x1="978" y1="540" x2="912" y2="540" stroke="#047857" stroke-width="2" marker-end="url(#arrRef)"/>
   <line x1="795" y1="498" x2="795" y2="402" stroke="#047857" stroke-width="2.5" marker-end="url(#arrRef)"/>
-  <text x="805" y="455" font-size="12" fill="#065f46">10 MHz, SMA, 50 &#937;</text>
+  <text x="805" y="455" font-size="12" fill="#065f46">10 MHz, SMA to MMCX</text>
 
   <path d="M912,300 L945,300 L945,140 L978,140" fill="none" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrRF)"/>
   <line x1="1065" y1="172" x2="1065" y2="213" stroke="#b45309" stroke-width="2.5" marker-end="url(#arrRF)"/>

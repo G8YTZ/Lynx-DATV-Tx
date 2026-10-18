@@ -51,7 +51,7 @@ sudo visudo -c
 
 The supported connection: the SDR on its own Cat 6 cable to the ROCK's **second** Ethernet port (the RJ45 at the far edge of the board, next to the other one).
 
-![ROCK 5T Ethernet ports](img/rock5t-ports.jpg)
+![ROCK 5T connections](img/rock5t-ports.jpg)
 
 Find the port's name with the cable in and the SDR powered: it is the one showing `UP` that is not your LAN.
 
