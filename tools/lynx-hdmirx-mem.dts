@@ -1,5 +1,9 @@
 // Lynx-Tx: a fixed, private memory block for the ROCK 5T's HDMI input.
 //
+// WARNING: NOT PROVEN. On 19 Oct 2026 the dev ROCK hit memory corruption
+// (segfaults, panic on restart) within minutes of enabling this. Radxa's
+// BSP rk_hdmirx may not cope with a no-map pool. Test only on a spare ROCK.
+//
 // HDMI in has no IOMMU and needs each 4K frame (16.6 MB) as one physically
 // contiguous block below 4 GB. Without this it takes its buffers from the
 // shared CMA pool, which the kernel lends out to the page cache; when the

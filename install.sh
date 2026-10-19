@@ -144,7 +144,10 @@ fi
 # HDMI in gets a fixed block of its own (no-map, below 4 GB), never lent to
 # the page cache: tools/lynx-hdmirx-mem.dts. Radxa's u-boot-update lists
 # every .dtbo in /boot/dtbo as an fdtoverlay.
-if [ -d /boot/dtbo ] && [ ! -f /boot/dtbo/lynx-hdmirx-mem.dtbo ]; then
+# DISABLED 19 Oct 2026: on the dev ROCK this was followed within minutes by
+# memory corruption (segfaults everywhere, panic on restart). Not to return
+# until proven on a spare ROCK. Set LYNX_HDMIRX_OVERLAY=1 only for that test.
+if [ "${LYNX_HDMIRX_OVERLAY:-0}" = 1 ] && [ -d /boot/dtbo ] && [ ! -f /boot/dtbo/lynx-hdmirx-mem.dtbo ]; then
   sudo apt-get install -y device-tree-compiler >/dev/null 2>&1 || true
   if sudo dtc -@ -q -I dts -O dtb -o /boot/dtbo/lynx-hdmirx-mem.dtbo "$APP_DIR/tools/lynx-hdmirx-mem.dts" &&
      command -v u-boot-update >/dev/null && sudo u-boot-update >/dev/null; then
