@@ -141,6 +141,23 @@ if [ -f /boot/extlinux/extlinux.conf ] && grep -qE '^[[:space:]]*append ' /boot/
   sudo sed -i '/^[[:space:]]*append /{/cma=/!s/$/ cma=1024M/}' /boot/extlinux/extlinux.conf
   CMA_REBOOT=1
 fi
+# HDMI in gets a fixed block of its own (no-map, below 4 GB), never lent to
+# the page cache: tools/lynx-hdmirx-mem.dts. Radxa's u-boot-update lists
+# every .dtbo in /boot/dtbo as an fdtoverlay.
+if [ -d /boot/dtbo ] && [ ! -f /boot/dtbo/lynx-hdmirx-mem.dtbo ]; then
+  sudo apt-get install -y device-tree-compiler >/dev/null 2>&1 || true
+  if sudo dtc -@ -q -I dts -O dtb -o /boot/dtbo/lynx-hdmirx-mem.dtbo "$APP_DIR/tools/lynx-hdmirx-mem.dts" &&
+     command -v u-boot-update >/dev/null && sudo u-boot-update >/dev/null; then
+    CMA_REBOOT=1; note "HDMI in: fixed 256 MB block, after a restart"
+  else
+    warn "Could not add the HDMI-in memory overlay: 4K HDMI in may fail after hours on air."
+  fi
+fi
+# No swap: a live 4K chain must never be paged out, and 400 MB of real use
+# in 8 GB never needs it. Radxa's image swaps to compressed RAM (zramswap).
+if systemctl is-enabled zramswap.service >/dev/null 2>&1; then
+  sudo systemctl disable --now zramswap.service >/dev/null 2>&1 && note "Swap off (zramswap)"
+fi
 if [ "$CMA_REBOOT" = 1 ]; then
   note "Contiguous memory set to 1 GB: takes effect after a restart"
 elif ! grep -q 'cma=' /proc/cmdline; then
