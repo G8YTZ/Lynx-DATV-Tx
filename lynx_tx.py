@@ -1144,6 +1144,92 @@ def _on_air_file() -> str:
     return src["file"] if src["kind"] != "camera" and tx_running() else ""
 
 
+# ── The mixer: always running ─────────────────────────────────
+# switcher.py (camera | media -> one HEVC encoder) used to be the first stage
+# of the TX pipeline, so every key-up, Apply or mode change tore it down and
+# built it again - re-opening HDMI in and grabbing fresh 4K frame buffers
+# each time. That teardown is what set off the ROCK's memory corruption on
+# 19 Oct 2026. Now it starts with Lynx-Tx and keeps running, like a vision
+# mixer, sending its stream to a local UDP port; TX On/Off starts and stops
+# only the chain behind it. It is rebuilt only when what it is built with
+# changes (picture size, GOP, the rate after a modulation change).
+MIXER_PORT = 5800
+mixer_plan: dict = {}          # filled by build_pipeline: "core" and "start"
+mixer_proc = None
+mixer_core = ""
+mixer_lock = threading.RLock()
+
+
+def mixer_running() -> bool:
+    return mixer_proc is not None and mixer_proc.poll() is None
+
+
+def stop_mixer():
+    global mixer_proc
+    with mixer_lock:
+        if mixer_proc is not None:
+            try:
+                os.killpg(os.getpgid(mixer_proc.pid), signal.SIGTERM)
+                mixer_proc.wait(timeout=8)
+            except Exception:
+                try:
+                    os.killpg(os.getpgid(mixer_proc.pid), signal.SIGKILL)
+                except Exception:
+                    pass
+            mixer_proc = None
+        subprocess.run(["pkill", "-f", "switcher.py"], capture_output=True)
+
+
+def ensure_mixer() -> bool:
+    """Start the mixer, or rebuild it if what it is built with has changed.
+    True if it was (re)started - give it a moment before relying on it."""
+    global mixer_proc, mixer_core
+    if not config.get("use_switcher", True):
+        stop_mixer()
+        return False
+    with mixer_lock:
+        if not mixer_plan:
+            try:
+                build_pipeline()                  # fills mixer_plan
+            except Exception as e:
+                print(f"[mixer] cannot plan: {e}")
+                return False
+        if mixer_running() and mixer_core == mixer_plan["core"]:
+            return False
+        if mixer_running():
+            print("[mixer] settings changed - rebuilding")
+        stop_mixer()
+        mixer_core = mixer_plan["core"]
+        mixer_proc = subprocess.Popen(
+            mixer_plan["start"], shell=True, preexec_fn=os.setsid,
+            stdout=subprocess.DEVNULL, stderr=open("/tmp/lynx-mixer.log", "wb"))
+        print(f"[mixer] started: {mixer_core[:100]}...")
+        return True
+
+
+def mixer_watch():
+    """Start the mixer with Lynx-Tx, and bring it back if it ever dies."""
+    time.sleep(3)
+    while True:
+        try:
+            if config.get("use_switcher", True) and not mixer_running():
+                if mixer_proc is not None:
+                    print(f"[mixer] stopped (exit {mixer_proc.returncode}) - restarting; "
+                          "see /tmp/lynx-mixer.log")
+                mixer_plan.clear()                # fresh plan: HDMI may have changed
+                ensure_mixer()
+        except Exception as e:
+            print(f"[mixer] watch: {e}")
+        time.sleep(5)
+
+
+def mixer_keyframe(delay: float):
+    """Ask for a keyframe once the chain behind the mixer is listening, so
+    the receiver locks at once rather than at the next one in the GOP."""
+    time.sleep(delay)
+    switcher_call("POST", "/keyframe")
+
+
 def build_pipeline() -> str:
     """The whole chain as one shell command.
 
@@ -1237,6 +1323,7 @@ def build_pipeline() -> str:
 
     w, h, fps = enc["width"], enc["height"], enc["fps"]
     reader = ""
+    stream_in = "-"
     media_audio = None
 
     # -- the source ------------------------------------------------
@@ -1360,20 +1447,26 @@ def build_pipeline() -> str:
         if clip and not (MEDIA_DIR / clip).is_file():
             clip = ""
         start = src.get("program") or ("med" if src["kind"] in ("video", "still") and clip else "cam")
-        parts = [
-            f"python3 {shlex.quote(str(APP_DIR / 'switcher.py'))} "
-            f"--media-dir {shlex.quote(str(MEDIA_DIR))} "
-            + (f"--media {shlex.quote(clip)} " if clip else "")
-            + f"--start {start} --bps {video_bps} "
-            f"--gop {enc['gop']} --qp-floor {int(enc.get('qp_floor', 34))} --audio-bitrate {enc['audio_bitrate']} --slack {slack} "
-            f"--rc {rate_control} "
-            f"--rc-rate {picture_channel_bps} "
-            f"--look {float(enc.get('look_ahead', 0.5))} "
-            f"--rc-target {float(enc.get('rc_target', 0.3))} "
-            f"--width {w} --height {h} "
-            f"--video-device {shlex.quote(config['video_device'])} "
-            f"--audio-device {shlex.quote(config['audio_device'])}"
-        ]
+        # The mixer runs all the time (see ensure_mixer): what it is BUILT
+        # with is compared, not which clip or input it started on, so a cut
+        # or a clip change never rebuilds it - only a new size, GOP or rate.
+        core = (f"python3 {shlex.quote(str(APP_DIR / 'switcher.py'))} "
+                f"--media-dir {shlex.quote(str(MEDIA_DIR))} "
+                f"--udp 127.0.0.1:{MIXER_PORT} --bps {video_bps} "
+                f"--gop {enc['gop']} --qp-floor {int(enc.get('qp_floor', 34))} --audio-bitrate {enc['audio_bitrate']} --slack {slack} "
+                f"--rc {rate_control} "
+                f"--rc-rate {picture_channel_bps} "
+                f"--look {float(enc.get('look_ahead', 0.5))} "
+                f"--rc-target {float(enc.get('rc_target', 0.3))} "
+                f"--width {w} --height {h} "
+                f"--video-device {shlex.quote(config['video_device'])} "
+                f"--audio-device {shlex.quote(config['audio_device'])}")
+        mixer_plan.update(core=core, start=core
+                          + (f" --media {shlex.quote(clip)}" if clip else "")
+                          + f" --start {start}")
+        parts = []
+        stream_in = (f"'udp://127.0.0.1:{MIXER_PORT}?fifo_size=200000"
+                     f"&overrun_nonfatal=1&buffer_size=8388608'")
         want_audio = True
     else:
         parts = [
@@ -1438,8 +1531,9 @@ def build_pipeline() -> str:
     # picture burst has used up the slack.
     muxrate = "-pes_payload_size 0 " if use_prio else f"-muxrate {rate} "
     parts.append(
-        f" | ffmpeg -loglevel warning -analyzeduration 1000000 "
-        f"-f mpegts -i - -map 0:v:0 -map '0:a:0?' -c copy -f mpegts {muxrate}"
+        (f"ffmpeg -loglevel warning -analyzeduration 1000000 -f mpegts -i {stream_in}"
+         if not parts else " | ffmpeg -loglevel warning -analyzeduration 1000000 -f mpegts -i -")
+        + f" -map 0:v:0 -map '0:a:0?' -c copy -f mpegts {muxrate}"
         f"-metadata service_provider={shlex.quote(config['provider'])} "
         f"-metadata service_name={shlex.quote(config['callsign'])} "
         f"-mpegts_original_network_id {ident['original_network_id']} "
@@ -1567,12 +1661,16 @@ def start_tx() -> dict:
             time.sleep(2)
             cmd = build_pipeline()
         tx_last_command = cmd
+        fresh = ensure_mixer() if config.get("use_switcher", True) else False
         tx_proc = subprocess.Popen(
             cmd, shell=True, preexec_fn=os.setsid,
             stdout=subprocess.DEVNULL, stderr=open("/tmp/lynx-tx-pipeline.log", "ab"))
         tx_started_at = time.time()
         if iq_mode():
             threading.Thread(target=iq_guard, args=(tx_proc,), daemon=True).start()
+        if config.get("use_switcher", True):
+            threading.Thread(target=mixer_keyframe, args=(4.0 if fresh else 1.0,),
+                             daemon=True).start()
         print(f"[tx] started: {cmd[:120]}...")
         return {"success": True}
 
@@ -1596,7 +1694,7 @@ def stop_tx_locked():
     # nothing is writing - which is exactly the failure this whole
     # arrangement kept producing. Match the remux stage specifically.
     for pattern in ("gst-launch-1.0", "ffmpeg.*-f mpegts",
-                    "tsp --realtime", "switcher.py", "tsprio.py", "tsbuffer.py",
+                    "tsp --realtime", "tsprio.py", "tsbuffer.py",
                     f"file {atsc3mod.TS_FIFO}", "iio_writedev",
                     f"{atsc3mod.FLOWGRAPH_ID}.py",
                     f"file {dvbs2mod.TS_FIFO}", dvbs2mod.FLOWGRAPH_ID):
@@ -1637,6 +1735,7 @@ def mute_on_shutdown():
     if iq_mode() and tx_running():
         print("[iq] shutting down - muting the SDR")
         atsc3_mute()
+    stop_mixer()
 
 
 class ModulationUpdate(BaseModel):
@@ -1715,7 +1814,7 @@ def api_status():
         "libre_patch": libre_patch,
         "buffer": read_buffer() if tx_running() else None,
         "switcher": (switcher_call("GET", "/status")
-                     if tx_running() and config.get("use_switcher", True) else None),
+                     if mixer_running() and config.get("use_switcher", True) else None),
         "use_switcher": config.get("use_switcher", True),
         "nit": nit_status,
         "tweaks": {"hybrid_capable": hybrid_capable(), "tested": TESTED_TWEAKS,
@@ -2031,7 +2130,7 @@ def api_switcher_take(req: TakeRequest):
         raise HTTPException(400, "src must be cam or med")
     config["source"]["program"] = req.src
     save_config(config)
-    live = tx_running() and switcher_call("POST", f"/take?src={req.src}") is not None
+    live = mixer_running() and switcher_call("POST", f"/take?src={req.src}") is not None
     return {"success": True, "live": live}
 
 
@@ -2048,7 +2147,7 @@ def api_switcher_load(req: LoadRequest):
     config["source"]["file"] = n
     save_config(config)
     from urllib.parse import quote
-    live = tx_running() and switcher_call("POST", f"/load?file={quote(n)}") is not None
+    live = mixer_running() and switcher_call("POST", f"/load?file={quote(n)}") is not None
     return {"success": True, "live": live}
 
 
@@ -3445,4 +3544,5 @@ if __name__ == "__main__":
     threading.Thread(target=libre_patch_watch, daemon=True).start()
     threading.Thread(target=sdr_scan_watch, daemon=True).start()
     threading.Thread(target=sdr_ref_watch, daemon=True).start()
+    threading.Thread(target=mixer_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")

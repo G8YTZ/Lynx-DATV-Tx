@@ -39,6 +39,7 @@ With no reading for 5 s it drifts back to normal.
 Control (Lynx-Tx calls these; the page at / is for stand-alone use):
   POST /take?src=cam|med        a clean cut
   POST /load?file=<name>        play <name> from --media-dir in the Media player
+  POST /keyframe                a keyframe now (Lynx-Tx asks at every key-up)
   GET  /status                  JSON: on air, media, camera state
 
   python3 switcher.py --media-dir /srv/lynxdeck/media --media Ayo4k.mp4 [--out f.ts] [--sim]
@@ -66,6 +67,9 @@ ap.add_argument("--media-dir", default="/srv/lynxdeck/media")
 ap.add_argument("--media", default="", help="clip to load at start (name in --media-dir)")
 ap.add_argument("--start", choices=("cam", "med"), default="cam")
 ap.add_argument("--out", default="", help="file; default is stdout")
+ap.add_argument("--udp", default="",
+                help="HOST:PORT - send the programme there instead of stdout. Lynx-Tx runs the "
+                     "mixer this way all the time, so TX On/Off never re-opens HDMI in")
 ap.add_argument("--seconds", type=int, default=0)
 ap.add_argument("--bps", type=int, default=3_800_000)
 ap.add_argument("--gop", type=int, default=25)
@@ -225,7 +229,14 @@ else:
         # frame's QP from a model of the receiver's buffer.
         encode = (f"mpph265enc name=enc rc-mode=fixqp qp-init=36 qp-min=36 qp-max=36 "
                   f"qp-min-i=36 qp-max-i=36 gop={a.gop} header-mode=each-idr")
-sink = f"filesink location={a.out}" if a.out else "fdsink fd=1"
+if a.udp:
+    _h, _p = a.udp.rsplit(":", 1)
+    # 7 packets a datagram (1316 bytes, the usual for TS over UDP); no sync,
+    # the encoder is live already. Nobody listening (off air) is fine: the
+    # datagrams are simply dropped.
+    sink = f"udpsink host={_h} port={int(_p)} sync=false async=false buffer-size=4194304"
+else:
+    sink = f"filesink location={a.out}" if a.out else "fdsink fd=1"
 
 LOOK = a.look if a.rc in ("buffer", "hybrid") else 0.0
 LOOK_Q = (f"queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 "
@@ -235,7 +246,7 @@ prog = Gst.parse_launch(
     f"h265parse config-interval=-1 ! {Q} ! mux. "
     f"audiomixer name=amix ! {ACAPS} ! {LOOK_Q}audioconvert ! "
     f"avenc_aac bitrate={a.audio_bitrate} ! aacparse ! {Q} ! mux. "
-    f"mpegtsmux name=mux ! {sink} "
+    f"mpegtsmux name=mux{' alignment=7' if a.udp else ''} ! {sink} "
     f"intervideosrc name=src_cam channel=cam timeout=10000000000 ! {VCAPS} ! vsel. "
     f"intervideosrc name=src_med channel=med timeout=10000000000 ! {VCAPS} ! vsel. "
     f"interaudiosrc name=asrc_cam channel=cam_a ! {ACAPS} ! amix.sink_0 "
@@ -722,6 +733,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, '{"error":"src must be cam or med"}')
             GLib.idle_add(take, src)
             return self._send(200, json.dumps({"taking": src}))
+        if u.path == "/keyframe":
+            GLib.idle_add(keyframe)
+            return self._send(200, '{"keyframe": true}')
         if u.path == "/load":
             name = os.path.basename((q.get("file") or [""])[0])
             if not name or not (MEDIA_DIR / name).is_file():
@@ -729,6 +743,17 @@ class Handler(BaseHTTPRequestHandler):
             GLib.idle_add(load, name)
             return self._send(200, json.dumps({"loading": name}))
         self._send(404, '{"error":"not found"}')
+
+
+def keyframe():
+    """A keyframe now: when the transmitter keys up mid-stream, the receiver
+    then locks at once instead of waiting for the next one in the GOP."""
+    ev = GstVideo.video_event_new_upstream_force_key_unit(Gst.CLOCK_TIME_NONE, True, 0)
+    enc.get_static_pad("src").send_event(ev)
+    if rc is not None:
+        rcs["force_key"] = True
+    log("keyframe requested")
+    return False
 
 
 def serve():
