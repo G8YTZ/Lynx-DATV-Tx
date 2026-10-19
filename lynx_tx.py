@@ -1914,7 +1914,7 @@ def api_health():
     value is cached or local."""
     on = tx_running()
     if tx_alarm["locked_out"]:
-        state = 5                                   # lockedOut
+        state = 5                                   # lockout
     elif tx_alarm["muted"] and on:
         state = 3                                   # mutedBySdr
     elif not on and tx_alarm["fault"]:
@@ -3264,7 +3264,7 @@ async function poll() {
   // turned its transmitter off (its IQ stopped). Fault: the chain stopped
   // by itself. Both clear at the next TX On.
   const A = cfg.alarm || {};
-  const txText = A.locked_out ? 'LOCKED OUT' : A.muted ? 'MUTED BY THE SDR'
+  const txText = A.locked_out ? 'LOCKOUT' : A.muted ? 'MUTED BY THE SDR'
                : (!cfg.transmitting && A.fault) ? 'FAULT'
                : cfg.transmitting ? 'ON AIR' : 'IDLE';
   setText('tx-badge', txText);
@@ -3274,7 +3274,7 @@ async function poll() {
   setStyle('tx-badge', 'background', A.locked_out ? '#b91c1c'
            : (A.muted || (!cfg.transmitting && A.fault)) ? '#d97706'
            : cfg.transmitting ? '#16a34a' : '#3a4a63');
-  setAttr('tx-badge', 'title', A.locked_out ? 'Auto-recover gave up after repeated faults. Find the cause, then press TX On.'
+  setAttr('tx-badge', 'title', A.locked_out ? 'Lockout: auto-recover gave up after repeated faults. Find the cause, then press TX On.'
            : A.recovering ? 'Auto-recover: ' + A.recovering
            : A.muted ? 'The SDR stopped receiving IQ and muted itself. Auto-recover restarts it once the SDR has been back for 30 s; or press TX Off, then TX On.'
            : A.fault ? 'The transmit chain stopped by itself: ' + A.fault + '. Auto-recover will restart it, or press TX On.' : '');
