@@ -48,8 +48,10 @@ auto_recover:
 
 ```bash
 sudo apt install -y snmp
-snmpwalk -v2c -c lynx -m +LYNX-MIB localhost LYNX-MIB::lynxTx
+snmpwalk -v2c -c lynx -On localhost .1.3.6.1.4.1.8072.9999.1.1 2>/dev/null
 ```
+
+Fourteen lines, by number. Debian's `snmpwalk` comes without the standard IETF MIB files, so names (`LYNX-MIB::lynxTx`) only work after `sudo apt install snmp-mibs-downloader && sudo download-mibs` and commenting out the `mibs :` line in `/etc/snmp/snmp.conf`; without them it prints pages of "Cannot find module" warnings, which are harmless. Home Assistant uses the numbers and needs none of this.
 
 ## Home Assistant
 
