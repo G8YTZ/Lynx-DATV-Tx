@@ -126,6 +126,27 @@ if [ ! -e /dev/video10 ]; then
 fi
 [ -e /dev/video10 ] && note "/dev/video10 ready"
 
+# Contiguous memory for 4K: Radxa's image reserves 256 MB, shared by HDMI in,
+# the decoder, the encoder and RGA. One 4K frame is 16.6 MB; after hours on
+# air there was no such gap left, HDMI in failed its allocation and its error
+# path corrupted the kernel (ROCK froze, 18 and 19 Oct 2026). 1 GB fixes it.
+# /etc/kernel/cmdline is Radxa's master copy; extlinux.conf is what boots.
+CMA_REBOOT=0
+if [ -f /etc/kernel/cmdline ] && ! grep -q 'cma=' /etc/kernel/cmdline; then
+  sudo sed -i '1s/$/ cma=1024M/' /etc/kernel/cmdline; CMA_REBOOT=1
+fi
+if [ -f /boot/extlinux/extlinux.conf ] && grep -qE '^[[:space:]]*append ' /boot/extlinux/extlinux.conf &&
+   grep -E '^[[:space:]]*append ' /boot/extlinux/extlinux.conf | grep -qv 'cma='; then
+  sudo cp -n /boot/extlinux/extlinux.conf /boot/extlinux/extlinux.conf.lynx-bak
+  sudo sed -i '/^[[:space:]]*append /{/cma=/!s/$/ cma=1024M/}' /boot/extlinux/extlinux.conf
+  CMA_REBOOT=1
+fi
+if [ "$CMA_REBOOT" = 1 ]; then
+  note "Contiguous memory set to 1 GB: takes effect after a restart"
+elif ! grep -q 'cma=' /proc/cmdline; then
+  warn "Could not set cma=1024M on the kernel command line: 4K HDMI in may fail after hours on air."
+fi
+
 # --- 5. gr-atsc3 (ATSC 3.0) ----------------------------------
 step "5/9 gr-atsc3, Ron Economos W6RZ (ATSC 3.0 modulator)"
 if python3 -c "from gnuradio import atsc3" 2>/dev/null; then
@@ -237,6 +258,7 @@ echo
 echo "=== Done ==="
 echo "Open http://${IP:-<rock address>}:8080"
 echo "Connect the SDR to the ROCK's second Ethernet port (far right) and power it: it appears on the Transmit card."
+[ "$CMA_REBOOT" = 1 ] && echo "Restart the ROCK once now (sudo reboot): the 4K memory setting needs it."
 if [ ${#WARNINGS[@]} -gt 0 ]; then
   echo; echo "Finished with warnings:"; for w in "${WARNINGS[@]}"; do echo "  - $w"; done
 fi
