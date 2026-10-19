@@ -2324,6 +2324,10 @@ PAGE = """<!DOCTYPE html>
           style="background:#3a4a63;color:#fff;cursor:default">LibreSDR ?</span>
     <span class="btn btn-sm" id="ref-badge"
           style="background:#3a4a63;color:#fff;cursor:default;display:none">10 MHz Reference</span>
+    <span class="btn btn-sm" id="sdr-badge"
+          style="background:#3a4a63;color:#fff;cursor:default">SDR idle</span>
+    <span class="btn btn-sm" id="hdmi-badge"
+          style="background:#3a4a63;color:#fff;cursor:default">HDMI ?</span>
   </div>
 
   <div class="row g-3">
@@ -3249,6 +3253,23 @@ async function poll() {
                          : '10 MHz Reference: not reported');
   setStyle('ref-badge', 'background', R ? (R.locked ? '#16a34a' : '#b91c1c') : '#3a4a63');
   setStyle('ref-badge', 'display', '');
+
+  // Alarm lamps, always shown: the SDR (keyed and fed, muted itself, not
+  // answering, or idle) and the HDMI input as the mixer sees it.
+  const AL = cfg.alarm || {};
+  const sdrLamp = !cfg.transmitting ? ['SDR idle', '#3a4a63', 'Off air.']
+    : AL.muted ? ['SDR MUTED', '#d97706', 'The SDR stopped receiving IQ and muted itself. Press TX Off, then TX On.']
+    : AL.sdr_ok === false ? ['SDR NOT REACHED', '#b91c1c', 'Lynx-Tx cannot reach the SDR.']
+    : ['SDR OK', '#16a34a', 'On air: the SDR is keyed and taking IQ.'];
+  setText('sdr-badge', sdrLamp[0]); setStyle('sdr-badge', 'background', sdrLamp[1]);
+  setAttr('sdr-badge', 'title', sdrLamp[2]);
+  const camState = (cfg.switcher || {}).camera;
+  const hdmiLamp = camState === 'live' ? ['HDMI OK', '#16a34a', 'Camera input live.']
+    : camState === 'unstable' ? ['HDMI UNSTABLE', '#d97706', 'The HDMI signal keeps dropping: check the lead or restart the source. Colour bars meanwhile.']
+    : camState === 'bars' ? ['HDMI: no signal', '#3a4a63', 'No usable HDMI signal: the Camera input shows colour bars.']
+    : ['HDMI ?', '#3a4a63', 'The mixer is not reporting.'];
+  setText('hdmi-badge', hdmiLamp[0]); setStyle('hdmi-badge', 'background', hdmiLamp[1]);
+  setAttr('hdmi-badge', 'title', hdmiLamp[2]);
 
   // As an IQ transmitter DL1JM's modulator is stopped on purpose (or absent),
   // so "idle" would read as a fault: the badge shows the SDR instead.
