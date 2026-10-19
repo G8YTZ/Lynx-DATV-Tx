@@ -259,6 +259,10 @@ User=$USER
 WorkingDirectory=$APP_DIR
 ExecStart=/usr/bin/python3 $APP_DIR/lynx_tx.py
 Restart=on-failure
+# Stop Lynx-Tx first (it mutes the SDR while IQ is still flowing), and only
+# then the pipeline: never leave the SDR radiating a stale DAC buffer.
+KillMode=mixed
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target

@@ -802,6 +802,7 @@ def iq_guard(proc: subprocess.Popen):
         time.sleep(0.5)
     if proc.poll() is None and tx_proc is proc:
         try:
+            _iio(tx_lo_command(sdr_uri(), True))
             _iio(atsc3mod.mute_command(sdr_uri())[:-1] + [f"{iq_power_db():g}"])
             print(f"[iq] on air at {iq_power_db():g} dB")
         except Exception as e:
@@ -814,12 +815,24 @@ def iq_guard(proc: subprocess.Popen):
         atsc3_mute()
 
 
+def tx_lo_command(uri: str, on: bool) -> list:
+    """The AD9361's transmit LO. Tezuka's keyer powers it up and down with
+    the IQ stream; with that keyer stopped (quiet mode on the PlutoSky) it
+    is Lynx-Tx's job, so it is set on key-up and cleared on mute, on every
+    board (harmless where something else already does it)."""
+    return ["iio_attr", "-u", uri, "-o", "-c", "ad9361-phy",
+            "altvoltage1", "powerdown", "0" if on else "1"]
+
+
 def atsc3_mute():
-    """Most attenuation the AD9361 has. Best effort: never stops a TX Off."""
-    try:
-        _iio(atsc3mod.mute_command(sdr_uri()))
-    except Exception as e:
-        print(f"[iq] mute: {e}")
+    """Most attenuation the AD9361 has, then the transmit LO off. Best
+    effort: never stops a TX Off."""
+    uri = sdr_uri()
+    for cmd in (atsc3mod.mute_command(uri), tx_lo_command(uri, False)):
+        try:
+            _iio(cmd)
+        except Exception as e:
+            print(f"[iq] mute: {e}")
 
 
 def libre_restore_dvbs2():
@@ -1612,6 +1625,18 @@ def tx_running() -> bool:
 # ── API ───────────────────────────────────────────────────────
 
 app = FastAPI(title="Lynx-Tx", docs_url="/api/docs")
+
+
+@app.on_event("shutdown")
+def mute_on_shutdown():
+    """The ROCK restarting or shutting down: mute the SDR while the IQ is
+    still flowing, so it is never left radiating whatever its DAC holds.
+    Needs KillMode=mixed in the service, so systemd stops this process
+    first and the pipeline only afterwards. (If the ROCK dies outright, the
+    supervisor on the SDR mutes it: tools/plutosky-autorun.sh.)"""
+    if iq_mode() and tx_running():
+        print("[iq] shutting down - muting the SDR")
+        atsc3_mute()
 
 
 class ModulationUpdate(BaseModel):
