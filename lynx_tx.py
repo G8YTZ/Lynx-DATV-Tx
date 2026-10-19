@@ -749,7 +749,7 @@ def auto_recover_check():
         tx_alarm["recoveries_recent"] = recent
         tx_alarm["locked_out"] = True
         tx_alarm["recovering"] = ""
-        print(f"[recover] {len(recent)} restarts in {ar['window_min']} min - locked out "
+        print(f"[recover] {len(recent)} restarts in {ar['window_min']} min - lockout "
               "until TX On is pressed")
         return
     recent.append(now)
