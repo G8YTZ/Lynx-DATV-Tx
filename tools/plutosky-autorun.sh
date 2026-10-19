@@ -18,6 +18,13 @@
 # the extras stopped; ATSC 3.0 at 2x clean with the loop held
 # closed, and clean in holdover with the reference pulled.
 
+# SSH keys: Tezuka's /root is in RAM, so the ROCK's key is kept here in the
+# board's flash and put back at every boot (no password prompts from Lynx-Tx).
+if [ -s /mnt/jffs2/authorized_keys ]; then
+  mkdir -p /root/.ssh && cp /mnt/jffs2/authorized_keys /root/.ssh/authorized_keys
+  chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys
+fi
+
 ( sleep 20
   /etc/init.d/S97datv stop
   # Matched on the whole command line: Tezuka's shell scripts show up as
