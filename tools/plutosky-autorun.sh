@@ -12,7 +12,7 @@
 #    closed again once it has been back for 10 s. GPIO only, never the flash,
 #    so the stored setting stays at Tezuka's default.
 # 3. The reference state on MQTT (state/system/clkref/*) for Lynx-Tx's lamp.
-# 4. Starvation mute (OFF for now, see the loop): IQ stopped -> muted.
+# 4. Starvation mute: keyed but no IQ arriving for 2 s -> muted.
 #
 # Proven on the bench, 19 Oct 2026 (Tezuka v0.3.24): no underruns at 2x with
 # the extras stopped; ATSC 3.0 at 2x clean with the loop held
@@ -41,23 +41,22 @@
   loop_open()  { gpioset $CHIP $FORCE_EXT=0 $FORCE_INT=1; closed=0; good=0; }
   pub() { mosquitto_pub -r -t "state/system/clkref/$1" -m "$2" 2>/dev/null; }
 
-  # Starvation mute: if the IQ stops for 5 s (ROCK rebooted, crashed, cable
-  # out), the DAC would go on radiating whatever it holds. So: attenuator to
-  # the floor and the transmit LO off. Lynx-Tx powers both up again at its
-  # next key-up. Fed = the DAC buffer enabled and no underflow in the last
-  # second (the AXI DAC status register 0x88 latches it: bit 0, write 1 to
-  # clear; memory-mapped, so reading it costs nothing).
+  # Starvation mute: if the IQ stops arriving (ROCK rebooted, crashed,
+  # cable out) while the transmitter is keyed, the DAC would go on radiating
+  # whatever it holds - junk in the channel, and with an SFN, junk on every
+  # site's frequency. So: once a second, compare the bytes arriving on eth0
+  # with what the sample rate needs (4 bytes a sample); under half for 2 s
+  # with the TX LO on -> attenuator to the floor and the TX LO off. Lynx-Tx
+  # powers both up again at its next key-up. Read-only sysfs counters only:
+  # nothing here touches iiod's register access.
   devname() {
     for d in /sys/bus/iio/devices/iio:device*; do
       [ "$(cat "$d/name" 2>/dev/null)" = "$1" ] && { echo "${d##*/}"; return; }
     done
   }
   PHY=/sys/bus/iio/devices/$(devname ad9361-phy)
-  DDS=$(devname cf-ad9361-dds-core-lpc)
-  REG=/sys/kernel/debug/iio/$DDS/direct_reg_access
-  BUFEN=/sys/bus/iio/devices/$DDS/buffer/enable
-  starved=0; muted=0
-  STARVE_MUTE=0
+  RXB=/sys/class/net/eth0/statistics/rx_bytes
+  lastrx=$(cat $RXB); short=0
   tx_mute() {
     echo -89.75 > "$PHY/out_voltage0_hardwaregain"
     echo 1 > "$PHY/out_altvoltage1_TX_LO_powerdown"
@@ -80,20 +79,18 @@
         loop_close; logger -t lynx "reference back: loop closed"
       fi
     fi
-    # Starvation mute: OFF for now (19 Oct). Polling the DAC register
-    # through debugfs every second shares direct_reg_access with iiod; the
-    # board falsely muted a live transmission and then stopped taking IQ.
-    # To be redone without touching that file. Set STARVE_MUTE=1 to test.
-    if [ "$STARVE_MUTE" = 1 ]; then
-      fed=0
-      if [ "$(cat "$BUFEN" 2>/dev/null)" = 1 ]; then
-        echo 0x88 > "$REG"; u=$(cat "$REG"); echo "0x88 0x3" > "$REG"
-        [ $(( u & 1 )) = 0 ] && fed=1
-      fi
-      if [ "$fed" = 1 ]; then starved=0; muted=0; else starved=$((starved + 1)); fi
-      if [ "$starved" -ge 5 ] && [ "$muted" = 0 ]; then
-        tx_mute; muted=1; logger -t lynx "IQ stopped: transmitter muted"
-      fi
+    rx=$(cat $RXB)
+    got=$(awk -v a="$rx" -v b="$lastrx" 'BEGIN { printf "%.0f", a - b }')
+    lastrx=$rx
+    need=$(( $(cat "$PHY/out_voltage_sampling_frequency") * 2 ))
+    if [ "$(cat "$PHY/out_altvoltage1_TX_LO_powerdown")" = 0 ] && [ "$got" -lt "$need" ]; then
+      short=$((short + 1))
+    else
+      short=0
+    fi
+    if [ "$short" -ge 2 ]; then
+      tx_mute; short=0
+      logger -t lynx "IQ stopped (${got} B/s, needs ${need}): transmitter muted"
     fi
 
     n=$((n + 1))
