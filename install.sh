@@ -56,7 +56,7 @@ sudo apt-get install -y \
   ffmpeg v4l-utils \
   gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad gstreamer1.0-libav gir1.2-gstreamer-1.0 \
-  gnuradio gnuradio-dev libiio-utils mosquitto-clients \
+  gnuradio gnuradio-dev libiio-utils mosquitto-clients sshpass \
   cmake build-essential pkg-config pybind11-dev python3-pybind11 \
   libspdlog-dev libgmp-dev liborc-0.4-dev \
   network-manager dnsmasq-base
@@ -231,6 +231,9 @@ sudo visudo -c -f /etc/sudoers.d/lynx-tx >/dev/null && note "sudoers rule in pla
 
 # --- 8. Direct link to the SDR ---------------------------------
 step "8/9 Direct link to the SDR ($SDR_PORT)"
+# The ROCK's SSH key: Lynx-Tx puts it on a PlutoSky by itself the first time
+# it sees one (tezuka_prep.py), then never needs a password again.
+[ -f "$HOME/.ssh/id_ed25519" ] || ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
 if ! ip link show "$SDR_PORT" >/dev/null 2>&1; then
   warn "No port called $SDR_PORT: set up the direct link by hand (docs/INSTALL.md), or re-run with LYNX_SDR_PORT=<name>."
 elif nmcli -g NAME con show | while IFS= read -r c; do

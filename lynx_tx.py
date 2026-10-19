@@ -90,6 +90,7 @@ import uvicorn
 import atsc3mod
 import dvbs2mod
 import sdrs
+import tezuka_prep
 
 # ── Paths and configuration ───────────────────────────────────
 
@@ -706,11 +707,18 @@ def sdr_hosts() -> list:
 
 def sdr_scan_watch():
     """Look for SDRs at start-up and every minute while off air. Not on air:
-    the board in use is plainly there, and a scan costs it a connection."""
+    the board in use is plainly there, and a scan costs it a connection.
+    A PlutoSky on Tezuka found on the direct link (or chosen on the page) is
+    then prepared for Lynx-Tx if it is not already: tezuka_prep.py."""
     while True:
         if not tx_running():
             try:
-                sdrs.scan(sdr_hosts())
+                found = sdrs.scan(sdr_hosts())
+                direct = set(sdrs.direct_hosts(config["libre"].get("direct_if", "enP4p65s0")))
+                for d in found:
+                    if (d.get("kind") == "plutosky" and d.get("tezuka")
+                            and (d["host"] in direct or d["uri"] == sdr_uri())):
+                        tezuka_prep.prepare(d["host"], tx_running)
             except Exception as e:
                 print(f"[sdr] scan: {e}")
         time.sleep(60)
@@ -1807,6 +1815,7 @@ def api_status():
                 "is_libre": sdr_is_libre(), "found": sdrs.found(),
                 "last_scan": sdrs.last_scan(),
                 "ref": _safe(lambda: _ref_now()),
+                "prep": _safe(lambda: tezuka_prep.status(sdr_host())),
                 "dac_rate": _safe(lambda: dvbs2mod.dac_rate(m)) if dvbs2_rock() else None},
         "atsc3_choices": {"constellations": atsc3mod.CONSTELLATIONS,
                           "rates": atsc3mod.CODE_RATES, "ts_rates": atsc3mod.TS_RATES},
@@ -3120,7 +3129,10 @@ async function poll() {
   const name = here ? here.model.split(' (')[0] : (S.is_libre ? 'LibreSDR' : 'SDR');
   // The list already names the board in use; this line only speaks up
   // when something is wrong.
-  setText('sdr-info', here ? ''
+  // A PlutoSky being prepared for Lynx-Tx (tezuka_prep.py) says so here.
+  const P = S.prep;
+  setText('sdr-info', (P && P.state !== 'ready') ? 'SDR: ' + P.detail
+    : here ? ''
     : 'Using ' + S.uri + (S.last_scan ? ' (not found in the last scan)' : ''));
   // 10 MHz reference: green when the SDR's loop is locked, red when it is
   // not (no lock, or no 10 MHz feed), grey when the board cannot say

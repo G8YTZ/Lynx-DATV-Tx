@@ -2,11 +2,11 @@
 
 Lynx-Tx uses the SDR as a plain IQ transmitter: the ROCK makes DVB-S2 or ATSC 3.0 and the board only converts it to RF. Any Pluto-class board with Gigabit Ethernet and running iiod works (not the original ADALM-Pluto, which has only USB). Two are proven: the **PlutoSky R2** and the **LibreSDR**.
 
-**Preferred firmware: [Tezuka](https://github.com/F5OEO/tezuka_fw)** by Evariste F5OEO, on both boards. It keys PTT by itself whenever IQ is flowing, disciplines the board's crystal to a 10 MHz reference, and reports that lock to the page's **10 MHz Reference** lamp. The same setup works for either board.
+**Preferred: the PlutoSky R2 with [Tezuka](https://github.com/F5OEO/tezuka_fw) firmware** by Evariste F5OEO, v0.3.24 or later. It locks the board's crystal to a 10 MHz reference and reports that lock to the page's **10 MHz Reference** lamp. You only make the card and plug the board in: Lynx-Tx prepares it by itself the first time it sees it (see [What Lynx-Tx does to a PlutoSky](#what-lynx-tx-does-to-a-plutosky)).
 
 ## Making the SD card
 
-1. **Open the releases page:** [github.com/F5OEO/tezuka_fw/releases](https://github.com/F5OEO/tezuka_fw/releases). The newest release is at the top.
+1. **Open the releases page:** [github.com/F5OEO/tezuka_fw/releases](https://github.com/F5OEO/tezuka_fw/releases). The newest release is at the top; it must be **v0.3.24 or later** (the card supplied with the board is older and will not do).
 2. **Find the files:** Scroll down past the release notes to **Assets**. Only the first few files show: click **Show all assets** to see the rest.
 3. **Download the zip named after your board.** It must match the board: the wrong one drives the wrong pins.
 
@@ -29,14 +29,28 @@ Nothing to set on the board. Out of the box Tezuka asks for an address by DHCP, 
 2. **Ethernet** from the board to the ROCK's second port.
 3. **Power:** A USB power supply into the board's USB socket. Not a computer: it is only power.
 4. **Check:** Within a minute or so the board appears on the Transmit card with its model and firmware. Or from the ROCK, see [Checking a board from the ROCK](#checking-a-board-from-the-rock).
+5. **First time only:** Lynx-Tx prepares a PlutoSky as soon as it finds it, off air. The Transmit card says "SDR: Lynx-Tx script installed - the SDR is restarting (about a minute)", the board restarts once, and it is ready. Nothing to type.
 
 **If you need to get into the board:** Plugged into a computer's USB, it appears as a drive called **TEZUKA** (**PlutoSDR** on older firmware) holding `info.html` (model, firmware, addresses) and `config.txt` (settings: edit, save, then eject the drive to apply). It also answers SSH on 192.168.2.1, login `root`, password `analog`. On a Mac, set `usb_ethernet_mode = ecm` under `[SYSTEM]` for SSH over USB to work.
 
+## What Lynx-Tx does to a PlutoSky
+
+Tezuka is a do-everything SDR: receiver, waterfall, web control, DATV modes. As a dedicated wideband transmitter three of those got in the way of ATSC 3.0 (found 19 October 2026), so Lynx-Tx installs one script in the board's own flash (`/mnt/jffs2/autorun.sh`, from `tools/plutosky-autorun.sh`). It survives a card change, and a newer Lynx-Tx updates it by itself. What it does:
+
+- **Quiet mode:** Stops Tezuka's extras, which starved the board's processor at ATSC 3.0 rates (the DAC ran out of samples: combing, lost lock).
+- **The 10 MHz reference, held:** Tezuka's automatic mode re-checks the reference once a second and each check nudges the oscillator, which ATSC 3.0 cannot tolerate. The script holds the loop locked while the 10 MHz is there, lets go within 2 s if it disappears (holdover on the board's own oscillator: still on air, a few hundred hertz adrift), and locks again once it has been back for 10 s.
+- **Starvation mute:** If the IQ stops arriving (the ROCK restarting or failing, a cable out) the board turns its transmitter off within 2 s, rather than radiating junk. Lynx-Tx turns it back on at the next TX On.
+- **The ROCK's SSH key,** so Lynx-Tx never needs a password. It is put there once with Tezuka's factory password (`analog`).
+
+To give the board back to plain Tezuka: over SSH, `rm /mnt/jffs2/autorun.sh`, then restart it.
+
+**Power for ATSC 3.0: −20 dB or lower** on the PlutoSky. At −12 dB the transmitter squashes the OFDM peaks: the receiver locks but cannot decode.
+
 ## PlutoSky R2 notes
 
-Proven 18 October 2026 with Tezuka v0.3.5 (April 2026). v0.3.141592653 (July 2026) has been inspected but not yet run.
+Proven 19 October 2026 with Tezuka v0.3.24: ATSC 3.0 at 2× oversampling clean, DVB-S2 to 4000 kS/s.
 
-- **Ethernet on v0.3.5 receives but never transmits:** No DHCP lease, no ping, a 169.254.x.x address. The supplied `devicetree.dtb` has `phy-mode = "rgmii-rxid"`; this board needs `"rgmii-id"`. Fixed in v0.3.141592653. On v0.3.5, replace `devicetree.dtb` on the SD card with a corrected one (keep the original):
+- **The supplied card (Tezuka v0.3.5) is too old:** Make a new one (above). On v0.3.5 the Ethernet also receives but never transmits: No DHCP lease, no ping, a 169.254.x.x address. The supplied `devicetree.dtb` has `phy-mode = "rgmii-rxid"`; this board needs `"rgmii-id"`. Fixed in v0.3.141592653. On v0.3.5, replace `devicetree.dtb` on the SD card with a corrected one (keep the original):
 
   ```bash
   dtc -I dtb -O dts devicetree.dtb -o dt.dts
@@ -45,7 +59,7 @@ Proven 18 October 2026 with Tezuka v0.3.5 (April 2026). v0.3.141592653 (July 202
   ```
 
 - **Settings on v0.3.5 live on the SD card** (`uboot.env`), and `uEnv.txt` sets the USB address on every boot. A `config.txt` change can be lost if the power goes too soon. The reliable way: over SSH, `fw_setenv ...`, edit `/boot/uEnv.txt` if the USB address is changing, then `sync`, then unplug. Newer Tezuka keeps settings in the board's flash.
-- **Internal reference:** 40 MHz, about 10 ppm high on one board (13 kHz at 1249 MHz). It locks without a reference, but feed it 10 MHz for an on-frequency signal: the board switches to an external 10 MHz by itself.
+- **Internal reference:** 40 MHz, about 10 ppm high on one board (13 kHz at 1249 MHz). It works without a reference, but feed it 10 MHz for an on-frequency signal; the Lynx-Tx script locks to it by itself.
 - **Password refused?** A password saved in the board's flash overrides `analog`. Add `revert_passwd = 1` under `[ACTIONS]` in `config.txt`, eject, then restart.
 - **SD socket:** The push-push latch can let the card ride out. Push it fully home before powering up.
 
@@ -54,7 +68,7 @@ Proven 18 October 2026 with Tezuka v0.3.5 (April 2026). v0.3.141592653 (July 202
 - **With Tezuka (preferred):** Set it up exactly as the PlutoSky above. Use a new card and keep the board's original, so its old firmware is a card swap away. Its device tree is already `rgmii-id`, and settings live in the board's flash, not on the card.
 - **Overclock:** The card's `overclock` folder holds faster boot files. Leave them alone unless the Ethernet stalls at high symbol rates; the CPU950 one is the gentle first step.
 - **Coming from DL1JM's firmware:** DL1JM's firmware leaves `mode=2r2t` (two transmit channels) in the board's flash, and Tezuka obeys it: the signal comes out twice as wide and never locks. Fix it once over SSH: `fw_setenv mode 1r1t`, `sync`, `reboot`.
-- **Known issue, ATSC 3.0 on Tezuka (18 to 19 Oct 2026):** On Tezuka (v0.3.5 and v0.3.24 alike), both the LibreSDR and the PlutoSky show combing in the spectrum in ATSC 3.0 mode at 2× oversampling, and the receiver loses lock. DVB-S2 is clean on both, up to 4000 kS/s. Cause found: the board's processor is saturated (3% idle, a third of it in network interrupts, all on one core) and Tezuka's background scripts (`update.sh`, `api_controller.sh`, `watchconsoletx.sh`, `watchdatveasy.sh`, `watchconsolefreq.sh`, `maia-httpd`) push it over. Stopping them and spreading network work over both cores (`echo 2 > /sys/class/net/eth0/queues/rx-0/rps_cpus`) takes it to about 50% idle and removes the combing; the HDHomeRun then locks, but the PLP does not yet decode reliably. Still being worked on. ATSC 3.0 is clean with DL1JM's firmware on the LibreSDR (`mode=2r2t`): use that for ATSC 3.0 until this is resolved.
+- **ATSC 3.0 on Tezuka:** Solved on the PlutoSky (see [What Lynx-Tx does to a PlutoSky](#what-lynx-tx-does-to-a-plutosky)). The LibreSDR on Tezuka has the same three problems, but Lynx-Tx does not yet prepare it (its reference control differs): for ATSC 3.0 on a LibreSDR use DL1JM's firmware (`mode=2r2t`), which is clean.
 - **With DL1JM's firmware:** Supported, for a LibreSDR that also works with Portsdown, which uses DL1JM's firmware. Keep each on its own card and swap as needed. On DL1JM's firmware the 10 MHz Reference lamp reads "not reported", because the firmware cannot say. Lynx-Tx finds it on the direct link like any other (it lists as "LibreSDR (DL1JM firmware)") and uses it two ways. As an IQ transmitter (Modulator: ROCK, the recommended way), Lynx-Tx stops DL1JM's modulator for the duration; **PTT is not keyed** in this mode, so key your PA another way. Or with DL1JM's own modulator (Modulator: LibreSDR on board), the original path, where the firmware keys PTT from the power setting.
 
 ## Checking a board from the ROCK
