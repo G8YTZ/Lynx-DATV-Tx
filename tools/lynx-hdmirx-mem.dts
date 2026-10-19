@@ -1,0 +1,39 @@
+// Lynx-Tx: a fixed, private memory block for the ROCK 5T's HDMI input.
+//
+// HDMI in has no IOMMU and needs each 4K frame (16.6 MB) as one physically
+// contiguous block below 4 GB. Without this it takes its buffers from the
+// shared CMA pool, which the kernel lends out to the page cache; when the
+// cache can't be moved out of the way in time, the allocation fails and the
+// driver's error path corrupted the kernel (ROCK froze, 18 and 19 Oct 2026).
+// With this, 256 MB is set aside at boot, never mapped and never lent to
+// anything else: only the HDMI-in driver can use it (it looks for exactly
+// this at probe: "No reserved memory for HDMIRX, use default CMA" otherwise).
+//
+// Build and enable (Radxa's image):
+//   dtc -@ -I dts -O dtb -o /boot/dtbo/lynx-hdmirx-mem.dtbo lynx-hdmirx-mem.dts
+//   sudo u-boot-update        # adds it to extlinux.conf; then reboot
+// Remove: delete the .dtbo, sudo u-boot-update, reboot.
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/reserved-memory";
+		__overlay__ {
+			lynx_hdmirx_mem: lynx-hdmirx-mem {
+				compatible = "shared-dma-pool";
+				alloc-ranges = <0x0 0x0 0x0 0xffffffff>;	/* below 4 GB */
+				size = <0x0 0x10000000>;			/* 256 MB */
+				no-map;
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/hdmirx-controller@fdee0000";
+		__overlay__ {
+			memory-region = <&lynx_hdmirx_mem>;
+		};
+	};
+};
