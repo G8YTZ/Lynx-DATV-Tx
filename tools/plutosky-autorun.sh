@@ -13,15 +13,22 @@
 #    so the stored setting stays at Tezuka's default.
 # 3. The reference state on MQTT (state/system/clkref/*) for Lynx-Tx's lamp.
 #
-# Proven on the bench, 19 Oct 2026: ATSC 3.0 at 2x clean with the loop held
+# Proven on the bench, 19 Oct 2026 (Tezuka v0.3.24): no underruns at 2x with
+# the extras stopped; ATSC 3.0 at 2x clean with the loop held
 # closed, and clean in holdover with the reference pulled.
 
 ( sleep 20
   /etc/init.d/S97datv stop
-  killall maia-httpd api_controller.sh watchconsoletx.sh watchdatveasy.sh \
-          watchconsolefreq.sh inotifywait zynqrx pluto_stream \
-          mqtt_longmynd.sh mosquitto_sub 2>/dev/null
-  for p in $(ps | awk '/[u]pdate\.sh/{print $1}'); do kill "$p"; done
+  # Matched on the whole command line: Tezuka's shell scripts show up as
+  # "{name} /bin/bash /root/..." and killall misses them. v0.3.5 and v0.3.24
+  # names both. The MQTT broker (mosquitto) and udhcpc stay.
+  EXTRAS='maia-httpd|api_controller|watchconsole|watchdatveasy|/update\.sh|inotifywait|zynqrx|pluto_stream|longmynd|pluto_mqtt_ctrl|mqtt_obs_ctrl|bitrate_strateg|gpsd|udhcpd|mosquitto_sub'
+  for pass in 1 2; do
+    for p in $(ps | awk -v re="$EXTRAS" '$0 ~ re && !/awk/ {print $1}'); do
+      kill "$p" 2>/dev/null
+    done
+    sleep 5
+  done
   echo 2 > /sys/class/net/eth0/queues/rx-0/rps_cpus
   logger -t lynx "quiet mode on"
 
