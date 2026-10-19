@@ -705,6 +705,36 @@ def sdr_hosts() -> list:
     return out
 
 
+# ── Alarms: what the page and SNMP report ────────────────────
+# muted: on air, but the SDR has turned its transmitter off by itself (the
+# PlutoSky's starvation mute, tools/plutosky-autorun.sh: its IQ stopped).
+# fault: the transmit chain ended without TX Off. Both clear at the next TX On.
+tx_alarm = {"muted": False, "fault": "", "sdr_ok": True, "checked": 0.0}
+
+
+def tx_alarm_watch():
+    """Every 5 s on air: is the SDR's transmit LO still on? Read-only, and in
+    a thread of its own so the page never waits on the SDR."""
+    while True:
+        time.sleep(5)
+        try:
+            if not (tx_running() and iq_mode()) or time.time() - tx_started_at < 10:
+                continue
+            r = subprocess.run(["iio_attr", "-u", sdr_uri(), "-o", "-c", "ad9361-phy",
+                                "altvoltage1", "powerdown"],
+                               capture_output=True, text=True, timeout=4)
+            tx_alarm["sdr_ok"] = r.returncode == 0
+            muted = r.returncode == 0 and r.stdout.strip() == "1"
+            if muted and not tx_alarm["muted"]:
+                print("[alarm] the SDR has muted itself (its IQ stopped)")
+            tx_alarm["muted"] = muted
+            tx_alarm["checked"] = time.time()
+        except subprocess.TimeoutExpired:
+            tx_alarm["sdr_ok"] = False
+        except Exception as e:
+            print(f"[alarm] {e}")
+
+
 def sdr_scan_watch():
     """Look for SDRs at start-up and every minute while off air. Not on air:
     the board in use is plainly there, and a scan costs it a connection.
@@ -820,6 +850,7 @@ def iq_guard(proc: subprocess.Popen):
     if tx_proc is proc:
         # Ended by itself, not by TX Off (which clears tx_proc first).
         print("[iq] pipeline ended on its own - muting")
+        tx_alarm["fault"] = "the transmit chain stopped by itself"
         atsc3_mute()
 
 
@@ -1675,6 +1706,7 @@ def start_tx() -> dict:
             time.sleep(2)
             cmd = build_pipeline()
         tx_last_command = cmd
+        tx_alarm.update(muted=False, fault="", sdr_ok=True)
         fresh = ensure_mixer() if config.get("use_switcher", True) else False
         tx_proc = subprocess.Popen(
             cmd, shell=True, preexec_fn=os.setsid,
@@ -1820,6 +1852,9 @@ def api_status():
         "atsc3_choices": {"constellations": atsc3mod.CONSTELLATIONS,
                           "rates": atsc3mod.CODE_RATES, "ts_rates": atsc3mod.TS_RATES},
         "transmitting": tx_running(),
+        "alarm": {"muted": tx_alarm["muted"] and tx_running(),
+                  "fault": tx_alarm["fault"],
+                  "sdr_ok": tx_alarm["sdr_ok"]},
         "uptime": int(time.time() - tx_started_at) if tx_running() else 0,
         "config": config,
         "hdmi": hdmi_format(),
@@ -3080,6 +3115,10 @@ function setStyle(e, k, v) {
   if (typeof e === 'string') e = document.getElementById(e);
   if (e && e.dataset['s_' + k] !== v) { e.dataset['s_' + k] = v; e.style[k] = v; }
 }
+function setAttr(e, k, v) {
+  if (typeof e === 'string') e = document.getElementById(e);
+  if (e && e.getAttribute(k) !== v) e.setAttribute(k, v);
+}
 function setClass(e, v) {
   if (typeof e === 'string') e = document.getElementById(e);
   if (e && e.className !== v) e.className = v;
@@ -3090,11 +3129,20 @@ async function poll() {
     cfg = await (await fetch('/api/status')).json();
   } catch (e) { return; }
 
-  setText('tx-badge', cfg.transmitting ? 'ON AIR' : 'IDLE');
+  // Muted by the SDR: on air as far as Lynx-Tx knows, but the board has
+  // turned its transmitter off (its IQ stopped). Fault: the chain stopped
+  // by itself. Both clear at the next TX On.
+  const A = cfg.alarm || {};
+  const txText = A.muted ? 'MUTED BY THE SDR' : (!cfg.transmitting && A.fault) ? 'FAULT'
+               : cfg.transmitting ? 'ON AIR' : 'IDLE';
+  setText('tx-badge', txText);
   // Whichever state the transmitter is in is lit: green on air, red off.
   setClass('btn-txon', 'btn big-btn ' + (cfg.transmitting ? 'btn-success' : 'btn-secondary'));
   setClass('btn-txoff', 'btn big-btn ' + (cfg.transmitting ? 'btn-secondary' : 'btn-danger'));
-  setStyle('tx-badge', 'background', cfg.transmitting ? '#16a34a' : '#3a4a63');
+  setStyle('tx-badge', 'background', (A.muted || (!cfg.transmitting && A.fault)) ? '#d97706'
+           : cfg.transmitting ? '#16a34a' : '#3a4a63');
+  setAttr('tx-badge', 'title', A.muted ? 'The SDR stopped receiving IQ and muted itself. Press TX Off, then TX On.'
+           : A.fault ? 'The transmit chain stopped by itself: ' + A.fault + '. Press TX On to start again.' : '');
   setText('call-badge', cfg.config.callsign);
 
   const L = cfg.libre || {};
@@ -3176,12 +3224,15 @@ async function poll() {
   if (onAir) {
     let t = 'ON AIR: ' + (SW.on === 'cam' ? 'Camera' : 'Media');
     if (SW.camera === 'bars') t += ' · no HDMI signal — Camera shows colour bars';
+    if (SW.camera === 'unstable') t += ' · HDMI signal UNSTABLE — Camera shows colour bars; check the lead or restart the source';
     if ((SW.media_state || '').startsWith('error')) t += ' · media ' + SW.media_state;
     setText('pgm-info', t); setStyle('pgm-info', 'color', '#f87171');
   } else {
-    setText('pgm-info', cfg.transmitting ? 'Single-source mode' : 'Off air — starts on ' +
-      (pgm === 'cam' ? 'Camera' : 'Media'));
-    setStyle('pgm-info', 'color', '#9fb3d1');
+    const cam = SW && SW.camera === 'unstable' ? ' · HDMI signal UNSTABLE: check the lead or restart the source'
+              : SW && SW.camera === 'bars' ? ' · no HDMI signal' : '';
+    setText('pgm-info', (cfg.transmitting ? 'Single-source mode' : 'Off air — starts on ' +
+      (pgm === 'cam' ? 'Camera' : 'Media')) + cam);
+    setStyle('pgm-info', 'color', (SW && SW.camera === 'unstable') ? '#f59e0b' : '#9fb3d1');
   }
   showMedia();
 
@@ -3563,4 +3614,5 @@ if __name__ == "__main__":
     threading.Thread(target=sdr_scan_watch, daemon=True).start()
     threading.Thread(target=sdr_ref_watch, daemon=True).start()
     threading.Thread(target=mixer_watch, daemon=True).start()
+    threading.Thread(target=tx_alarm_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")

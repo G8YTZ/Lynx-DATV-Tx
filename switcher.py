@@ -476,20 +476,71 @@ def start_camera(bars=False):
         return start_camera(bars=True)
     watch(p, "cam")
     pipes["cam"] = p
+    if not bars:
+        cam_sv["started"] = cam_sv["frame"] = time.monotonic()
+        tap_cam(p)
     p.set_state(Gst.State.PLAYING)
-    state["camera"] = "bars" if bars else "live"
+    state["camera"] = ("unstable" if bars and cam_unstable() else "bars") if bars else "live"
     return False
 
 
-def retry_camera():
-    """Every 5 s while on bars: if an HDMI signal has appeared, go back to
-    the camera. The check does not touch the bars, so they never flicker."""
-    if state["camera"] != "bars":
+# ---- the camera input, supervised --------------------------------------------
+# Every 2 s. Live but no frames for 3 s (a source that drops out does not
+# always raise an error): fall back to the picture. On the fallback with an
+# HDMI signal present: try the camera again - every 5 s, or every 30 s once it
+# has failed 3 times in 2 minutes, when it is reported "unstable" (a flapping
+# source, 19 Oct 2026: the driver re-locked every second) rather than
+# hammering the driver.
+cam_sv = {"started": 0.0, "frame": 0.0, "fails": deque(), "tried": 0.0}
+
+
+def tap_cam(p):
+    it = p.iterate_elements()
+    while True:
+        ok, el = it.next()
+        if ok != Gst.IteratorResult.OK:
+            break
+        if el.get_factory() and el.get_factory().get_name() == "intervideosink":
+            el.get_static_pad("sink").add_probe(
+                Gst.PadProbeType.BUFFER,
+                lambda pad, info: (cam_sv.__setitem__("frame", time.monotonic()),
+                                   Gst.PadProbeReturn.OK)[1])
+
+
+def cam_unstable() -> bool:
+    now = time.monotonic()
+    f = cam_sv["fails"]
+    while f and now - f[0] > 120:
+        f.popleft()
+    return len(f) >= 3
+
+
+def cam_failed(why):
+    cam_sv["fails"].append(time.monotonic())
+    log(f"camera: {why} - fallback picture"
+        + (" (HDMI signal unstable: retrying every 30 s)" if cam_unstable() else ""))
+    start_camera(bars=True)
+
+
+def supervise_camera():
+    if a.sim:
         return False
-    if not a.sim and hdmi_signal():
-        log("camera: HDMI signal back")
-        start_camera(bars=False)
-    return state["camera"] == "bars"
+    now = time.monotonic()
+    if state["camera"] == "live":
+        if now - cam_sv["frame"] > 3 and now - cam_sv["started"] > 5:
+            cam_failed("no frames for 3 s")
+    else:
+        wait = 30 if cam_unstable() else 5
+        if now - cam_sv["tried"] >= wait and hdmi_signal():
+            cam_sv["tried"] = now
+            log("camera: HDMI signal present - trying the camera")
+            start_camera(bars=False)
+        elif state["camera"] == "unstable" and not cam_unstable():
+            state["camera"] = "bars"
+    return True
+
+
+GLib.timeout_add(2000, supervise_camera)
 
 
 # ---- smoothness: does every frame arrive on time? -------------------------
@@ -611,11 +662,7 @@ def on_msg(bus, msg, name, pipe):
         if name == "prog":
             shutdown()                              # the encoder side: fatal
         elif name == "cam":
-            first = state["camera"] != "bars"
-            GLib.idle_add(start_camera, True)
-            if first:
-                log("camera: no usable HDMI signal - fallback picture until it returns")
-                GLib.timeout_add(5000, retry_camera)
+            GLib.idle_add(cam_failed, "no usable HDMI signal")
         elif name == "med":
             state["media_state"] = f"error: {err.message}"
             GLib.idle_add(load_black)
