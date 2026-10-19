@@ -12,7 +12,7 @@
 #    closed again once it has been back for 10 s. GPIO only, never the flash,
 #    so the stored setting stays at Tezuka's default.
 # 3. The reference state on MQTT (state/system/clkref/*) for Lynx-Tx's lamp.
-# 4. Starvation mute: IQ stopped for 5 s -> attenuator to the floor, TX LO off.
+# 4. Starvation mute (OFF for now, see the loop): IQ stopped -> muted.
 #
 # Proven on the bench, 19 Oct 2026 (Tezuka v0.3.24): no underruns at 2x with
 # the extras stopped; ATSC 3.0 at 2x clean with the loop held
@@ -57,6 +57,7 @@
   REG=/sys/kernel/debug/iio/$DDS/direct_reg_access
   BUFEN=/sys/bus/iio/devices/$DDS/buffer/enable
   starved=0; muted=0
+  STARVE_MUTE=0
   tx_mute() {
     echo -89.75 > "$PHY/out_voltage0_hardwaregain"
     echo 1 > "$PHY/out_altvoltage1_TX_LO_powerdown"
@@ -79,14 +80,20 @@
         loop_close; logger -t lynx "reference back: loop closed"
       fi
     fi
-    fed=0
-    if [ "$(cat "$BUFEN" 2>/dev/null)" = 1 ]; then
-      echo 0x88 > "$REG"; u=$(cat "$REG"); echo "0x88 0x3" > "$REG"
-      [ $(( u & 1 )) = 0 ] && fed=1
-    fi
-    if [ "$fed" = 1 ]; then starved=0; muted=0; else starved=$((starved + 1)); fi
-    if [ "$starved" -ge 5 ] && [ "$muted" = 0 ]; then
-      tx_mute; muted=1; logger -t lynx "IQ stopped: transmitter muted"
+    # Starvation mute: OFF for now (19 Oct). Polling the DAC register
+    # through debugfs every second shares direct_reg_access with iiod; the
+    # board falsely muted a live transmission and then stopped taking IQ.
+    # To be redone without touching that file. Set STARVE_MUTE=1 to test.
+    if [ "$STARVE_MUTE" = 1 ]; then
+      fed=0
+      if [ "$(cat "$BUFEN" 2>/dev/null)" = 1 ]; then
+        echo 0x88 > "$REG"; u=$(cat "$REG"); echo "0x88 0x3" > "$REG"
+        [ $(( u & 1 )) = 0 ] && fed=1
+      fi
+      if [ "$fed" = 1 ]; then starved=0; muted=0; else starved=$((starved + 1)); fi
+      if [ "$starved" -ge 5 ] && [ "$muted" = 0 ]; then
+        tx_mute; muted=1; logger -t lynx "IQ stopped: transmitter muted"
+      fi
     fi
 
     n=$((n + 1))
