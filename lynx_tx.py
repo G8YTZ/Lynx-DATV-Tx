@@ -1197,7 +1197,9 @@ def ensure_mixer() -> bool:
         if mixer_running() and mixer_core == mixer_plan["core"]:
             return False
         if mixer_running():
-            print("[mixer] settings changed - rebuilding")
+            was, now = mixer_core.split(" --"), mixer_plan["core"].split(" --")
+            diff = [f"--{x}" for x in now if x not in was]
+            print(f"[mixer] settings changed - rebuilding: {' '.join(diff)[:200]}")
         stop_mixer()
         mixer_core = mixer_plan["core"]
         mixer_proc = subprocess.Popen(
