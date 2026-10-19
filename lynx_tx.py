@@ -1465,8 +1465,12 @@ def build_pipeline() -> str:
                           + (f" --media {shlex.quote(clip)}" if clip else "")
                           + f" --start {start}")
         parts = []
-        stream_in = (f"'udp://127.0.0.1:{MIXER_PORT}?fifo_size=200000"
-                     f"&overrun_nonfatal=1&buffer_size=8388608'")
+        # The reserve between mixer and chain: 2 s of stream at most (in
+        # 188-byte packets), so a slow start can never build a backlog that
+        # delays everything on air - before, a pipe held a fraction of that.
+        fifo = max(2000, int(rate * 2 / 8 / 188))
+        stream_in = (f"'udp://127.0.0.1:{MIXER_PORT}?fifo_size={fifo}"
+                     f"&overrun_nonfatal=1&buffer_size=4194304'")
         want_audio = True
     else:
         parts = [
