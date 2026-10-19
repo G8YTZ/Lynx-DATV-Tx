@@ -1,0 +1,115 @@
+# Monitoring Lynx-Tx
+
+Lynx-Tx answers SNMP, so Home Assistant (or any monitoring system) can watch the transmitter and send you an alarm. It is read-only, and nothing on the transmit path depends on it: if monitoring stops, the transmitter carries on.
+
+`install.sh` sets it all up: `snmpd` on the ROCK, the agent (`tools/lynx-snmp-agent.py`) and the MIB (`mibs/LYNX-MIB.txt`).
+
+| | |
+|---|---|
+| Version | SNMP v2c |
+| Community | `lynx` (read-only) |
+| Port | UDP 161 on the ROCK's LAN address |
+| Branch | `1.3.6.1.4.1.8072.9999.1.1` (lynxTx), each value at `.0` |
+
+The branch is Net-SNMP's test branch until the repeater group has its own Private Enterprise Number from IANA; then the numbers change in one place.
+
+## What it reports
+
+| OID (under `…8072.9999.1.1`) | Object | Values | Alarm when |
+|---|---|---|---|
+| `.1.0` | lynxTxState | 1 idle, 2 on air, 3 muted by the SDR, 4 fault | 3 or 4 |
+| `.2.0` | lynxSdrReachable | 1 yes, 2 no | 2 |
+| `.3.0` | lynxRefState | 1 locked, 2 acquire, 3 holdover, 4 absent, 5 unknown | 3 (the GPS reference is lost) |
+| `.4.0` | lynxMixerRunning | 1 yes, 2 no | 2 |
+| `.5.0` | lynxHdmiSignal | 1 yes, 2 no | 2, if a camera should be there |
+| `.6.0` | lynxTxFrequency | kHz | |
+| `.7.0` | lynxTxPower | hundredths of a dB (−2000 = −20.00 dB) | |
+| `.8.0` | lynxMode | DVB-S2 or ATSC 3.0 | |
+| `.9.0` | lynxSdrMutes | times the SDR has muted itself | it goes up |
+| `.10.0` | lynxMemAnonMB | real memory held by Lynx-Tx, MB | above about 1500 |
+| `.11.0` | lynxCmaFreeMB | free 4K buffer memory, MB | (informational: the cache borrows it) |
+| `.12.0` | lynxCpuTemp | tenths of a °C | above 850 (85 °C) |
+| `.13.0` | lynxCameraState | 1 live, 2 colour bars, 3 unstable, 4 unknown | 3 |
+
+**Muted by the SDR:** Lynx-Tx thinks it is on air, but the SDR has turned its transmitter off because its IQ stopped arriving (see [SDR_SETUP.md](SDR_SETUP.md)). TX Off then TX On restores it. **Fault:** The transmit chain stopped by itself, or Lynx-Tx is not answering at all.
+
+## Checking it from the ROCK
+
+```bash
+sudo apt install -y snmp
+snmpwalk -v2c -c lynx -m +LYNX-MIB localhost LYNX-MIB::lynxTx
+```
+
+## Home Assistant
+
+Sensors, in `configuration.yaml` (put the ROCK's LAN address in `host`):
+
+```yaml
+sensor:
+  - platform: snmp
+    name: Lynx-Tx state
+    unique_id: lynx_tx_state
+    host: 192.168.0.50
+    community: lynx
+    version: "2c"
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.1.0
+    value_template: >-
+      {{ {'1': 'idle', '2': 'on air', '3': 'muted by the SDR', '4': 'fault'}.get(value, 'unknown') }}
+
+  - platform: snmp
+    name: Lynx-Tx reference
+    unique_id: lynx_tx_reference
+    host: 192.168.0.50
+    community: lynx
+    version: "2c"
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.3.0
+    value_template: >-
+      {{ {'1': 'locked', '2': 'acquiring', '3': 'holdover', '4': 'absent'}.get(value, 'unknown') }}
+
+  - platform: snmp
+    name: Lynx-Tx camera
+    unique_id: lynx_tx_camera
+    host: 192.168.0.50
+    community: lynx
+    version: "2c"
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.13.0
+    value_template: >-
+      {{ {'1': 'live', '2': 'colour bars', '3': 'unstable'}.get(value, 'unknown') }}
+
+  - platform: snmp
+    name: Lynx-Tx ROCK temperature
+    unique_id: lynx_tx_temp
+    host: 192.168.0.50
+    community: lynx
+    version: "2c"
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.12.0
+    unit_of_measurement: "°C"
+    value_template: "{{ (value | int / 10) | round(1) }}"
+```
+
+The notification to your phone, in `automations.yaml` (use your own phone's notify service):
+
+```yaml
+- alias: Lynx-Tx alarm
+  mode: queued
+  trigger:
+    - platform: state
+      entity_id: sensor.lynx_tx_state
+      to: ["muted by the SDR", "fault"]
+      for: "00:00:30"
+    - platform: state
+      entity_id: sensor.lynx_tx_reference
+      to: "holdover"
+      for: "00:01:00"
+    - platform: state
+      entity_id: sensor.lynx_tx_camera
+      to: "unstable"
+      for: "00:01:00"
+  action:
+    - service: notify.mobile_app_your_iphone
+      data:
+        title: Lynx-Tx
+        message: "{{ trigger.to_state.name }}: {{ trigger.to_state.state }}"
+```
+
+The `for:` delays stop a momentary blip from waking you: an alarm has to hold for that long before it is sent.

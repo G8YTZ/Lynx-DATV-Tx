@@ -727,6 +727,7 @@ def tx_alarm_watch():
             muted = r.returncode == 0 and r.stdout.strip() == "1"
             if muted and not tx_alarm["muted"]:
                 print("[alarm] the SDR has muted itself (its IQ stopped)")
+                tx_alarm["mutes"] = tx_alarm.get("mutes", 0) + 1
             tx_alarm["muted"] = muted
             tx_alarm["checked"] = time.time()
         except subprocess.TimeoutExpired:
@@ -1826,6 +1827,63 @@ def _safe(f, default=None):
         return f()
     except Exception:
         return default
+
+
+def _read_int(path: str, key: str = "") -> Optional[int]:
+    """A number from a /proc or /sys file: the whole file, or the line
+    starting with key."""
+    try:
+        with open(path) as f:
+            for line in f:
+                if not key:
+                    return int(line.split()[0])
+                if line.startswith(key):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+REF_STATES = {"locked": 1, "acquire": 2, "holdover": 3, "returning": 3, "absent": 4}
+CAMERA_STATES = {"live": 1, "bars": 2, "unstable": 3}
+
+
+@app.get("/api/health")
+def api_health():
+    """Everything the SNMP agent serves (tools/lynx-snmp-agent.py, MIB in
+    mibs/LYNX-MIB.txt), as plain numbers. Never waits on the SDR: every
+    value is cached or local."""
+    on = tx_running()
+    if tx_alarm["muted"] and on:
+        state = 3                                   # mutedBySdr
+    elif not on and tx_alarm["fault"]:
+        state = 4                                   # fault
+    else:
+        state = 2 if on else 1
+    ref = _safe(lambda: _ref_now())
+    ref_state = REF_STATES.get((ref or {}).get("state", ""), 1 if (ref or {}).get("locked") else 5) \
+        if ref else 5
+    sw = (switcher_call("GET", "/status") or {}) if mixer_running() else {}
+    found = any(d["uri"] == sdr_uri() for d in sdrs.found())
+    c = config["atsc3"] if is_atsc3() else config["modulation"]
+    anon = _read_int("/sys/fs/cgroup/system.slice/lynx-tx.service/memory.stat", "anon ")
+    cma = _read_int("/proc/meminfo", "CmaFree:")
+    temp = _read_int("/sys/class/thermal/thermal_zone0/temp")
+    return {
+        "txState": state,
+        "sdrReachable": 1 if (tx_alarm["sdr_ok"] if on else found) else 2,
+        "refState": ref_state,
+        "mixerRunning": 1 if mixer_running() else 2,
+        "hdmiSignal": 1 if hdmi_format() else 2,
+        "frequencyKHz": int(round(float(c["frequency_mhz"]) * 1000)),
+        "powerCentiDb": int(round(iq_power_db() * 100)),
+        "mode": "ATSC 3.0" if is_atsc3() else "DVB-S2",
+        "sdrMutes": tx_alarm.get("mutes", 0),
+        "memAnonMB": (anon or 0) // (1 << 20),
+        "cmaFreeMB": (cma or 0) // 1024,
+        "cpuTempDeciC": (temp or 0) // 100,
+        "cameraState": CAMERA_STATES.get(sw.get("camera", ""), 4),
+    }
 
 
 @app.get("/api/status")

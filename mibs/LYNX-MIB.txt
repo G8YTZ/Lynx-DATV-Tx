@@ -1,0 +1,155 @@
+LYNX-MIB DEFINITIONS ::= BEGIN
+
+-- Lynx DATV: transmitter (Lynx-Tx) and, later, receiver (Lynx-Rx) status,
+-- for a repeater's monitoring (Home Assistant and the like).
+--
+-- On Net-SNMP's test branch (netSnmpPlaypen) until the repeater group has
+-- its own Private Enterprise Number from IANA; then only the line
+-- "lynx ::= { netSnmpPlaypen 1 }" and BASE in tools/lynx-snmp-agent.py change.
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32, Gauge32, Counter32
+        FROM SNMPv2-SMI
+    DisplayString, TruthValue
+        FROM SNMPv2-TC
+    MODULE-COMPLIANCE, OBJECT-GROUP
+        FROM SNMPv2-CONF
+    netSnmpPlaypen
+        FROM NET-SNMP-MIB;
+
+lynx MODULE-IDENTITY
+    LAST-UPDATED "202610192000Z"
+    ORGANIZATION "Lynx DATV"
+    CONTACT-INFO "Justin Cockett, G8YTZ"
+    DESCRIPTION  "Status of the Lynx DATV transmitter and receiver."
+    REVISION     "202610192000Z"
+    DESCRIPTION  "First version: Lynx-Tx."
+    ::= { netSnmpPlaypen 1 }
+
+lynxTx      OBJECT IDENTIFIER ::= { lynx 1 }
+lynxRx      OBJECT IDENTIFIER ::= { lynx 2 }     -- reserved for Lynx-Rx
+lynxConformance OBJECT IDENTIFIER ::= { lynx 9 }
+
+lynxTxState OBJECT-TYPE
+    SYNTAX      INTEGER { idle(1), onAir(2), mutedBySdr(3), fault(4) }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "idle: off air. onAir: transmitting. mutedBySdr: Lynx-Tx is on air
+        but the SDR has turned its transmitter off by itself because its
+        IQ stopped arriving (TX Off then TX On restores it). fault: the
+        transmit chain stopped by itself, or Lynx-Tx is not answering."
+    ::= { lynxTx 1 }
+
+lynxSdrReachable OBJECT-TYPE
+    SYNTAX      TruthValue
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Lynx-Tx can reach the chosen SDR."
+    ::= { lynxTx 2 }
+
+lynxRefState OBJECT-TYPE
+    SYNTAX      INTEGER { locked(1), acquire(2), holdover(3), absent(4), unknown(5) }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The SDR's 10 MHz reference. holdover: the reference is lost and the
+        SDR runs on its own oscillator (still on air, slightly off
+        frequency). unknown: the SDR cannot say (DL1JM's firmware)."
+    ::= { lynxTx 3 }
+
+lynxMixerRunning OBJECT-TYPE
+    SYNTAX      TruthValue
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "The vision mixer and encoder process is running."
+    ::= { lynxTx 4 }
+
+lynxHdmiSignal OBJECT-TYPE
+    SYNTAX      TruthValue
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "An HDMI signal is present on the ROCK's HDMI input."
+    ::= { lynxTx 5 }
+
+lynxTxFrequency OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "kHz"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Transmit frequency."
+    ::= { lynxTx 6 }
+
+lynxTxPower OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "hundredths of a dB"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "The SDR's output setting, e.g. -2000 = -20.00 dB."
+    ::= { lynxTx 7 }
+
+lynxMode OBJECT-TYPE
+    SYNTAX      DisplayString
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "DVB-S2 or ATSC 3.0."
+    ::= { lynxTx 8 }
+
+lynxSdrMutes OBJECT-TYPE
+    SYNTAX      Counter32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Times the SDR has muted itself since Lynx-Tx started."
+    ::= { lynxTx 9 }
+
+lynxMemAnonMB OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "MB"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Real memory held by Lynx-Tx (not the file cache)."
+    ::= { lynxTx 10 }
+
+lynxCmaFreeMB OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "MB"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Free contiguous memory for 4K buffers (may be lent to the cache)."
+    ::= { lynxTx 11 }
+
+lynxCpuTemp OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "tenths of a degree C"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "The ROCK's SoC temperature."
+    ::= { lynxTx 12 }
+
+lynxCameraState OBJECT-TYPE
+    SYNTAX      INTEGER { live(1), bars(2), unstable(3), unknown(4) }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The mixer's Camera input. bars: no usable HDMI signal, colour bars
+        shown instead. unstable: the signal keeps dropping; check the lead
+        or restart the source."
+    ::= { lynxTx 13 }
+
+lynxTxGroup OBJECT-GROUP
+    OBJECTS { lynxTxState, lynxSdrReachable, lynxRefState, lynxMixerRunning,
+              lynxHdmiSignal, lynxTxFrequency, lynxTxPower, lynxMode,
+              lynxSdrMutes, lynxMemAnonMB, lynxCmaFreeMB, lynxCpuTemp,
+              lynxCameraState }
+    STATUS      current
+    DESCRIPTION "Lynx-Tx status."
+    ::= { lynxConformance 1 }
+
+lynxCompliance MODULE-COMPLIANCE
+    STATUS      current
+    DESCRIPTION "A Lynx-Tx."
+    MODULE
+        MANDATORY-GROUPS { lynxTxGroup }
+    ::= { lynxConformance 2 }
+
+END

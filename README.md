@@ -56,6 +56,8 @@ Details, and the same steps by hand: [docs/INSTALL.md](docs/INSTALL.md). The SDR
 
 Preparing video files to play out: [docs/MEDIA.md](docs/MEDIA.md), the house standard and a DaVinci Resolve walkthrough.
 
+Alarms to your phone through Home Assistant (SNMP): [docs/MONITORING.md](docs/MONITORING.md).
+
 ## Modes
 
 | Mode | Modulator | SDR | Receiver |

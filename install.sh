@@ -252,6 +252,29 @@ else
   note "lynx-sdr: ROCK 192.168.254.1, SDR gets 192.168.254.2"
 fi
 
+# --- Monitoring: SNMP for Home Assistant and the like ----------------
+# mibs/LYNX-MIB.txt, served by snmpd through tools/lynx-snmp-agent.py from
+# Lynx-Tx's /api/health. Read-only, community "lynx". Nothing on the
+# transmit path depends on it.
+step "Monitoring (SNMP)"
+if sudo apt-get install -y snmpd >/dev/null 2>&1; then
+  sudo install -D -m 755 "$APP_DIR/tools/lynx-snmp-agent.py" /usr/local/lib/lynx-tx/lynx-snmp-agent.py
+  sudo install -D -m 644 "$APP_DIR/mibs/LYNX-MIB.txt" /usr/share/snmp/mibs/LYNX-MIB.txt
+  # Debian's snmpd answers only the ROCK itself: open it to the network.
+  sudo sed -i 's/^agentaddress .*/agentaddress udp:161,udp6:[::1]:161/' /etc/snmp/snmpd.conf
+  sudo mkdir -p /etc/snmp/snmpd.conf.d
+  sudo tee /etc/snmp/snmpd.conf.d/lynx.conf >/dev/null <<'SNMP'
+view   lynxview  included  .1.3.6.1.2.1.1
+view   lynxview  included  .1.3.6.1.4.1.8072.9999.1
+rocommunity lynx default -V lynxview
+pass_persist .1.3.6.1.4.1.8072.9999.1.1 /usr/bin/python3 /usr/local/lib/lynx-tx/lynx-snmp-agent.py
+SNMP
+  sudo systemctl enable snmpd >/dev/null 2>&1
+  sudo systemctl restart snmpd && note "SNMP: community 'lynx', MIB in mibs/LYNX-MIB.txt (docs/MONITORING.md)"
+else
+  warn "Could not install snmpd: no SNMP monitoring."
+fi
+
 # --- 9. Service ------------------------------------------------
 step "9/9 Service: start at boot"
 sudo tee /etc/systemd/system/lynx-tx.service >/dev/null <<EOF
