@@ -31,14 +31,16 @@ lynxRx      OBJECT IDENTIFIER ::= { lynx 2 }     -- reserved for Lynx-Rx
 lynxConformance OBJECT IDENTIFIER ::= { lynx 9 }
 
 lynxTxState OBJECT-TYPE
-    SYNTAX      INTEGER { idle(1), onAir(2), mutedBySdr(3), fault(4) }
+    SYNTAX      INTEGER { idle(1), onAir(2), mutedBySdr(3), fault(4), lockedOut(5) }
     MAX-ACCESS  read-only
     STATUS      current
     DESCRIPTION
         "idle: off air. onAir: transmitting. mutedBySdr: Lynx-Tx is on air
         but the SDR has turned its transmitter off by itself because its
         IQ stopped arriving (TX Off then TX On restores it). fault: the
-        transmit chain stopped by itself, or Lynx-Tx is not answering."
+        transmit chain stopped by itself, or Lynx-Tx is not answering.
+        lockedOut: auto-recover restarted the transmitter too often (3 times
+        in 60 minutes by default) and has given up until TX On is pressed."
     ::= { lynxTx 1 }
 
 lynxSdrReachable OBJECT-TYPE
@@ -136,11 +138,18 @@ lynxCameraState OBJECT-TYPE
         or restart the source."
     ::= { lynxTx 13 }
 
+lynxAutoRecoveries OBJECT-TYPE
+    SYNTAX      Counter32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Times auto-recover has restarted the transmitter since Lynx-Tx started."
+    ::= { lynxTx 14 }
+
 lynxTxGroup OBJECT-GROUP
     OBJECTS { lynxTxState, lynxSdrReachable, lynxRefState, lynxMixerRunning,
               lynxHdmiSignal, lynxTxFrequency, lynxTxPower, lynxMode,
               lynxSdrMutes, lynxMemAnonMB, lynxCmaFreeMB, lynxCpuTemp,
-              lynxCameraState }
+              lynxCameraState, lynxAutoRecoveries }
     STATUS      current
     DESCRIPTION "Lynx-Tx status."
     ::= { lynxConformance 1 }

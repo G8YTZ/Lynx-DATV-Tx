@@ -709,7 +709,62 @@ def sdr_hosts() -> list:
 # muted: on air, but the SDR has turned its transmitter off by itself (the
 # PlutoSky's starvation mute, tools/plutosky-autorun.sh: its IQ stopped).
 # fault: the transmit chain ended without TX Off. Both clear at the next TX On.
-tx_alarm = {"muted": False, "fault": "", "sdr_ok": True, "checked": 0.0}
+tx_alarm = {"muted": False, "fault": "", "sdr_ok": True, "checked": 0.0,
+            "wanted": False, "locked_out": False, "recoveries": 0,
+            "recoveries_recent": [], "settled": 0.0, "recovering": ""}
+
+# Auto-recover (config "auto_recover"): like a power network's auto-reclose.
+# If you wanted to be on air and the SDR muted itself or the chain stopped,
+# once the SDR has answered for settle_s seconds the transmitter is
+# restarted - at most max_tries times in window_min minutes, then it locks
+# out until someone presses TX On.
+AUTO_RECOVER = {"enabled": True, "settle_s": 30, "max_tries": 3, "window_min": 60}
+
+
+def auto_recover_cfg() -> dict:
+    return {**AUTO_RECOVER, **(config.get("auto_recover") or {})}
+
+
+def auto_recover_check():
+    """Called every 5 s by tx_alarm_watch."""
+    ar = auto_recover_cfg()
+    down = tx_alarm["muted"] or (not tx_running() and bool(tx_alarm["fault"]))
+    if not (ar["enabled"] and tx_alarm["wanted"] and down) or tx_alarm["locked_out"]:
+        tx_alarm["settled"] = 0.0
+        tx_alarm["recovering"] = ""
+        return
+    if not sdrs.probe(sdr_uri()):
+        tx_alarm["settled"] = 0.0
+        tx_alarm["recovering"] = "waiting for the SDR"
+        return
+    now = time.time()
+    if not tx_alarm["settled"]:
+        tx_alarm["settled"] = now
+    left = ar["settle_s"] - (now - tx_alarm["settled"])
+    if left > 0:
+        tx_alarm["recovering"] = f"SDR back: restarting in {int(left) + 1} s"
+        return
+    recent = [t for t in tx_alarm["recoveries_recent"] if now - t < ar["window_min"] * 60]
+    if len(recent) >= ar["max_tries"]:
+        tx_alarm["recoveries_recent"] = recent
+        tx_alarm["locked_out"] = True
+        tx_alarm["recovering"] = ""
+        print(f"[recover] {len(recent)} restarts in {ar['window_min']} min - locked out "
+              "until TX On is pressed")
+        return
+    recent.append(now)
+    tx_alarm["recoveries_recent"] = recent
+    tx_alarm["recoveries"] += 1
+    tx_alarm["settled"] = 0.0
+    tx_alarm["recovering"] = ""
+    why = "the SDR had muted itself" if tx_alarm["muted"] else tx_alarm["fault"]
+    print(f"[recover] restarting the transmitter ({why}); "
+          f"{len(recent)} of {ar['max_tries']} in {ar['window_min']} min")
+    try:
+        start_tx()
+    except Exception as e:
+        tx_alarm["fault"] = f"auto-recover could not restart: {e}"
+        print(f"[recover] failed: {e}")
 
 
 def tx_alarm_watch():
@@ -717,6 +772,10 @@ def tx_alarm_watch():
     a thread of its own so the page never waits on the SDR."""
     while True:
         time.sleep(5)
+        try:
+            auto_recover_check()
+        except Exception as e:
+            print(f"[recover] {e}")
         try:
             if not (tx_running() and iq_mode()) or time.time() - tx_started_at < 10:
                 continue
@@ -1854,7 +1913,9 @@ def api_health():
     mibs/LYNX-MIB.txt), as plain numbers. Never waits on the SDR: every
     value is cached or local."""
     on = tx_running()
-    if tx_alarm["muted"] and on:
+    if tx_alarm["locked_out"]:
+        state = 5                                   # lockedOut
+    elif tx_alarm["muted"] and on:
         state = 3                                   # mutedBySdr
     elif not on and tx_alarm["fault"]:
         state = 4                                   # fault
@@ -1883,6 +1944,7 @@ def api_health():
         "cmaFreeMB": (cma or 0) // 1024,
         "cpuTempDeciC": (temp or 0) // 100,
         "cameraState": CAMERA_STATES.get(sw.get("camera", ""), 4),
+        "autoRecoveries": tx_alarm["recoveries"],
     }
 
 
@@ -1912,7 +1974,10 @@ def api_status():
         "transmitting": tx_running(),
         "alarm": {"muted": tx_alarm["muted"] and tx_running(),
                   "fault": tx_alarm["fault"],
-                  "sdr_ok": tx_alarm["sdr_ok"]},
+                  "sdr_ok": tx_alarm["sdr_ok"],
+                  "locked_out": tx_alarm["locked_out"],
+                  "recovering": tx_alarm["recovering"],
+                  "recoveries": tx_alarm["recoveries"]},
         "uptime": int(time.time() - tx_started_at) if tx_running() else 0,
         "config": config,
         "hdmi": hdmi_format(),
@@ -1932,11 +1997,15 @@ def api_status():
 
 @app.post("/api/start")
 def api_start():
+    # A person pressed TX On: they want to be on air, and any lockout is over.
+    tx_alarm.update(wanted=True, locked_out=False)
+    tx_alarm["recoveries_recent"].clear()
     return start_tx()
 
 
 @app.post("/api/stop")
 def api_stop():
+    tx_alarm["wanted"] = False
     return stop_tx()
 
 
@@ -3195,16 +3264,20 @@ async function poll() {
   // turned its transmitter off (its IQ stopped). Fault: the chain stopped
   // by itself. Both clear at the next TX On.
   const A = cfg.alarm || {};
-  const txText = A.muted ? 'MUTED BY THE SDR' : (!cfg.transmitting && A.fault) ? 'FAULT'
+  const txText = A.locked_out ? 'LOCKED OUT' : A.muted ? 'MUTED BY THE SDR'
+               : (!cfg.transmitting && A.fault) ? 'FAULT'
                : cfg.transmitting ? 'ON AIR' : 'IDLE';
   setText('tx-badge', txText);
   // Whichever state the transmitter is in is lit: green on air, red off.
   setClass('btn-txon', 'btn big-btn ' + (cfg.transmitting ? 'btn-success' : 'btn-secondary'));
   setClass('btn-txoff', 'btn big-btn ' + (cfg.transmitting ? 'btn-secondary' : 'btn-danger'));
-  setStyle('tx-badge', 'background', (A.muted || (!cfg.transmitting && A.fault)) ? '#d97706'
+  setStyle('tx-badge', 'background', A.locked_out ? '#b91c1c'
+           : (A.muted || (!cfg.transmitting && A.fault)) ? '#d97706'
            : cfg.transmitting ? '#16a34a' : '#3a4a63');
-  setAttr('tx-badge', 'title', A.muted ? 'The SDR stopped receiving IQ and muted itself. Press TX Off, then TX On.'
-           : A.fault ? 'The transmit chain stopped by itself: ' + A.fault + '. Press TX On to start again.' : '');
+  setAttr('tx-badge', 'title', A.locked_out ? 'Auto-recover gave up after repeated faults. Find the cause, then press TX On.'
+           : A.recovering ? 'Auto-recover: ' + A.recovering
+           : A.muted ? 'The SDR stopped receiving IQ and muted itself. Auto-recover restarts it once the SDR has been back for 30 s; or press TX Off, then TX On.'
+           : A.fault ? 'The transmit chain stopped by itself: ' + A.fault + '. Auto-recover will restart it, or press TX On.' : '');
   setText('call-badge', cfg.config.callsign);
 
   const L = cfg.libre || {};
@@ -3258,7 +3331,8 @@ async function poll() {
   // answering, or idle) and the HDMI input as the mixer sees it.
   const AL = cfg.alarm || {};
   const sdrLamp = !cfg.transmitting ? ['SDR idle', '#3a4a63', 'Off air.']
-    : AL.muted ? ['SDR MUTED', '#d97706', 'The SDR stopped receiving IQ and muted itself. Press TX Off, then TX On.']
+    : AL.muted ? [AL.recovering ? 'SDR MUTED: ' + AL.recovering.replace('SDR back: ', '') : 'SDR MUTED', '#d97706',
+                  'The SDR stopped receiving IQ and muted itself. Auto-recover restarts it once the SDR has been back for 30 s.']
     : AL.sdr_ok === false ? ['SDR NOT REACHED', '#b91c1c', 'Lynx-Tx cannot reach the SDR.']
     : ['SDR OK', '#16a34a', 'On air: the SDR is keyed and taking IQ.'];
   setText('sdr-badge', sdrLamp[0]); setStyle('sdr-badge', 'background', sdrLamp[1]);

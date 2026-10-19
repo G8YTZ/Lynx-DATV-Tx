@@ -17,7 +17,7 @@ The branch is Net-SNMP's test branch until the repeater group has its own Privat
 
 | OID (under `…8072.9999.1.1`) | Object | Values | Alarm when |
 |---|---|---|---|
-| `.1.0` | lynxTxState | 1 idle, 2 on air, 3 muted by the SDR, 4 fault | 3 or 4 |
+| `.1.0` | lynxTxState | 1 idle, 2 on air, 3 muted by the SDR, 4 fault, 5 locked out | 5 at once; 3 or 4 if they last |
 | `.2.0` | lynxSdrReachable | 1 yes, 2 no | 2 |
 | `.3.0` | lynxRefState | 1 locked, 2 acquire, 3 holdover, 4 absent, 5 unknown | 3 (the GPS reference is lost) |
 | `.4.0` | lynxMixerRunning | 1 yes, 2 no | 2 |
@@ -30,8 +30,19 @@ The branch is Net-SNMP's test branch until the repeater group has its own Privat
 | `.11.0` | lynxCmaFreeMB | free 4K buffer memory, MB | (informational: the cache borrows it) |
 | `.12.0` | lynxCpuTemp | tenths of a °C | above 850 (85 °C) |
 | `.13.0` | lynxCameraState | 1 live, 2 colour bars, 3 unstable, 4 unknown | 3 |
+| `.14.0` | lynxAutoRecoveries | times auto-recover has restarted the transmitter | it goes up |
 
 **Muted by the SDR:** Lynx-Tx thinks it is on air, but the SDR has turned its transmitter off because its IQ stopped arriving (see [SDR_SETUP.md](SDR_SETUP.md)). TX Off then TX On restores it. **Fault:** The transmit chain stopped by itself, or Lynx-Tx is not answering at all.
+
+**Auto-recover:** If you pressed TX On and the transmitter then goes muted or faulty, Lynx-Tx restarts it by itself once the SDR has answered for 30 seconds, like a power network's auto-reclose. After 3 restarts within 60 minutes it gives up: **locked out** (red on the page) until someone presses TX On. TX Off always means off. To change the numbers, in `config/lynx_tx.yaml`:
+
+```yaml
+auto_recover:
+  enabled: true
+  settle_s: 30
+  max_tries: 3
+  window_min: 60
+```
 
 ## Checking it from the ROCK
 
@@ -54,7 +65,7 @@ sensor:
     version: "2c"
     baseoid: 1.3.6.1.4.1.8072.9999.1.1.1.0
     value_template: >-
-      {{ {'1': 'idle', '2': 'on air', '3': 'muted by the SDR', '4': 'fault'}.get(value, 'unknown') }}
+      {{ {'1': 'idle', '2': 'on air', '3': 'muted by the SDR', '4': 'fault', '5': 'locked out'}.get(value, 'unknown') }}
 
   - platform: snmp
     name: Lynx-Tx reference
@@ -95,8 +106,11 @@ The notification to your phone, in `automations.yaml` (use your own phone's noti
   trigger:
     - platform: state
       entity_id: sensor.lynx_tx_state
+      to: "locked out"
+    - platform: state
+      entity_id: sensor.lynx_tx_state
       to: ["muted by the SDR", "fault"]
-      for: "00:00:30"
+      for: "00:01:30"
     - platform: state
       entity_id: sensor.lynx_tx_reference
       to: "holdover"
@@ -112,4 +126,4 @@ The notification to your phone, in `automations.yaml` (use your own phone's noti
         message: "{{ trigger.to_state.name }}: {{ trigger.to_state.state }}"
 ```
 
-The `for:` delays stop a momentary blip from waking you: an alarm has to hold for that long before it is sent.
+The `for:` delays stop a momentary blip from waking you: an alarm has to hold for that long before it is sent. Muted and fault wait 90 seconds, long enough for auto-recover to put it right by itself; locked out is sent at once, because it needs you.
