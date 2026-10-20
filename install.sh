@@ -160,9 +160,12 @@ fi
 if systemctl is-enabled zramswap.service >/dev/null 2>&1; then
   sudo systemctl disable --now zramswap.service >/dev/null 2>&1 && note "Swap off (zramswap)"
 fi
-if [ "$CMA_REBOOT" = 1 ]; then
-  note "Contiguous memory set to 1 GB: takes effect after a restart"
-elif ! grep -q 'cma=' /proc/cmdline; then
+if grep -q 'cma=' /proc/cmdline; then
+  :
+elif grep -qs 'cma=' /boot/extlinux/extlinux.conf; then
+  # Set, by this run or an earlier one, but not active until a restart.
+  CMA_REBOOT=1; note "Contiguous memory set to 1 GB: takes effect after a restart"
+else
   warn "Could not set cma=1024M on the kernel command line: 4K HDMI in may fail after hours on air."
 fi
 
@@ -236,12 +239,22 @@ step "8/9 Direct link to the SDR ($SDR_PORT)"
 # The ROCK's SSH key: Lynx-Tx puts it on a PlutoSky by itself the first time
 # it sees one (tezuka_prep.py), then never needs a password again.
 [ -f "$HOME/.ssh/id_ed25519" ] || ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
+# Tidy up after an older installer, which on a second run could add the
+# connection again: keep the first lynx-sdr, delete any others.
+dupes=$(nmcli -g NAME,UUID con show 2>/dev/null | awk -F: '$1=="lynx-sdr"{print $2}' | tail -n +2)
+for u in $dupes; do
+  if sudo nmcli con delete uuid "$u" >/dev/null; then note "Removed a duplicate lynx-sdr connection"; fi
+done
+# Does any connection already use the port? Captured first: with pipefail,
+# "loop | grep -q" fails whenever grep stops reading early.
+port_used=""
+while IFS= read -r c; do
+  if [ "$(nmcli -g connection.interface-name con show "$c" 2>/dev/null)" = "$SDR_PORT" ]; then port_used="$c"; fi
+done < <(nmcli -g NAME con show 2>/dev/null)
 if ! ip link show "$SDR_PORT" >/dev/null 2>&1; then
   warn "No port called $SDR_PORT: set up the direct link by hand (Installation Guide, Section 5.2), or re-run with LYNX_SDR_PORT=<name>."
-elif nmcli -g NAME con show | while IFS= read -r c; do
-       [ "$(nmcli -g connection.interface-name con show "$c" 2>/dev/null)" = "$SDR_PORT" ] && echo yes
-     done | grep -q yes; then
-  note "$SDR_PORT already has a connection: left as it is"
+elif [ -n "$port_used" ]; then
+  note "$SDR_PORT already has a connection ($port_used): left as it is"
 else
   # The ROCK is 192.168.254.1 and hands the SDR 192.168.254.2 by DHCP, so
   # the SDR needs no setting up. One address in the pool: always .2.
