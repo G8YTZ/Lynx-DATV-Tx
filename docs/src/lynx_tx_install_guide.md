@@ -79,7 +79,7 @@ curl -sSL https://raw.githubusercontent.com/G8YTZ/Lynx-DATV-Tx/main/install.sh |
 
 It installs every package, TSDuck, the video loopback for the media player, Ron Economos W6RZ's gr-atsc3, the patched HEVC encoder, Lynx-Tx itself, the direct link to the SDR (with DHCP, so the SDR needs no setting up), SNMP monitoring, and the service that starts it at boot. It asks for your password once at the start.
 
-> About an hour on a fresh ROCK, most of it compiling. Leave it running; if your ssh connection drops, run the command again: it carries on where it left off.
+> About 15 minutes on a fresh ROCK, most of it compiling. Leave it running; if your ssh connection drops, run the command again: it carries on where it left off.
 
 It finishes by printing the page's address, and lists anything that needs a look. **Restart the ROCK once** when it asks (`sudo reboot`): the memory setting for 4K needs it.
 
@@ -126,7 +126,7 @@ sudo modprobe v4l2loopback
 
 **Memory for 4K:** Radxa's image reserves 256 MB of contiguous memory, shared by HDMI in, the decoder, the encoder and the scaler. After hours on air that is not enough, and the ROCK can freeze. Add `cma=1024M` to the end of the kernel command line in both `/etc/kernel/cmdline` and the `append` lines of `/boot/extlinux/extlinux.conf`, then restart. Also switch off swap, as a live 4K chain must never be paged out: `sudo systemctl disable --now zramswap`.
 
-**5. The ATSC 3.0 modulator,** Ron Economos W6RZ's gr-atsc3, built from source (about half an hour). DVB-S2 uses his gr-dtv blocks, which come with GNU Radio.
+**5. The ATSC 3.0 modulator,** Ron Economos W6RZ's gr-atsc3, built from source (a few minutes). DVB-S2 uses his gr-dtv blocks, which come with GNU Radio.
 
 ```
 git clone https://github.com/drmpeg/gr-atsc3 ~/src/gr-atsc3
@@ -297,40 +297,44 @@ On the page: the SDR shows its model and firmware, the **SDR** and **HDMI** lamp
 
 Run it again: each step checks whether it is already done. If it ends with warnings, each names the step and the fix. `journalctl -u lynx-tx -n 50` shows why the service did not start.
 
-## 11.2 "The Rockchip hardware encoder (mpph265enc) is missing"
+## 11.2 ssh refuses: "REMOTE HOST IDENTIFICATION HAS CHANGED"
+
+After re-flashing the ROCK, your computer still remembers the old one at that address. Forget it, then connect again: `ssh-keygen -R 192.168.1.XXX` (the ROCK's address).
+
+## 11.3 "The Rockchip hardware encoder (mpph265enc) is missing"
 
 The ROCK is not running Radxa's own Debian 12 image. Re-flash with the image in Section 2.
 
-## 11.3 The SDR does not appear on the Transmit card
+## 11.4 The SDR does not appear on the Transmit card
 
 - Check the cable is in the ROCK's **second** port, and the SDR is powered from a supply, not a computer.
 - `ip -br link` on the ROCK: the SDR port should be `UP`. If the installer warned "No port called enP4p65s0", re-run it with `LYNX_SDR_PORT=<name>` in front of `bash`.
 - `iio_attr -u ip:192.168.254.2 -C` should print the board's model.
 - **PlutoSky on the supplied card (Tezuka v0.3.5):** Its Ethernet receives but never transmits: no DHCP lease, a 169.254 address. Make a v0.3.24 card (Section 5.1).
 
-## 11.4 Password refused on the SDR
+## 11.5 Password refused on the SDR
 
 A password saved in the board's flash overrides `analog`. Plug the board into a computer's USB: it appears as a drive called **TEZUKA**. Add `revert_passwd = 1` under `[ACTIONS]` in `config.txt`, eject, then restart the board.
 
-## 11.5 ATSC 3.0 locks but will not decode, or combs
+## 11.6 ATSC 3.0 locks but will not decode, or combs
 
 - Power at −20 dB or lower (Section 6).
 - On a PlutoSky, check the Lynx-Tx script is installed: the Transmit card says so, or `ssh root@192.168.254.2 ls /mnt/jffs2/autorun.sh`.
 - On a LibreSDR, use DL1JM's firmware for ATSC 3.0 (Section 5.5).
 
-## 11.6 The signal is twice as wide and never locks (LibreSDR)
+## 11.7 The signal is twice as wide and never locks (LibreSDR)
 
 DL1JM's firmware left `mode=2r2t` in the board's flash: `fw_setenv mode 1r1t`, `sync`, `reboot` (Section 5.5).
 
-## 11.7 The page shows LOCKOUT
+## 11.8 The page shows LOCKOUT
 
 Auto-recover restarted the transmitter three times within an hour and has given up until someone looks. Find the cause (the SDR's power and cable first), then press **TX On**. The Monitoring Guide explains auto-recover.
 
-## 11.8 Off frequency
+## 11.9 Off frequency
 
 The PlutoSky's own crystal can be 10 ppm or more out (13 kHz at 1249 MHz on one board). Feed it a 10 MHz reference: Lynx-Tx locks to it by itself. Or use the tone test from the ROCK to zero-beat it: `python3 tools/dvbs2_iq.py --uri ip:192.168.254.2 --freq 1249 --tone 100` puts a tone 100 kHz above.
 
-## 11.9 Checking logs generally
+## 11.10 Checking logs generally
 
 ```
 journalctl -u lynx-tx -f

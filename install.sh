@@ -14,7 +14,7 @@
 #
 #  Safe to run again: each step checks whether it is already done, so a
 #  second run only updates the code and fills in anything missing.
-#  About an hour on a fresh ROCK, most of it compiling gr-atsc3.
+#  About 15 minutes on a fresh ROCK (timed 20 Oct 2026), most of it compiling.
 # ============================================================
 set -euo pipefail
 
@@ -102,7 +102,7 @@ else
   if [ -z "$url" ]; then
     url="https://github.com/tsduck/tsduck/releases/download/v3.39-3956/tsduck_3.39-3956.debian${VERSION_ID}_arm64.deb"
   fi
-  tmp=$(mktemp -d)
+  tmp=$(mktemp -d); chmod 755 "$tmp"   # apt reads it as user _apt
   curl -fsSL -o "$tmp/tsduck.deb" "$url" ||
     { echo "Could not download TSDuck from $url"; echo "Install it by hand from github.com/tsduck/tsduck/releases, then re-run."; exit 1; }
   sudo apt-get install -y "$tmp/tsduck.deb"; rm -rf "$tmp"

@@ -78,7 +78,7 @@ def _ensure_key(host: str) -> bool:
              stdin=pub, password=True)
     if r.returncode != 0:
         _set(host, "error", "the board refused the factory password - "
-                            "set up its SSH key by hand (Installation Guide, Section 11.4)")
+                            "set up its SSH key by hand (Installation Guide, Section 11.5)")
         return False
     return _ssh(host, "true").returncode == 0
 
