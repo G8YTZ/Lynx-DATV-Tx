@@ -334,7 +334,20 @@ echo
 echo "=== Done ==="
 echo "Open http://${IP:-<rock address>}:8080"
 echo "Connect the SDR to the ROCK's second Ethernet port (far right) and power it: it appears on the Transmit card."
-[ "$CMA_REBOOT" = 1 ] && echo "Restart the ROCK once now (sudo reboot): the 4K memory setting needs it."
 if [ ${#WARNINGS[@]} -gt 0 ]; then
   echo; echo "Finished with warnings:"; for w in "${WARNINGS[@]}"; do echo "  - $w"; done
+fi
+if [ "$CMA_REBOOT" = 1 ]; then
+  echo
+  echo "************************************************************"
+  echo "  RESTART NEEDED: the 4K memory setting only takes effect"
+  echo "  after a restart. Transmitting before it can freeze the ROCK."
+  echo "************************************************************"
+  # stdin is this script when run through curl | bash, so ask on the terminal.
+  ans=""
+  if [ -r /dev/tty ] && read -r -t 120 -p "Restart now? [Y/n] " ans </dev/tty; then :; else ans=""; echo; fi
+  case "$ans" in
+    [nN]*) echo "Then restart before transmitting: sudo reboot" ;;
+    *) echo "Restarting. Give it a minute, then open http://${IP:-<rock address>}:8080"; sudo systemctl reboot ;;
+  esac
 fi

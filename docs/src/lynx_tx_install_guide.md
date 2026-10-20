@@ -81,7 +81,7 @@ It installs every package, TSDuck, the video loopback for the media player, Ron 
 
 > About 15 minutes on a fresh ROCK, most of it compiling. Leave it running; if your ssh connection drops, run the command again: it carries on where it left off.
 
-It finishes by printing the page's address, and lists anything that needs a look. **Restart the ROCK once** when it asks (`sudo reboot`): the memory setting for 4K needs it.
+It finishes by printing the page's address, and lists anything that needs a look. On a first install it then asks **Restart now? [Y/n]**: press Enter. The memory setting for 4K only takes effect after a restart, and transmitting before it can freeze the ROCK.
 
 Running it again later is safe, and is how you update: it only updates the code and fills in anything missing.
 
