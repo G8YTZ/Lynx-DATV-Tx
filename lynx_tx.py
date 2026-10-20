@@ -3249,7 +3249,7 @@ function renderUpdate(u) {
     b.style.background = '#b45309'; b.title = u.error;
   } else if (u.behind > 0) {
     b.style.background = '#b45309';
-    b.title = u.behind + ' update' + (u.behind > 1 ? 's' : '') + ' available:\n' + u.commits.join('\n');
+    b.title = u.behind + ' update' + (u.behind > 1 ? 's' : '') + ' available:\\n' + u.commits.join('\\n');
     b.textContent += ': update available';
     apply.style.display = '';
   } else if (u.checked_at) {
@@ -3266,7 +3266,7 @@ async function checkUpdates() {
 async function applyUpdate() {
   if (cfg && cfg.transmitting) { alert('Take the transmitter off air first (TX Off), then update.'); return; }
   const list = $('version-badge').title;
-  if (!confirm('Update Lynx-Tx now? It restarts, and the page comes back in about 20 seconds.\n\n' + list)) return;
+  if (!confirm('Update Lynx-Tx now? It restarts, and the page comes back in about 20 seconds.\\n\\n' + list)) return;
   const btn = $('update-apply-btn'); btn.disabled = true; btn.textContent = 'Updating...';
   const j = await api('POST', '/api/update/apply');
   if (!j.success) { btn.disabled = false; btn.innerHTML = '&#x2B06;&#xFE0F; Update'; return; }
