@@ -1,85 +1,52 @@
 # Lynx-Tx
 
-A 4K DATV transmitter you drive from a web page. A Radxa ROCK 5T mixes, encodes and modulates; a Pluto-class SDR on its own cable puts it on air. DVB-S2 and ATSC 3.0 from one box, with DVB-T2 coming soon: a true multi-mode television transmitter.
+A 4K DATV transmitter you drive from a web page. A Radxa ROCK 5T mixes, encodes and modulates; a Pluto-class SDR on its own cable puts it on air. DVB-S2 and ATSC 3.0 from one box, with DVB-T2 coming soon.
 
-Companion to the [Lynx DATV receiver](https://github.com/G8YTZ/lynx-datv-receiver): same family, opposite direction.
+Companion to the [Lynx DATV Receiver](https://github.com/G8YTZ/lynx-datv-receiver): same family, opposite direction.
+
+**Status: Beta.** In use on the bench and on air. Feedback and bug reports welcome.
 
 ![Lynx-Tx wiring](docs/wiring.svg)
 
-## What it does
+## Features
 
-- **Vision mixer:** Camera (HDMI, up to 4K) and media run all the time; the cut happens in front of the encoder, with no break on air.
-- **Built-in Lynx-Deck media player, in 4K:** Upload clips and stills on the page and play them out like a HyperDeck, at up to 3840×2160. No second box: the separate [Lynx-Deck](https://github.com/G8YTZ/lynx-deck) on a Pi 4 is HD only.
-- **Hardware HEVC:** The RK3588's encoder does 4K25 at about a quarter of one core.
-- **Frame-by-frame rate control:** Every picture's QP is chosen so the receiver's buffer is never late.
-- **Sound priority:** Tables, then sound, then pictures. A picture burst cannot push the sound out.
-- **Proper identity:** PAT, PMT, SDT and NIT written here, with your names, IDs and channel number.
-- **DVB-S2 made on the ROCK:** Ron Economos W6RZ's gr-dtv, from 333 kS/s up, QPSK to 32APSK, exact stream rate, clean 2× oversampled spectrum.
-- **ATSC 3.0:** Ron's gr-atsc3, 6 MHz, received by a shop-bought HDHomeRun FLEX 4K.
-- **DVB-T2: Coming soon.** Ron's gr-dtv again, on the same IQ path, for terrestrial and narrowband DATV.
-- **Any Pluto-class SDR with Ethernet:** Found automatically on the direct link, the LAN or by mDNS, with its model and firmware shown.
-- **One page:** Source, encoder, identity, frequency, power, TX on and off, restart and shut down.
+- **Vision mixer:** Camera (HDMI, up to 4K) and the built-in 4K media player run all the time; the cut happens in front of the encoder, with no break on air
+- **Hardware HEVC:** The RK3588's encoder does 4K25 at about a quarter of one core, with frame-by-frame rate control and sound always ahead of pictures
+- **DVB-S2 and ATSC 3.0** made on the ROCK by Ron Economos W6RZ's gr-dtv and gr-atsc3; DVB-T2 coming soon
+- **Any Pluto-class SDR with Ethernet,** found automatically on its own cable; a PlutoSky on Tezuka is prepared by itself, with its 10 MHz reference held through a GNSS failure
+- **Broadcast habits:** The SDR mutes itself if the ROCK stops, auto-recover with lockout, alarm lamps on the page, and SNMP alarms to Home Assistant
+- **One page** for source, encoder, identity, frequency, power, TX on and off, restart and shut down
 
-## Status
+## Getting started
 
-Beta. Proven on the bench on 18 October 2026: PlutoSky R2 and LibreSDR, 1249 MHz, QPSK 3/4 at 2000 and 4000 kS/s, the whole ROCK under 20% busy. MER on a BATC PicoTuner: 51.1 dB from the LibreSDR, 38 dB from the PlutoSky on Tezuka v0.3.24.
-
-## Hardware
-
-See [docs/BOM.md](docs/BOM.md). In short: a ROCK 5T, a PlutoSky R2 or LibreSDR running [Tezuka firmware](https://github.com/F5OEO/tezuka_fw/releases), a Cat 6 cable between them, and ideally a 10 MHz GNSS reference.
-
-## Connecting the SDR
-
-**Supported:** The SDR on its own Cat 6 cable to the ROCK's second Ethernet port (the RJ45 at the far edge of the board). The ROCK gives the SDR its address, so the SDR needs no setting up:
-
-<img src="docs/img/rock5t-ports.jpg" alt="ROCK 5T connections: fan, HDMI in and 12 V DC in on the left; HDMI out, LAN and SDR along the bottom" width="560">
-
-
-| | Address |
-|---|---|
-| ROCK, second port | 192.168.254.1 / 24 |
-| SDR | 192.168.254.2, given by the ROCK (DHCP) |
-
-Nothing else shares that cable, so the IQ stream (about 130 Mb/s at 2 MS/s, 260 Mb/s at 4 MS/s) never meets your other traffic.
-
-**Also works, not supported:** The SDR on your LAN. Type its address into the Transmit card. Expect trouble on a busy or Wi-Fi-bridged network.
-
-## Install
-
-On the ROCK 5T, one command does everything:
+On a ROCK 5T running Radxa's Debian 12 image, one command installs everything:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/G8YTZ/Lynx-DATV-Tx/main/install.sh | bash
 ```
 
-Details, and the same steps by hand: [docs/INSTALL.md](docs/INSTALL.md). The SDR: [docs/SDR_SETUP.md](docs/SDR_SETUP.md).
+The [Installation Guide](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_install_guide.docx) takes you from a blank SD card to a first transmission, including the SDR.
 
-Preparing video files to play out: [docs/MEDIA.md](docs/MEDIA.md), the house standard and a DaVinci Resolve walkthrough.
+## Documentation
 
-Alarms to your phone through Home Assistant (SNMP): [docs/MONITORING.md](docs/MONITORING.md).
+- [`lynx_tx_install_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_install_guide.docx): Blank SD card to working transmitter, the SDR, troubleshooting, NVMe, PlutoSky from flash, bill of materials
+- [`lynx_tx_monitoring_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_monitoring_guide.docx): Alarms, auto-recover and lockout, SNMP and Home Assistant
+- [`lynx_tx_media_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_media_guide.docx): Preparing clips to play out, with a DaVinci Resolve walkthrough
+- [`LYNX-MIB.txt`](mibs/LYNX-MIB.txt): The SNMP MIB
 
-## Modes
+## Requirements
 
-| Mode | Modulator | SDR | Receiver |
-|---|---|---|---|
-| DVB-S2 | ROCK: gr-dtv (default) | Any Pluto-class with Ethernet, Tezuka preferred | [BATC PicoTuner (Ethernet)](https://wiki.batc.org.uk/PicoTuner_Ethernet_Interface), MiniTiouner, satellite receivers |
-| DVB-S2 | LibreSDR on board: DL1JM's firmware (fallback) | LibreSDR with DL1JM firmware only | As above |
-| ATSC 3.0 | ROCK: gr-atsc3 | Any Pluto-class with Ethernet | [HDHomeRun FLEX 4K (HDFX-4K)](https://shop.silicondust.com/shop/product/hdfx-4k/) |
-| DVB-T2 (coming soon) | ROCK: gr-dtv | Any Pluto-class with Ethernet | DVB-T2 receivers, Lynx DVB-T2 Receiver |
-
-## Safety
-
-- **Test on a cable first:** A 30 to 40 dB attenuator into a receiver, never straight into a tuner.
-- **PTT:** Tezuka keys its own PTT line whenever IQ is flowing. DL1JM's firmware keys from the power setting. A LibreSDR running DL1JM's firmware as an IQ transmitter does **not** key PTT: check before putting a PA behind it.
-- **TX Off** sets the SDR's most attenuation (−89.75 dB) before the stream stops.
-- **Your licence:** Frequency, bandwidth and power are your responsibility. A 2 MS/s DVB-S2 signal at roll-off 0.35 is 2.7 MHz wide.
+- Radxa ROCK 5T (8 GB or more), running Radxa's own Debian 12 image
+- A PlutoSky R2 or LibreSDR on [Tezuka firmware](https://github.com/F5OEO/tezuka_fw/releases) v0.3.24 or later, on its own Cat 6 lead to the ROCK's second Ethernet port
+- Ideally a GNSS 10 MHz reference
+- A receiver: a [BATC PicoTuner](https://wiki.batc.org.uk/PicoTuner_Ethernet_Interface) for DVB-S2, an [HDHomeRun FLEX 4K](https://shop.silicondust.com/shop/product/hdfx-4k/) for ATSC 3.0
 
 ## Credits
 
-- **Ron Economos W6RZ:** gr-dtv (DVB-S2) and gr-atsc3, and the rate utilities.
-- **Evariste F5OEO:** Tezuka firmware.
-- **DL1JM:** The LibreSDR DVB-S2 firmware this project started on.
-- **TSDuck** for the transport stream tools, and **Radxa** for the ROCK 5T.
+- **Ron Economos W6RZ:** gr-dtv (DVB-S2) and gr-atsc3, and the rate utilities
+- **Evariste F5OEO:** Tezuka firmware
+- **DL1JM:** The LibreSDR DVB-S2 firmware this project started on
+- **TSDuck** for the transport stream tools, and **Radxa** for the ROCK 5T
 
 ## Licence
 

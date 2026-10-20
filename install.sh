@@ -235,7 +235,7 @@ step "8/9 Direct link to the SDR ($SDR_PORT)"
 # it sees one (tezuka_prep.py), then never needs a password again.
 [ -f "$HOME/.ssh/id_ed25519" ] || ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
 if ! ip link show "$SDR_PORT" >/dev/null 2>&1; then
-  warn "No port called $SDR_PORT: set up the direct link by hand (docs/INSTALL.md), or re-run with LYNX_SDR_PORT=<name>."
+  warn "No port called $SDR_PORT: set up the direct link by hand (Installation Guide, Section 5.2), or re-run with LYNX_SDR_PORT=<name>."
 elif nmcli -g NAME con show | while IFS= read -r c; do
        [ "$(nmcli -g connection.interface-name con show "$c" 2>/dev/null)" = "$SDR_PORT" ] && echo yes
      done | grep -q yes; then
@@ -270,7 +270,7 @@ rocommunity lynx default -V lynxview
 pass_persist .1.3.6.1.4.1.8072.9999.1.1 /usr/bin/python3 /usr/local/lib/lynx-tx/lynx-snmp-agent.py
 SNMP
   sudo systemctl enable snmpd >/dev/null 2>&1
-  sudo systemctl restart snmpd && note "SNMP: community 'lynx', MIB in mibs/LYNX-MIB.txt (docs/MONITORING.md)"
+  sudo systemctl restart snmpd && note "SNMP: community 'lynx', MIB in mibs/LYNX-MIB.txt (docs/lynx_tx_monitoring_guide.docx)"
 else
   warn "Could not install snmpd: no SNMP monitoring."
 fi

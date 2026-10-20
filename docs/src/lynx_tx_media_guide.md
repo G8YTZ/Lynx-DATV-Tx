@@ -1,6 +1,9 @@
-# Preparing Media for Lynx-Tx in DaVinci Resolve
+title: Lynx
+subtitle: DATV Transmitter (Lynx-Tx)
+tagline: Media Guide: Preparing Media in DaVinci Resolve
+version: Version 1.0  ·  G8YTZ / EI3IOB  ·  October 2026
 
-## The house standard
+# 1. The House Standard
 
 Lynx-Tx has the Lynx-Deck media player built in, playing 4K files from the page's **Manage media** link. Every file played out by Lynx-Tx should be **3840×2160, 25p, H.265 Main (8-bit), Rec.709 standard range, with AAC 48 kHz stereo audio**. Lynx-Tx re-encodes it to about 3.8 Mb/s for transmission, so the master only needs to be clean and correct, not small.
 
@@ -11,7 +14,7 @@ What goes wrong when a file is off-standard:
 - **10-bit** (H.265 Main 10) is harder for the ROCK's hardware decoder and gains nothing, because transmission is 8-bit.
 - **1080p** works, but should be upscaled to 3840×2160 in Resolve rather than left to the transmitter.
 
-## 1. Start from the camera originals
+# 2. Start from the Camera Originals
 
 Most problems start before Resolve, with a copy that is not the original. Check each source clip's resolution and frame rate before editing.
 
@@ -21,7 +24,7 @@ Most problems start before Resolve, with a copy that is not the original. Check 
 - **Transfer the originals.** Use AirDrop with **Options → All Photos Data** on, or connect the phone and use **Image Capture** on the Mac. Some sharing routes quietly re-encode to a lower resolution or a different frame rate.
 - **Sony ZV-1 and other cameras:** set the camera to 25p (PAL) before shooting.
 
-## 2. Project settings (set once)
+# 3. Project Settings (Set Once)
 
 Set these once, save them as your default, and every new project starts ready. Open **File → Project Settings** (the cog, bottom right).
 
@@ -47,7 +50,7 @@ Resolve then reads each clip's own colour tags and converts HDR footage (iPhone 
 
 **Save as default.** Click **•••** at the top right of Project Settings → **Save Current Settings as Preset**, then **Save As User Default Config**.
 
-## 3. Upscaling 1080p footage
+# 4. Upscaling 1080p Footage
 
 On a 3840×2160 timeline, Resolve scales 1080p clips up automatically. For the best result, use Super Scale (DaVinci Resolve Studio) on each 1080p clip.
 
@@ -62,7 +65,7 @@ Without Studio, set **Project Settings → Image Scaling → Resize filter** to 
 
 Upscaled 1080p looks like 4K but carries no extra detail. For the best picture on HD-only receivers, a native 1080p25 master is also a valid choice.
 
-## 4. The render preset (Deliver page)
+# 5. The Render Preset (Deliver Page)
 
 Set these once on the Deliver page and save them as a preset; after that, every master is one click.
 
@@ -95,7 +98,7 @@ Three settings matter most:
 
 **Save it.** In the Render Settings panel, **••• → Save As New Preset**, named e.g. *Lynx-Tx 4K25 Master*. It then appears in the **Preset** drop-down in every project. To share it, use **••• → Export Preset**; others import it with **••• → Import Preset**.
 
-## 4b. HD masters for Lynx-Deck
+# 6. HD Masters for Lynx-Deck
 
 [Lynx-Deck](https://github.com/G8YTZ/lynx-deck) v1 (Pi 4), the Lynx family's HyperDeck-style media player, plays out 1080p over HDMI, so it gets its own HD master. Render it from the same 3840×2160 timeline: Resolve scales the full 4K picture down, which looks sharper than editing in HD.
 
@@ -117,7 +120,7 @@ Three settings matter most:
 
 Upload HD masters through Lynx-Deck's own web page (port 8080 on the Deck), not the Lynx-Tx Media page.
 
-## 5. Check the finished file
+# 7. Check the Finished File
 
 The easiest check is to upload the file through the **Lynx-Tx Media page** (`http://<rock address>:8080/media`). It shows each file's resolution, frame rate, bit depth and range, with anything off-standard in amber.
 
@@ -137,23 +140,23 @@ ffprobe -v error -select_streams v:0 -show_entries stream=profile,pix_fmt,width,
 
 Finally, watch some movement at full screen. Smooth motion means the retiming worked; a regular stutter means Retime process is still on Nearest.
 
-## Checklist for each master
+# 8. Checklist for Each Master
 
-- [ ] Source clips are camera originals, ideally shot at 25p
-- [ ] Project timeline is 3840 × 2160 at 25 fps
-- [ ] Color Management is Color Managed, SDR, Rec.709 output
-- [ ] Retime process is Optical Flow
-- [ ] 1080p clips use Super Scale 2× Enhanced (NR ≈ 0.65, sharpness ≈ 0.3)
-- [ ] Rendered with the *Lynx-Tx 4K25 Master* preset
-- [ ] HD version rendered with the *Lynx-Deck HD25 Master* preset, if it is going on Lynx-Deck
-- [ ] Checked: Main, yuv420p, 3840 × 2160, 25/1, bt709
-- [ ] Uploaded through the Lynx-Tx Media page (4K) and Lynx-Deck's web page (HD), all green
+- Source clips are camera originals, ideally shot at 25p
+- Project timeline is 3840 × 2160 at 25 fps
+- Color Management is Color Managed, SDR, Rec.709 output
+- Retime process is Optical Flow
+- 1080p clips use Super Scale 2× Enhanced (NR ≈ 0.65, sharpness ≈ 0.3)
+- Rendered with the *Lynx-Tx 4K25 Master* preset
+- HD version rendered with the *Lynx-Deck HD25 Master* preset, if it is going on Lynx-Deck
+- Checked: Main, yuv420p, 3840 × 2160, 25/1, bt709
+- Uploaded through the Lynx-Tx Media page (4K) and Lynx-Deck's web page (HD), all green
 
-## Glossary
+# 9. Glossary
 
 The terms behind the settings above, and some you will meet in camera menus, TV specifications and other people's files. Grouped by topic, so it can be read straight through.
 
-### Codecs and profiles
+## 9.1 Codecs and profiles
 
 - **Codec**: Short for coder-decoder. The method used to compress video for storage or transmission, and to decompress it again for display.
 - **H.264 (AVC)**: The codec of HD television, Blu-ray and most of the internet since 2003. Its common profiles are Baseline, Main and High, in rising order of efficiency.
@@ -168,7 +171,7 @@ The terms behind the settings above, and some you will meet in camera menus, TV 
 - **P-frame and B-frame**: Pictures that store only the differences from earlier frames (P) or from frames on both sides (B). They are far smaller than I-frames.
 - **CBR and VBR**: Constant and variable bitrate. A transmitter needs CBR, because the channel carries a fixed number of bits every second; files can be VBR.
 
-### Containers and streams
+## 9.2 Containers and streams
 
 - **Container**: The wrapper that holds the coded video, audio and timing together. The codec is what is inside; the container is the box.
 - **MP4 and MOV**: File containers for storage and editing. Resolve renders to either.
@@ -177,7 +180,7 @@ The terms behind the settings above, and some you will meet in camera menus, TV 
 - **PID**: Packet identifier: The number labelling each stream inside a transport stream, such as video on 0x101 and audio on 0x102.
 - **PCR**: Programme clock reference: The timestamps that let a receiver lock its clock to the transmitter's, so pictures play smoothly with sound in sync.
 
-### Bit depth and colour sampling
+## 9.3 Bit depth and colour sampling
 
 - **Bit depth**: The number of levels each sample can take. 8-bit gives 256 levels per component; 10-bit gives 1,024.
 - **Banding**: Visible steps in smooth gradients, such as a sky, when there are too few levels. 10-bit reduces it; good 8-bit encoding with gentle grading keeps it out of sight.
@@ -186,7 +189,7 @@ The terms behind the settings above, and some you will meet in camera menus, TV 
 - **Video range and full range**: In 8-bit video, black is 16 and peak white 235, leaving headroom either side: Video (legal, or broadcast) range. Computers use full range, 0 to 255. A mismatch makes pictures look washed out or crushed.
 - **Broadcast safe**: Keeping levels and colours inside the legal range, as Resolve's "Make broadcast safe" option does.
 
-### Colour standards
+## 9.4 Colour standards
 
 - **ITU-R and "Rec."**: The ITU's Radiocommunication Sector writes the international television standards. "Rec." means Recommendation, so Rec.709 is the same thing as ITU-R BT.709.
 - **Colour space**: The full definition of how numbers become colours: The primaries, the white point and the transfer function.
@@ -200,7 +203,7 @@ The terms behind the settings above, and some you will meet in camera menus, TV 
 - **DCI-P3 and Display P3**: The digital cinema gamut and Apple's version of it. Wider than Rec.709, narrower than Rec.2020.
 - **Rec.2020 (BT.2020)**: The UHD standard from 2012, with a much wider gamut and 10- or 12-bit coding. In practice it travels with HDR.
 
-### HDR
+## 9.5 HDR
 
 - **SDR**: Standard dynamic range: Conventional television, mastered for a peak around 100 nits. Everything Lynx-Tx sends is SDR.
 - **HDR**: High dynamic range: Brighter highlights and deeper shadow detail, needing 10-bit coding and a display that supports it. On a display that does not, HDR looks dull and washed out.
@@ -214,7 +217,7 @@ The terms behind the settings above, and some you will meet in camera menus, TV 
 - **Metadata, static and dynamic**: Information carried alongside HDR pictures telling the display how they were mastered. Static metadata covers the whole programme; dynamic changes scene by scene.
 - **Tone mapping**: Squeezing a picture's brightness range into what a display can show, for example HDR into SDR. Done badly, it gives grey blacks and flat colour.
 
-### Picture format and timing
+## 9.6 Picture format and timing
 
 - **UHD and 4K**: Consumer "4K" is UHD, 3840×2160, exactly four times HD. Cinema's DCI 4K is slightly wider, 4096×2160.
 - **HD**: 1920×1080 (Full HD), or 1280×720.
@@ -224,11 +227,15 @@ The terms behind the settings above, and some you will meet in camera menus, TV 
 - **23.976, 29.97 and 59.94**: Film and North American rates. Converting them to 25p means repeating or blending frames, which shows as judder, so set the timeline frame rate before editing.
 - **Pixel aspect ratio**: Whether pixels are square. HD and UHD use square pixels; SD did not.
 
-### Audio
+## 9.7 Audio
 
 - **AAC**: Advanced Audio Coding, the usual audio codec alongside H.264 and H.265. AAC-LC, the low-complexity version, is the one used here.
 - **MPEG-1 Layer II (MP2)**: The older broadcast audio codec of early DVB and many DATV systems.
 - **Sample rate (48 kHz and 44.1 kHz)**: 48 kHz is the broadcast and video standard; 44.1 kHz comes from CD. Mixing the two needs resampling, so keep everything at 48 kHz.
 - **LUFS and EBU R128**: Loudness units relative to full scale, a measure of perceived loudness. EBU R128 sets broadcast programme loudness at −23 LUFS, so that programmes match without anyone reaching for the volume control.
 
-Justin Cockett, G8YTZ
+# 10. Document Version History
+
+| Version | Date | Changes |
+|---|---|---|
+| 1.0 | October 2026 | First edition, from the Markdown page |
