@@ -1,6 +1,44 @@
 # Installing Lynx-Tx
 
-On a Radxa ROCK 5T running Radxa's Debian 12 image, logged in as `radxa`.
+Two stages: put Radxa's operating system on the ROCK, then run one command.
+
+## 0. The ROCK's operating system
+
+**You need:**
+
+- **A Radxa ROCK 5T,** 8 GB or more.
+- **A 12 V DC supply** (the ROCK takes 9 to 20 V).
+- **A microSD card,** 32 GB or more and A2-rated (SanDisk Extreme, Samsung PRO Plus). Cheap cards make the install painfully slow.
+- **A network cable** from the ROCK's first Ethernet port to your router. The second port is for the SDR.
+- **A computer** to write the card and to log in from.
+
+**For a repeater, or anything left running unattended:** Use an NVMe drive instead of the card (see [Running from NVMe](#running-from-nvme)). Cards wear out and fail without warning.
+
+1. **Download the image:** From Radxa's [ROCK 5T download page](https://docs.radxa.com/en/rock5/rock5t/download), the official Debian image: `rock-5t_bookworm_kde_r7.output_512.img.xz` at the time of writing (Debian 12 "Bookworm", KDE desktop). Take that one, not Android or Armbian: Lynx-Tx needs the video encoder and HDMI capture drivers that only Radxa's own image carries.
+2. **Write it to the card** with [balenaEtcher](https://etcher.balena.io) (Mac, Windows or Linux): Flash from file, choose the image, Select target, choose the card (carefully), Flash. Etcher checks the card after writing; if it reports a failure, try again or use another card.
+3. **First boot:** Card into the ROCK, network cable in, then power. It takes about 40 seconds. With a screen attached you get a desktop; without one, find the ROCK in your router's list of connected devices (it is called `rock-5t`).
+4. **Log in** from your computer: `ssh radxa@<the ROCK's address>`, password `radxa`. Change it straight away with `passwd`.
+5. **Bring it up to date,** then restart:
+
+   ```bash
+   sudo apt update && sudo apt full-upgrade -y && sudo reboot
+   ```
+
+Log back in after a minute, and carry on with the one command below.
+
+### Running from NVMe
+
+Radxa's own method: set it up on a card first as above, then move it across.
+
+1. **Update the boot loader** so the ROCK can start from NVMe: `sudo rsetup`, then System Maintenance, Update SPI Bootloader, choose the ROCK 5T one, and confirm.
+2. **Power off, fit the NVMe drive, power on** from the card. `lsblk` should list `nvme0n1`.
+3. **Copy the image onto it** (put the downloaded `.img.xz` on the ROCK first; `nvme0n1` must be the drive, as this erases it):
+
+   ```bash
+   xzcat rock-5t_bookworm_kde_r7.output_512.img.xz | sudo dd of=/dev/nvme0n1 bs=1M status=progress
+   ```
+
+4. **Power off, take the card out,** and power on. It now starts from the NVMe. Carry on from step 4 above.
 
 ## The one command
 
