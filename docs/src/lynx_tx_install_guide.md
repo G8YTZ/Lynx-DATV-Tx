@@ -281,7 +281,7 @@ From the ROCK:
 ```
 systemctl is-active lynx-tx
 gst-inspect-1.0 mpph265enc | head -3
-python3 -c "from gnuradio import atsc3; print('gr-atsc3 ok')"
+python3 -c "import atsc3; print('gr-atsc3 ok')"
 ls /dev/video10
 grep -o 'cma=[^ ]*' /proc/cmdline
 iio_attr -u ip:192.168.254.2 -C

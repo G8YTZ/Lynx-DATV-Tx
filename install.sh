@@ -168,14 +168,17 @@ fi
 
 # --- 5. gr-atsc3 (ATSC 3.0) ----------------------------------
 step "5/9 gr-atsc3, Ron Economos W6RZ (ATSC 3.0 modulator)"
-if python3 -c "from gnuradio import atsc3" 2>/dev/null; then
+# Older gr-atsc3 installed itself as gnuradio.atsc3, current builds as plain
+# atsc3 (its blocks then say "import atsc3"): either is fine.
+atsc3_ok() { python3 -c "import atsc3" 2>/dev/null || python3 -c "from gnuradio import atsc3" 2>/dev/null; }
+if atsc3_ok; then
   note "Already installed"
 else
   mkdir -p "$SRC_DIR"
   [ -d "$SRC_DIR/gr-atsc3/.git" ] || git clone https://github.com/drmpeg/gr-atsc3 "$SRC_DIR/gr-atsc3"
   if (cd "$SRC_DIR/gr-atsc3" && mkdir -p build && cd build &&
       cmake .. && make -j"$(nproc)" && sudo make install && sudo ldconfig) &&
-     python3 -c "from gnuradio import atsc3" 2>/dev/null; then
+     atsc3_ok; then
     note "Built and installed"
   else
     warn "gr-atsc3 did not build or import: ATSC 3.0 mode will not start until it does."
