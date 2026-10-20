@@ -245,16 +245,27 @@ dupes=$(nmcli -g NAME,UUID con show 2>/dev/null | awk -F: '$1=="lynx-sdr"{print 
 for u in $dupes; do
   if sudo nmcli con delete uuid "$u" >/dev/null; then note "Removed a duplicate lynx-sdr connection"; fi
 done
-# Does any connection already use the port? Captured first: with pipefail,
-# "loop | grep -q" fails whenever grep stops reading early.
-port_used=""
-while IFS= read -r c; do
-  if [ "$(nmcli -g connection.interface-name con show "$c" 2>/dev/null)" = "$SDR_PORT" ]; then port_used="$c"; fi
-done < <(nmcli -g NAME con show 2>/dev/null)
+# Radxa's image gives every port NetworkManager's automatic DHCP connection
+# ("Wired connection 2" on this one), which would fight lynx-sdr for the port.
+# Those are removed; a connection someone set up by hand is left alone.
+# (Read into a variable first: with pipefail, "loop | grep -q" fails.)
+have_ours=0; theirs=""
+while IFS=: read -r name uuid; do
+  [ -n "$uuid" ] || continue
+  if [ "$(nmcli -g connection.interface-name con show "$uuid" 2>/dev/null)" != "$SDR_PORT" ]; then continue; fi
+  if [ "$name" = "lynx-sdr" ]; then have_ours=1
+  elif [ "$(nmcli -g ipv4.method con show "$uuid" 2>/dev/null)" = "auto" ]; then
+    if sudo nmcli con delete uuid "$uuid" >/dev/null; then note "Removed '$name', the automatic DHCP connection on $SDR_PORT"; fi
+  else theirs="$name"
+  fi
+done < <(nmcli -g NAME,UUID con show 2>/dev/null)
 if ! ip link show "$SDR_PORT" >/dev/null 2>&1; then
   warn "No port called $SDR_PORT: set up the direct link by hand (Installation Guide, Section 5.2), or re-run with LYNX_SDR_PORT=<name>."
-elif [ -n "$port_used" ]; then
-  note "$SDR_PORT already has a connection ($port_used): left as it is"
+elif [ "$have_ours" = 1 ]; then
+  sudo nmcli con up lynx-sdr >/dev/null 2>&1 || true
+  note "lynx-sdr already set up: ROCK 192.168.254.1, SDR gets 192.168.254.2"
+elif [ -n "$theirs" ]; then
+  warn "$SDR_PORT has your own connection '$theirs': left as it is. Lynx-Tx expects the SDR on its own link (Installation Guide, Section 5.2)."
 else
   # The ROCK is 192.168.254.1 and hands the SDR 192.168.254.2 by DHCP, so
   # the SDR needs no setting up. One address in the pool: always .2.
