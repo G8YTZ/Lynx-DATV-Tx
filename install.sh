@@ -92,16 +92,15 @@ step "3/9 TSDuck"
 if command -v tsp >/dev/null && command -v tstabcomp >/dev/null; then
   note "Already installed: $(tsp --version 2>&1 | head -1)"
 else
-  # The release list names the package exactly; if GitHub's API is busy
-  # (it rate-limits), build the name from the newest tag instead.
-  url=$(curl -sSL https://api.github.com/repos/tsduck/tsduck/releases/latest 2>/dev/null |
+  # TSDuck stopped building for Debian 12 after 3.39 (newer releases are
+  # Debian 13 and Ubuntu only), so take the newest release that still has a
+  # debian${VERSION_ID} arm64 package, else the last known one: 3.39-3956.
+  url=$(curl -sSL "https://api.github.com/repos/tsduck/tsduck/releases?per_page=30" 2>/dev/null |
         jq -r --arg v "debian${VERSION_ID}_arm64.deb" \
-        '.assets[]? | select(.name | startswith("tsduck_") and endswith($v)) | .browser_download_url' 2>/dev/null |
-        head -1 || true)
+        '[.[]?.assets[]? | select(.name | startswith("tsduck_") and endswith($v)) | .browser_download_url][0] // empty' \
+        2>/dev/null || true)
   if [ -z "$url" ]; then
-    tag=$(git ls-remote --tags https://github.com/tsduck/tsduck | awk -F/ '{print $3}' |
-          grep -v '\^{}' | grep -E '^v[0-9]+\.[0-9]+-[0-9]+$' | sort -V | tail -1)
-    url="https://github.com/tsduck/tsduck/releases/download/$tag/tsduck_${tag#v}.debian${VERSION_ID}_arm64.deb"
+    url="https://github.com/tsduck/tsduck/releases/download/v3.39-3956/tsduck_3.39-3956.debian${VERSION_ID}_arm64.deb"
   fi
   tmp=$(mktemp -d)
   curl -fsSL -o "$tmp/tsduck.deb" "$url" ||

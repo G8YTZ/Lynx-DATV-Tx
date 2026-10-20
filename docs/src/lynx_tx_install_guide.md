@@ -112,7 +112,7 @@ cp ~/lynx-tx/lynx_tx.example.yaml ~/lynx-tx/config/lynx_tx.yaml
 sudo mkdir -p /srv/lynxdeck/media && sudo chown radxa: /srv/lynxdeck/media
 ```
 
-**3. TSDuck** (`tsp`, `tstabcomp`) is not in Debian: install the arm64 package for Debian 12 from the [TSDuck releases](https://github.com/tsduck/tsduck/releases) with `sudo apt install ./tsduck_*_arm64.deb`.
+**3. TSDuck** (`tsp`, `tstabcomp`) is not in Debian, and its newer releases no longer build for Debian 12: use 3.39-3956, the last that does, from the [TSDuck releases](https://github.com/tsduck/tsduck/releases) (`tsduck_3.39-3956.debian12_arm64.deb`), with `sudo apt install ./tsduck_3.39-3956.debian12_arm64.deb`.
 
 **4. Video loopback** for the built-in media player (`/dev/video10`, up to 4K):
 
