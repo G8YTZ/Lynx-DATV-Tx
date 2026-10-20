@@ -19,13 +19,13 @@ Lynx-Tx uses the SDR as a plain IQ transmitter: the ROCK makes DVB-S2 or ATSC 3.
 5. **Unzip, and copy the contents of the `sdimg` folder to the root of the card:** `BOOT.bin`, `devicetree.dtb`, `uImage` and the rest sit at the top level, not in a folder.
 6. **Keep the board's original card:** Put it away as your way back.
 
-Do not use the `.frm` flashing method: Tezuka boots from the card.
+That is all most people need: Tezuka boots from the card. A PlutoSky R2 can instead run Tezuka from its own flash, with no card at all; see [Running from flash](#running-from-flash-plutosky-r2).
 
 ## Connecting it
 
 Nothing to set on the board. Out of the box Tezuka asks for an address by DHCP, and the ROCK's second port answers with 192.168.254.2 (see [INSTALL.md](INSTALL.md)).
 
-1. **Card in.**
+1. **Card in** (unless it runs from flash).
 2. **Ethernet** from the board to the ROCK's second port.
 3. **Power:** A USB power supply into the board's USB socket. Not a computer: it is only power.
 4. **Check:** Within a minute or so the board appears on the Transmit card with its model and firmware. Or from the ROCK, see [Checking a board from the ROCK](#checking-a-board-from-the-rock).
@@ -61,7 +61,55 @@ Proven 19 October 2026 with Tezuka v0.3.24: ATSC 3.0 at 2× oversampling clean, 
 - **Settings on v0.3.5 live on the SD card** (`uboot.env`), and `uEnv.txt` sets the USB address on every boot. A `config.txt` change can be lost if the power goes too soon. The reliable way: over SSH, `fw_setenv ...`, edit `/boot/uEnv.txt` if the USB address is changing, then `sync`, then unplug. Newer Tezuka keeps settings in the board's flash.
 - **Internal reference:** 40 MHz, about 10 ppm high on one board (13 kHz at 1249 MHz). It works without a reference, but feed it 10 MHz for an on-frequency signal; the Lynx-Tx script locks to it by itself.
 - **Password refused?** A password saved in the board's flash overrides `analog`. Add `revert_passwd = 1` under `[ACTIONS]` in `config.txt`, eject, then restart.
-- **SD socket:** The push-push latch can let the card ride out. Push it fully home before powering up.
+- **SD socket:** The push-push latch can let the card ride out. Push it fully home before powering up, or run from flash (below) and do without the card.
+
+## Running from flash (PlutoSky R2)
+
+Proven 20 October 2026. Tezuka, its boot loader and its settings all live in the board's own flash, so the card slot is out of the picture. The Lynx-Tx script in `/mnt/jffs2` is untouched by any of this and carries on working.
+
+**The trap:** Writing only Tezuka's firmware (`pluto.frm`, the usual Pluto update) is not enough. The board's factory boot loader and settings stay in flash and cannot start Tezuka's firmware: the board shows red then solid amber, no blue, and sits in DFU. Even booting from the card then fails (Linux starts without the FPGA image and hangs), because the card's boot loader takes its settings from the flash. The cure is to write Tezuka's boot loader and settings as well, by DFU, as below.
+
+You need the `plutoskyr2` zip (its `flash` folder holds `boot.dfu`, `boot.frm`, `pluto.dfu` and `pluto.frm`), `dfu-util` on a computer (`brew install dfu-util` on a Mac, `sudo apt install dfu-util` on the ROCK), and a USB **data** lead. On an Apple Silicon Mac, click **Allow** when it asks about the new accessory, or the board stays invisible.
+
+1. **Back up the flash** while the board runs Tezuka from the card, off air, from the ROCK:
+
+   ```bash
+   mkdir -p ~/sky-backup && cd ~/sky-backup
+   for n in 0 1 2 3; do ssh root@192.168.254.2 "cat /dev/mtd$n" > sky-mtd$n.bin; done
+   ls -l   # 1 MB, 128 KB, 896 KB, 30 MB
+   ```
+
+2. **Write Tezuka's firmware,** still booted from the card. Copy `flash/pluto.frm` to the board's `/tmp` (`ssh root@... 'cat > /tmp/pluto.frm' < pluto.frm`; the board has no `scp`), then `ssh root@... update_frm.sh /tmp/pluto.frm`. It takes about 15 minutes; wait for `Done`.
+3. **Power off, switches to QSPI** (SW1 up, SW2 down), card out, and connect the board's main USB-C socket to the computer. It comes up in DFU: `dfu-util -l` lists `boot.dfu`, `firmware.dfu`, `uboot-env.dfu` and others.
+4. **Make the two files,** in the `flash` folder. The boot loader without its DFU tag (the tag carries the board's normal USB ID, which a board in DFU does not answer to), and Tezuka's settings, cut out of `boot.frm`:
+
+   ```bash
+   head -c 786216 boot.dfu > boot.bin
+   dd if=boot.frm of=uboot-env.bin bs=1 skip=786216 count=131072
+   strings uboot-env.bin | grep '^fit_size='   # fit_size=0x1E00000: the right block
+   ```
+
+   The sizes are for v0.3.24; for another release, `boot.frm` is the boot loader, then 131072 bytes of settings, then 1057 bytes of trailer.
+5. **Write them,** then restart the board:
+
+   ```bash
+   dfu-util -d 0456:b674 -a boot.dfu -D boot.bin
+   dfu-util -d 0456:b674 -a uboot-env.dfu -D uboot-env.bin
+   dfu-util -d 0456:b674 -a uboot-env.dfu -e
+   ```
+
+   The "invalid DFU suffix" warnings are expected. Each write ends `Download done`. Within 20 seconds the blue light comes on and Tezuka is running from flash.
+6. **Pin the Ethernet address.** Tezuka's settings define none, so the board takes a new one and the ROCK gives it a new address (the Transmit card shows it). Off air, from the ROCK, using the address the board has now:
+
+   ```bash
+   ssh root@192.168.254.3 'fw_setenv ethaddr $(cat /sys/class/net/eth0/address) && fw_printenv ethaddr modeboot'
+   ```
+
+   `modeboot=qspiboot` confirms it booted from flash.
+
+**Recovery:** In QSPI mode a board that cannot boot falls back to DFU, so step 5 (or `dfu-util -a firmware.dfu -D pluto.dfu` for the firmware) always gets it back, and the backup can be written the same way. The middle USB-C socket is the serial console (115200), and it shows the boot messages if you ever need to see where a boot stops.
+
+**Reading the flash glitches the transmitter:** Do the backup and `fw_setenv` off air.
 
 ## LibreSDR notes
 
