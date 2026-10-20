@@ -1844,6 +1844,13 @@ def mute_on_shutdown():
     stop_mixer()
 
 
+def dump(model) -> dict:
+    """A request body as a dict, on Pydantic 2 (model_dump) or Pydantic 1
+    (dict), which is what Debian 12 packages: the dev ROCK had 2 and a
+    clean install found the difference (20 Oct 2026)."""
+    return model.model_dump() if hasattr(model, "model_dump") else model.dict()
+
+
 class ModulationUpdate(BaseModel):
     frequency_mhz: Optional[float] = None
     symbol_rate_ks: Optional[int] = None
@@ -2106,7 +2113,7 @@ def api_atsc3(req: Atsc3Update):
     modulator and the stream's rate, so they restart the transmitter."""
     old = atsc3mod.clean(config.get("atsc3"))
     new = dict(old)
-    for k, v in req.model_dump().items():
+    for k, v in dump(req).items():
         if v is not None:
             new[k] = v
     new = atsc3mod.clean(new)
@@ -2189,7 +2196,7 @@ def api_ident(req: IdentUpdate):
     parameters and LCN into the NIT; the IDs into all of them. The
     LibreSDR no longer rewrites any of it (see ensure_libre_patched).
     """
-    d = req.model_dump()
+    d = dump(req)
     ident = dict(config["identity"])
     for k, v in d.items():
         if v is None or k in ("callsign", "provider"):
@@ -2221,7 +2228,7 @@ def api_libre_check():
 def api_modulation(req: ModulationUpdate):
     old = dict(config["modulation"])
     new = dict(old)
-    for k, v in req.model_dump().items():
+    for k, v in dump(req).items():
         if v is not None:
             new[k] = v
     if "rolloff" in new:
@@ -2251,7 +2258,7 @@ def api_modulation(req: ModulationUpdate):
 
 @app.post("/api/encoder")
 def api_encoder(req: EncoderUpdate):
-    for k, v in req.model_dump().items():
+    for k, v in dump(req).items():
         if v is not None:
             config["encoder"][k] = v
     save_config(config)
@@ -2264,7 +2271,7 @@ def api_encoder(req: EncoderUpdate):
 def api_tweaks(req: TweaksUpdate):
     """The trade-off settings, all at once. Applied by a restart if on air
     - one restart for the whole card, not one per control."""
-    t = clean_tweaks(req.model_dump())
+    t = clean_tweaks(dump(req))
     config["encoder"].pop("video_share", None)          # long unused
     config["encoder"].update(t)
     save_config(config)
