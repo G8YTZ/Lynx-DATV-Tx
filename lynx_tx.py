@@ -2188,7 +2188,8 @@ def api_system(action: str):
 
     Needs one sudoers rule for the account the service runs as, allowing
     exactly these two commands and nothing else:
-        radxa ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff
+        radxa ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff,
+            /usr/bin/systemctl restart lynx-tx   (the last for Update)
     """
     verb = {"restart": "reboot", "shutdown": "poweroff"}.get(action)
     if not verb:
@@ -2201,6 +2202,80 @@ def api_system(action: str):
         raise HTTPException(500, "The ROCK refused: " + (r.stderr.strip() or "no permission") +
                             ". Add the sudoers rule in /etc/sudoers.d/lynx-tx (see README).")
     return {"success": True, "action": action}
+
+
+# ── Updates ───────────────────────────────────────────────────
+# Like the Lynx Receiver's: checking is manual (a ROCK at a site may have
+# no internet, and nothing should reach out on its own), and an update is
+# a fast-forward pull of the branch this ROCK is on, then a restart of
+# Lynx-Tx. Off air only.
+
+update_state = {"version": None, "branch": None, "checked_at": None,
+                "error": None, "behind": 0, "commits": []}
+
+
+def git(*args, timeout: int = 20) -> tuple:
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    try:
+        r = subprocess.run(["git", "-C", str(APP_DIR), *args], capture_output=True,
+                           text=True, timeout=timeout, env=env)
+        return r.returncode == 0, (r.stdout if r.returncode == 0 else r.stderr).strip()
+    except Exception as e:
+        return False, str(e)
+
+
+def update_version():
+    ok, v = git("describe", "--tags", "--always")
+    update_state["version"] = v if ok else "unknown"
+    ok, b = git("rev-parse", "--abbrev-ref", "HEAD")
+    update_state["branch"] = b if ok and b != "HEAD" else "main"
+
+
+@app.get("/api/update/status")
+def api_update_status():
+    if update_state["version"] is None:
+        update_version()
+    return update_state
+
+
+@app.post("/api/update/check")
+def api_update_check():
+    update_version()
+    update_state["checked_at"] = time.strftime("%d %b %Y %H:%M")
+    ok, err = git("fetch", "--quiet", "origin")
+    if not ok:
+        update_state.update(error=f"Could not reach GitHub: {err}", behind=0, commits=[])
+        return update_state
+    b = update_state["branch"]
+    ok, n = git("rev-list", "--count", f"HEAD..origin/{b}")
+    behind = int(n) if ok and n.isdigit() else 0
+    ok, log = git("log", "--oneline", "--max-count=20", f"HEAD..origin/{b}")
+    update_state.update(error=None, behind=behind,
+                        commits=log.splitlines() if ok and log else [])
+    return update_state
+
+
+@app.post("/api/update/apply")
+def api_update_apply():
+    if tx_running():
+        raise HTTPException(409, "Take the transmitter off air first (TX Off), then update.")
+    b = update_state["branch"] or "main"
+    ok, out = git("pull", "--ff-only", "origin", b, timeout=60)
+    if not ok:
+        raise HTTPException(502, f"Update failed, nothing was changed: {out}")
+    update_state.update(behind=0, commits=[], version=None)
+
+    def restart():
+        time.sleep(1)   # let the reply reach the browser first
+        # The installer's sudoers rule allows restarting Lynx-Tx; an older
+        # install allows only reboot, which does the same job, slower.
+        for cmd in (["systemctl", "restart", "lynx-tx"], ["systemctl", "reboot"]):
+            if subprocess.run(["sudo", "-n", "/usr/bin/" + cmd[0], *cmd[1:]],
+                              capture_output=True, timeout=30).returncode == 0:
+                return
+        print("[update] the code IS updated - restart Lynx-Tx to run it")
+    threading.Thread(target=restart, daemon=True).start()
+    return {"success": True, "pull": out}
 
 
 class IdentUpdate(BaseModel):
@@ -2454,6 +2529,12 @@ PAGE = """<!DOCTYPE html>
           style="background:#3a4a63;color:#fff;cursor:default">SDR idle</span>
     <span class="btn btn-sm" id="hdmi-badge"
           style="background:#3a4a63;color:#fff;cursor:default">HDMI ?</span>
+    <span class="ms-auto d-flex gap-2 align-items-center">
+      <span class="btn btn-sm" id="version-badge" title="Not yet checked: click Check updates"
+            style="background:#3a4a63;color:#fff;cursor:default">version ?</span>
+      <button class="btn btn-sm btn-outline-light" id="update-check-btn" onclick="checkUpdates()">Check updates</button>
+      <button class="btn btn-sm btn-warning" id="update-apply-btn" onclick="applyUpdate()" style="display:none">&#x2B06;&#xFE0F; Update</button>
+    </span>
   </div>
 
   <div class="row g-3">
@@ -3160,6 +3241,42 @@ async function system(action) {
   if (j.success) setText('tx-badge', action === 'restart' ? 'RESTARTING' : 'SHUTTING DOWN');
 }
 
+function renderUpdate(u) {
+  const b = $('version-badge'), apply = $('update-apply-btn');
+  b.textContent = (u.version || '?') + (u.branch && u.branch !== 'main' ? ' (' + u.branch + ')' : '');
+  apply.style.display = 'none';
+  if (u.error) {
+    b.style.background = '#b45309'; b.title = u.error;
+  } else if (u.behind > 0) {
+    b.style.background = '#b45309';
+    b.title = u.behind + ' update' + (u.behind > 1 ? 's' : '') + ' available:\n' + u.commits.join('\n');
+    b.textContent += ': update available';
+    apply.style.display = '';
+  } else if (u.checked_at) {
+    b.style.background = '#1a9850'; b.title = 'Up to date. Last checked ' + u.checked_at;
+  }
+}
+
+async function checkUpdates() {
+  const btn = $('update-check-btn'); btn.disabled = true; btn.textContent = 'Checking...';
+  try { renderUpdate(await api('POST', '/api/update/check')); }
+  finally { btn.disabled = false; btn.textContent = 'Check updates'; }
+}
+
+async function applyUpdate() {
+  if (cfg && cfg.transmitting) { alert('Take the transmitter off air first (TX Off), then update.'); return; }
+  const list = $('version-badge').title;
+  if (!confirm('Update Lynx-Tx now? It restarts, and the page comes back in about 20 seconds.\n\n' + list)) return;
+  const btn = $('update-apply-btn'); btn.disabled = true; btn.textContent = 'Updating...';
+  const j = await api('POST', '/api/update/apply');
+  if (!j.success) { btn.disabled = false; btn.innerHTML = '&#x2B06;&#xFE0F; Update'; return; }
+  btn.textContent = 'Restarting...';
+  setTimeout(function wait() {
+    fetch('/api/status').then(r => r.ok ? location.reload() : setTimeout(wait, 2000))
+                        .catch(() => setTimeout(wait, 2000));
+  }, 5000);
+}
+
 async function saveEnc() {
   await api('POST', '/api/encoder', {
     width: parseInt(document.getElementById('e-format').value.split('x')[0], 10),
@@ -3559,6 +3676,7 @@ function drawBuffer(B, target) {
 }
 
 setInterval(poll, 2000);
+api('GET', '/api/update/status').then(renderUpdate);
 </script>
 </body></html>
 """

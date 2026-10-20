@@ -171,15 +171,14 @@ The supported connection: the SDR on its own Cat 6 lead to the ROCK's **second**
 | Port | Address |
 |---|---|
 | ROCK, second port | 192.168.254.1 / 24 |
-| SDR | 192.168.254.2, given by the ROCK (DHCP). A replacement board gets .3 for a while |
+| SDR | 192.168.254.2, given by the ROCK (DHCP). A replacement board gets another address for a while; the Transmit card shows it |
 
 The installer sets this up. By hand, the port is usually `enP4p65s0` (check with `ip -br link`: the one showing `UP` that is not your LAN):
 
 ```
 sudo nmcli con add type ethernet ifname enP4p65s0 con-name lynx-sdr \
-    ipv4.method shared ipv4.addresses 192.168.254.1/24 ipv6.method disabled \
-    ipv4.shared-dhcp-range 192.168.254.2,192.168.254.20
-echo dhcp-sequential-ip | sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf
+    ipv4.method shared ipv4.addresses 192.168.254.1/24 ipv6.method disabled
+echo 'dhcp-host=*:*:*:*:*:*,192.168.254.2' | sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf
 sudo nmcli con up lynx-sdr
 ```
 

@@ -228,8 +228,8 @@ BUILD
 fi
 
 # --- 7. Restart and Shut down buttons --------------------------
-step "7/9 Restart and Shut down buttons"
-echo "$USER ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff" |
+step "7/9 Restart, Shut down and Update buttons"
+echo "$USER ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff, /usr/bin/systemctl restart lynx-tx" |
   sudo tee /etc/sudoers.d/lynx-tx >/dev/null
 sudo chmod 440 /etc/sudoers.d/lynx-tx
 sudo visudo -c -f /etc/sudoers.d/lynx-tx >/dev/null && note "sudoers rule in place"
@@ -240,19 +240,16 @@ step "8/9 Direct link to the SDR ($SDR_PORT)"
 # it sees one (tezuka_prep.py), then never needs a password again.
 [ -f "$HOME/.ssh/id_ed25519" ] || ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
 # The SDR's address. NetworkManager's shared mode runs dnsmasq with its own
-# range (.10 to .254), so a dhcp-range line of ours only added a second one
-# and the SDR could get any address (.236 on the clean install, 20 Oct 2026).
-# Its own range setting (NetworkManager 1.42, Debian 12) replaces it, and
-# lowest-first allocation makes the first SDR .2; a replacement board gets
-# .3 until the old lease lapses.
+# range (.10 to .254), and a dhcp-range line of ours only adds a second one:
+# the Sky got .236 on one clean install and .10 on the next (20 Oct 2026),
+# even with ipv4.shared-dhcp-range set. A reservation that matches any
+# board (MAC wildcard) gives the first SDR .2 whatever NetworkManager's
+# range; a replacement board gets an address from the range until the old
+# lease lapses, and Lynx-Tx finds it either way.
 sdr_dhcp() {
   sudo mkdir -p /etc/NetworkManager/dnsmasq-shared.d
-  if sudo nmcli con modify lynx-sdr ipv4.shared-dhcp-range "192.168.254.2,192.168.254.20" 2>/dev/null; then
-    printf 'dhcp-sequential-ip\n' | sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf >/dev/null
-  else
-    printf 'dhcp-sequential-ip\ndhcp-range=192.168.254.2,192.168.254.20,12h\n' |
-      sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf >/dev/null
-  fi
+  printf 'dhcp-host=*:*:*:*:*:*,192.168.254.2\n' |
+    sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf >/dev/null
 }
 # Tidy up after an older installer, which on a second run could add the
 # connection again: keep the first lynx-sdr, delete any others.
