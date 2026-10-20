@@ -171,17 +171,19 @@ The supported connection: the SDR on its own Cat 6 lead to the ROCK's **second**
 | Port | Address |
 |---|---|
 | ROCK, second port | 192.168.254.1 / 24 |
-| SDR | 192.168.254.x, given by the ROCK (DHCP) |
+| SDR | 192.168.254.2, given by the ROCK (DHCP). A replacement board gets .3 for a while |
 
 The installer sets this up. By hand, the port is usually `enP4p65s0` (check with `ip -br link`: the one showing `UP` that is not your LAN):
 
 ```
-echo 'dhcp-range=192.168.254.2,192.168.254.2,12h' | \
-    sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf
 sudo nmcli con add type ethernet ifname enP4p65s0 con-name lynx-sdr \
-    ipv4.method shared ipv4.addresses 192.168.254.1/24 ipv6.method disabled
+    ipv4.method shared ipv4.addresses 192.168.254.1/24 ipv6.method disabled \
+    ipv4.shared-dhcp-range 192.168.254.2,192.168.254.20
+echo dhcp-sequential-ip | sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf
 sudo nmcli con up lynx-sdr
 ```
+
+If Radxa's automatic "Wired connection 2" is on the same port, delete it: `sudo nmcli con delete "Wired connection 2"`.
 
 > The SDR on your ordinary LAN also works (type its address into the Transmit card), but is not supported: expect trouble on a busy or Wi-Fi-bridged network.
 

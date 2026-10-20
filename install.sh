@@ -239,6 +239,21 @@ step "8/9 Direct link to the SDR ($SDR_PORT)"
 # The ROCK's SSH key: Lynx-Tx puts it on a PlutoSky by itself the first time
 # it sees one (tezuka_prep.py), then never needs a password again.
 [ -f "$HOME/.ssh/id_ed25519" ] || ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519"
+# The SDR's address. NetworkManager's shared mode runs dnsmasq with its own
+# range (.10 to .254), so a dhcp-range line of ours only added a second one
+# and the SDR could get any address (.236 on the clean install, 20 Oct 2026).
+# Its own range setting (NetworkManager 1.42, Debian 12) replaces it, and
+# lowest-first allocation makes the first SDR .2; a replacement board gets
+# .3 until the old lease lapses.
+sdr_dhcp() {
+  sudo mkdir -p /etc/NetworkManager/dnsmasq-shared.d
+  if sudo nmcli con modify lynx-sdr ipv4.shared-dhcp-range "192.168.254.2,192.168.254.20" 2>/dev/null; then
+    printf 'dhcp-sequential-ip\n' | sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf >/dev/null
+  else
+    printf 'dhcp-sequential-ip\ndhcp-range=192.168.254.2,192.168.254.20,12h\n' |
+      sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf >/dev/null
+  fi
+}
 # Tidy up after an older installer, which on a second run could add the
 # connection again: keep the first lynx-sdr, delete any others.
 dupes=$(nmcli -g NAME,UUID con show 2>/dev/null | awk -F: '$1=="lynx-sdr"{print $2}' | tail -n +2)
@@ -262,18 +277,17 @@ done < <(nmcli -g NAME,UUID con show 2>/dev/null)
 if ! ip link show "$SDR_PORT" >/dev/null 2>&1; then
   warn "No port called $SDR_PORT: set up the direct link by hand (Installation Guide, Section 5.2), or re-run with LYNX_SDR_PORT=<name>."
 elif [ "$have_ours" = 1 ]; then
+  sdr_dhcp
   sudo nmcli con up lynx-sdr >/dev/null 2>&1 || true
   note "lynx-sdr already set up: ROCK 192.168.254.1, SDR gets 192.168.254.2"
 elif [ -n "$theirs" ]; then
   warn "$SDR_PORT has your own connection '$theirs': left as it is. Lynx-Tx expects the SDR on its own link (Installation Guide, Section 5.2)."
 else
   # The ROCK is 192.168.254.1 and hands the SDR 192.168.254.2 by DHCP, so
-  # the SDR needs no setting up. One address in the pool: always .2.
-  sudo mkdir -p /etc/NetworkManager/dnsmasq-shared.d
-  echo "dhcp-range=192.168.254.2,192.168.254.2,12h" |
-    sudo tee /etc/NetworkManager/dnsmasq-shared.d/lynx-sdr.conf >/dev/null
+  # the SDR needs no setting up.
   sudo nmcli con add type ethernet ifname "$SDR_PORT" con-name lynx-sdr \
     ipv4.method shared ipv4.addresses 192.168.254.1/24 ipv6.method disabled >/dev/null
+  sdr_dhcp
   sudo nmcli con up lynx-sdr >/dev/null 2>&1 || true
   note "lynx-sdr: ROCK 192.168.254.1, SDR gets 192.168.254.2"
 fi
