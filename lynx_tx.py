@@ -74,6 +74,7 @@ import shutil
 import signal
 import subprocess
 import threading
+import ipaddress
 import time
 from pathlib import Path
 from typing import Optional
@@ -885,20 +886,69 @@ def iq_power_db() -> float:
     return float((config["atsc3"] if is_atsc3() else config["modulation"])["power_db"])
 
 
+def iq_bytes_needed() -> int:
+    """Bytes per second on the wire when the IQ is flowing in full: 16-bit I
+    and Q, so 4 bytes a sample at the DAC rate. Half of that counts as
+    flowing, the same test the PlutoSky's own starvation mute uses."""
+    fs = atsc3mod.dac_rate(config["atsc3"]) if is_atsc3() else dvbs2mod.dac_rate(config["modulation"])
+    return int(fs) * 4
+
+
+def _tx_bytes(port: str) -> Optional[int]:
+    try:
+        return int(Path(f"/sys/class/net/{port}/statistics/tx_bytes").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def on_port(uri: str, port: str) -> bool:
+    """Is the SDR at this URI on the port's own subnet (the direct link)?
+    By address, not by name: the ROCK hands out whichever address it likes."""
+    try:
+        host = ipaddress.ip_address(uri.split(":", 1)[1])
+        out = subprocess.run(["ip", "-o", "-4", "addr", "show", "dev", port],
+                             capture_output=True, text=True, timeout=2).stdout
+        return any(host in ipaddress.ip_interface(w).network
+                   for w in out.split() if "/" in w and w[0].isdigit())
+    except (ValueError, IndexError, OSError, subprocess.SubprocessError):
+        return False
+
+
 def iq_guard(proc: subprocess.Popen):
     """Bring the power up once IQ is flowing, and mute if the chain dies.
 
-    Up: when iio_writedev is running and has had 2 s to fill the SDR's
-    buffers. Down: if this pipeline ends without TX Off - a crashed
-    flowgraph, a dead link - the SDR is muted rather than left keyed with
-    nothing sensible to send."""
-    deadline = time.time() + 20
-    while time.time() < deadline and proc.poll() is None:
-        if subprocess.run(["pgrep", "-f", "iio_writedev"], capture_output=True).returncode == 0:
-            time.sleep(2)
-            break
-        time.sleep(0.5)
-    if proc.poll() is None and tx_proc is proc:
+    Up: only once the IQ is actually reaching the SDR at its full rate, for
+    a second. Not merely once iio_writedev is running: it starts at once
+    and then waits for samples, while the flowgraph can take several
+    seconds to load on a freshly booted ROCK. Keyed before then, a prepared
+    PlutoSky saw its transmitter on with almost nothing arriving and muted
+    itself 2 s later (clean install, 20 Oct 2026). On the direct link the
+    rate is measured on the ROCK's second port; elsewhere, where other
+    traffic shares the port, it falls back to the old timing.
+    Down: if this pipeline ends without TX Off - a crashed flowgraph, a dead
+    link - the SDR is muted rather than left keyed with nothing sensible to
+    send."""
+    port = config["libre"].get("direct_if", "enP4p65s0")
+    direct = on_port(sdr_uri(), port) and _tx_bytes(port) is not None
+    deadline = time.time() + 30
+    if direct:
+        need, good, last = iq_bytes_needed() // 2, 0, _tx_bytes(port)
+        while time.time() < deadline and proc.poll() is None and good < 2:
+            time.sleep(0.5)
+            now = _tx_bytes(port)
+            rate = (now - last) * 2 if now is not None and last is not None else 0
+            last = now
+            good = good + 1 if rate >= need else 0
+        if good < 2 and proc.poll() is None and tx_proc is proc:
+            print("[iq] the IQ never reached full rate in 30 s - not keying up")
+            tx_alarm["fault"] = "the IQ never reached full rate"
+    else:
+        while time.time() < deadline and proc.poll() is None:
+            if subprocess.run(["pgrep", "-f", "iio_writedev"], capture_output=True).returncode == 0:
+                time.sleep(2)
+                break
+            time.sleep(0.5)
+    if not tx_alarm["fault"] and proc.poll() is None and tx_proc is proc:
         try:
             _iio(tx_lo_command(sdr_uri(), True))
             _iio(atsc3mod.mute_command(sdr_uri())[:-1] + [f"{iq_power_db():g}"])
