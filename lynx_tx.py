@@ -708,7 +708,7 @@ def sdr_hosts() -> list:
 
 # ── Alarms: what the page and SNMP report ────────────────────
 # muted: on air, but the SDR has turned its transmitter off by itself (the
-# PlutoSky's starvation mute, tools/plutosky-autorun.sh: its IQ stopped).
+# PlutoSky's starvation mute, tools/tezuka-autorun.sh: its IQ stopped).
 # fault: the transmit chain ended without TX Off. Both clear at the next TX On.
 tx_alarm = {"muted": False, "fault": "", "sdr_ok": True, "checked": 0.0,
             "wanted": False, "locked_out": False, "recoveries": 0,
@@ -799,15 +799,16 @@ def tx_alarm_watch():
 def sdr_scan_watch():
     """Look for SDRs at start-up and every minute while off air. Not on air:
     the board in use is plainly there, and a scan costs it a connection.
-    A PlutoSky on Tezuka found on the direct link (or chosen on the page) is
-    then prepared for Lynx-Tx if it is not already: tezuka_prep.py."""
+    A PlutoSky or LibreSDR on Tezuka found on the direct link (or chosen on
+    the page) is then prepared for Lynx-Tx if it is not already:
+    tezuka_prep.py."""
     while True:
         if not tx_running():
             try:
                 found = sdrs.scan(sdr_hosts())
                 direct = set(sdrs.direct_hosts(config["libre"].get("direct_if", "enP4p65s0")))
                 for d in found:
-                    if (d.get("kind") == "plutosky" and d.get("tezuka")
+                    if (d.get("kind") in ("plutosky", "libresdr") and d.get("tezuka")
                             and (d["host"] in direct or d["uri"] == sdr_uri())):
                         tezuka_prep.prepare(d["host"], tx_running)
             except Exception as e:
@@ -1887,7 +1888,7 @@ def mute_on_shutdown():
     still flowing, so it is never left radiating whatever its DAC holds.
     Needs KillMode=mixed in the service, so systemd stops this process
     first and the pipeline only afterwards. (If the ROCK dies outright, the
-    supervisor on the SDR mutes it: tools/plutosky-autorun.sh.)"""
+    supervisor on the SDR mutes it: tools/tezuka-autorun.sh.)"""
     if iq_mode() and tx_running():
         print("[iq] shutting down - muting the SDR")
         atsc3_mute()

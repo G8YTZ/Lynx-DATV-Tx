@@ -1,17 +1,18 @@
-"""Preparing a PlutoSky on Tezuka for Lynx-Tx, with nobody at a keyboard.
+"""Preparing an SDR on Tezuka (PlutoSky R2 or LibreSDR) for Lynx-Tx, with
+nobody at a keyboard.
 
 A punter flashes Tezuka onto a card, plugs the board into the ROCK and powers
 it. Lynx-Tx then does the rest, off air only:
 
   1. its SSH key: Tezuka's root password is the factory "analog", used once
      (sshpass) to put the ROCK's key in the board's flash (/mnt/jffs2), from
-     where tools/plutosky-autorun.sh restores it at every boot;
-  2. tools/plutosky-autorun.sh as /mnt/jffs2/autorun.sh - quiet mode, the
+     where tools/tezuka-autorun.sh restores it at every boot;
+  2. tools/tezuka-autorun.sh as /mnt/jffs2/autorun.sh - quiet mode, the
      10 MHz reference supervisor and the starvation mute (see that file) -
      compared by checksum, so a newer Lynx-Tx updates it by itself;
   3. a reboot of the board to start it (about a minute).
 
-Only boards on the direct link, or the one chosen on the page: a PlutoSky on
+Only boards on the direct link, or the one chosen on the page: a board on
 the LAN may be somebody else's, and is never touched uninvited.
 """
 from __future__ import annotations
@@ -25,7 +26,7 @@ import time
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
-SCRIPT = APP_DIR / "tools" / "plutosky-autorun.sh"
+SCRIPT = APP_DIR / "tools" / "tezuka-autorun.sh"
 FACTORY_PASSWORD = "analog"
 KEY = Path.home() / ".ssh" / "id_ed25519"
 # Tezuka makes a new host key at every boot: never remember it.
@@ -84,8 +85,9 @@ def _ensure_key(host: str) -> bool:
 
 
 def prepare(host: str, on_air) -> str:
-    """Bring one PlutoSky up to date. on_air() is checked before anything is
-    written; nothing is ever done to a board while transmitting."""
+    """Bring one board (PlutoSky R2 or LibreSDR, on Tezuka) up to date.
+    on_air() is checked before anything is written; nothing is ever done to
+    a board while transmitting."""
     if not SCRIPT.is_file():
         return "no-script"
     with _lock:
@@ -95,8 +97,10 @@ def prepare(host: str, on_air) -> str:
         try:
             if on_air() or not _ensure_key(host):
                 return state.get(host, {}).get("state", "busy")
-            r = _ssh(host, "[ -x /etc/init.d/S22refclk ] && echo ok; "
-                           "sha256sum /mnt/jffs2/autorun.sh 2>/dev/null")
+            # v0.3.24 or later: the PlutoSky's reference control (S22refclk)
+            # or the LibreSDR's (SV1EIA's gpsdo_boot.sh).
+            r = _ssh(host, "{ [ -x /etc/init.d/S22refclk ] || [ -x /usr/sbin/gpsdo_boot.sh ]; } "
+                           "&& echo ok; sha256sum /mnt/jffs2/autorun.sh 2>/dev/null")
             out = r.stdout.decode(errors="replace").split()
             if not out or out[0] != "ok":
                 _set(host, "error", "Tezuka is too old for Lynx-Tx: v0.3.24 or later needed")
