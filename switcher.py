@@ -191,8 +191,13 @@ def media_desc(name):
     if a.sim:
         dec = f"avdec_{'h265' if vcodec == 'hevc' else 'h264'} ! videoconvert ! videoscale ! {VCAPS}"
     else:
-        # The decoder's own converter writes NV16 at programme size: no CPU.
-        dec = f"mppvideodec format=NV16 width={W} height={H} ! {VCAPS}"
+        # The decoder's own converter (RGA) writes NV16 at programme size: no
+        # CPU. Scaled (a 4K clip into a 1080 programme) its output caps no
+        # longer matched VCAPS and the clip never started (bench, 23 Oct
+        # 2026), so videorate and videoscale sit between: passthrough, and
+        # free, when the decoder already gives the programme format.
+        dec = (f"mppvideodec format=NV16 width={W} height={H} ! videorate ! videoscale ! "
+               f"video/x-raw,format=NV16,width={W},height={H},pixel-aspect-ratio=1/1 ! {VCAPS}")
     desc = (f'filesrc location="{quoted}" ! qtdemux name=d '
             f"d.video_0 ! {Q} ! {parser} ! {dec} ! intervideosink channel=med ")
     if acodec in AUDIO_DEC:
