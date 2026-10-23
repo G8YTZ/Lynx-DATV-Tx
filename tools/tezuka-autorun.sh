@@ -13,13 +13,16 @@
 #      whose once-a-second probe broke OFDM: loop closed while the 10 MHz is
 #      there, open (holdover on the board's own oscillator) within 2 s of
 #      losing it, closed again once it has been back for 10 s.
-#    LibreSDR: steers its own VCTCXO to the 10 MHz with a PI loop in the
-#      FPGA (Christos SV1EIA's vctcxo_lock, /usr/sbin/gpsdo_boot.sh, which
-#      acquires it at boot). A loop fed with nothing wanders, so within 2 s
-#      of losing the reference the DAC is frozen at its last locked value
-#      (holdover), and the loop is handed back, landing on that same value,
-#      once the reference has been back and steady for 10 s. Nothing is
-#      done while gpsdo_boot.sh is still acquiring.
+#    LibreSDR: a VCTCXO steered by a DAC (Christos SV1EIA's vctcxo_lock in
+#      the FPGA; /usr/sbin/gpsdo_boot.sh acquires the 10 MHz at boot). After
+#      that, the FPGA's own loop is left off (manual mode) and this script
+#      steers the DAC itself from the FPGA's frequency error, gently and
+#      only from readings that make sense. The FPGA loop, on losing the
+#      10 MHz, acts on one nonsense reading before the board flags the loss
+#      and throws the DAC 23000 codes (about 8 kHz at 23 cm: ATSC 3.0 lost
+#      lock, bench 23 Oct 2026). Here a nonsense reading just stops the
+#      steering, so the DAC stays where it was (holdover); steering resumes
+#      once the reference has been back and on frequency for 10 s.
 # 3. The reference state on MQTT (state/system/clkref/*) for Lynx-Tx's lamp.
 # 4. Starvation mute: keyed but no IQ arriving for 2 s -> muted.
 #
@@ -76,17 +79,15 @@ fi
   l_dac() { echo $(( $(rd $R_DAC) & 0xFFFF )); }
   l_center() { echo $(( ($(rd $R_SET) >> 16) & 0xFFFF )); }
   l_manual() { echo $(( $(rd $R_CTRL) & 1 )); }
-  # Holdover: DAC frozen at $1 (manual mode), the centre register kept.
-  l_hold() { wr $R_SET "$(printf '0x%04X%04X' "$(l_center)" "$1")"; wr $R_CTRL $CTRL_MANUAL; closed=0; good=0; }
-  # Back to the loop, landing on $1 (SV1EIA's integrator compensation).
-  l_loop() {
-    wr $R_CTRL $CTRL_LOOP
-    d=$(l_dac); c=$(l_center); t=$1
-    if [ "$d" -gt 0 ] && [ "$d" -lt 65535 ]; then t=$(( $1 + c - d )); fi
-    [ "$t" -lt 0 ] && t=0; [ "$t" -gt 65535 ] && t=65535
-    wr $R_SET "$(printf '0x%04X0000' "$t")"
-    closed=1; bad=0
-  }
+  # The DAC set by hand (manual mode), the centre register kept.
+  l_set() { wr $R_SET "$(printf '0x%04X%04X' "$(l_center)" "$1")"; }
+  l_take() { l_set "$1"; wr $R_CTRL $CTRL_MANUAL; }
+  # Steering: DAC codes per Hz of error (at 40 MHz). 91 measured on a
+  # LibreSDR Rev.5, 23 Oct 2026 (SV1EIA's script assumes 52). The loop
+  # corrects 1/TC of the error each second, so a wrong slope only changes
+  # how fast it settles; it stays stable up to about 2 x TC/1 out.
+  SLOPE=91; TC=40
+  [ -f /mnt/jffs2/lynx-ref.conf ] && . /mnt/jffs2/lynx-ref.conf
 
   pub() { mosquitto_pub -r -t "state/system/clkref/$1" -m "$2" 2>/dev/null; }
 
@@ -111,14 +112,13 @@ fi
     echo 1 > "$PHY/out_altvoltage1_TX_LO_powerdown"
   }
 
-  closed=0; good=0; bad=0; p=0; l=0; held=""; acq=0
-  streak=0; h1=""; h2=""; h3=""; watch=0
+  closed=0; good=0; bad=0; p=0; l=0; acq=0
+  dac=0; frac=0; e1=""; e2=""; waited=0
   case $BOARD in
     sky)
       if [ "$(gpioget $CHIP $PRESENT)" = 1 ]; then loop_close; else loop_open; fi
       logger -t lynx "reference loop $([ $closed = 1 ] && echo closed || echo open)" ;;
-    libre)
-      [ "$(l_manual)" = 0 ] && closed=1 ;;
+    libre) : ;;
   esac
   n=0; last=""
   while true; do
@@ -139,48 +139,68 @@ fi
       fi ;;
     libre)
       st=$(( $(rd $R_ST) )); p=$(( (st >> 1) & 1 )); l=$(( st & 1 ))
+      e=$(l_err); ae=${e#-}
       acq=0
       if ps | grep -q "[g]psdo_boot"; then
-        # SV1EIA's boot acquisition is still running: hands off.
-        closed=0; good=0; acq=1
-      elif [ "$closed" = 1 ]; then
-        # The value to hold if the reference goes: the DAC from 3 s earlier,
-        # and only after at least 5 s locked and on frequency. When the
-        # 10 MHz is pulled the board takes a second or two to flag it, and in
-        # that gap the loop, fed nothing, swings the DAC hard while the error
-        # register still shows its last small reading: holding "the latest
-        # good" value held 59945 instead of 42789 (bench, 23 Oct 2026).
-        e=$(l_err)
-        if [ "$l" = 1 ] && [ "$p" = 1 ] && [ "${e#-}" -le 2 ]; then
-          streak=$((streak + 1)); h3=$h2; h2=$h1; h1=$(l_dac)
-          [ "$streak" -ge 5 ] && [ -n "$h3" ] && held=$h3
+        # SV1EIA's acquisition is running: hands off.
+        closed=0; good=0; acq=1; dac=0
+      elif [ "$dac" = 0 ]; then
+        # Acquisition finished (or this script restarted): take the DAC
+        # where it is and steer from here.
+        dac=$(l_dac); frac=0; l_take "$dac"
+        if [ "$p" = 1 ] && [ "$ae" -le 20 ]; then
+          closed=1; logger -t lynx "reference: steering the VCTCXO from DAC $dac"
         else
-          streak=0; h1=""; h2=""; h3=""
+          closed=0; good=0; logger -t lynx "reference: no 10 MHz, holding DAC $dac"
         fi
-        # After a hand-back, the loop must be locked and on frequency within
-        # 15 s; if not, SV1EIA's acquisition finds the right value again.
-        if [ "$watch" -gt 0 ]; then
-          watch=$((watch - 1))
-          if [ "$watch" = 0 ] && { [ "$l" != 1 ] || [ "${e#-}" -gt 20 ]; }; then
-            logger -t lynx "loop not locked 15 s after the reference came back (error $e Hz): re-acquiring"
-            /usr/sbin/gpsdo_boot.sh >/dev/null 2>&1 &
-            sleep 1
+      elif [ "$closed" = 1 ]; then
+        if [ "$p" = 1 ] && [ "$ae" -le 20 ]; then
+          # Correct 1/TC of the error; the remainder carried, so a steady
+          # 1 Hz error still gets corrected.
+          frac=$(( frac - e * SLOPE )); step=$(( frac / TC )); frac=$(( frac - step * TC ))
+          [ "$step" -gt 20 ] && step=20; [ "$step" -lt -20 ] && step=-20
+          if [ "$step" != 0 ]; then
+            dac=$(( dac + step ))
+            [ "$dac" -lt 1 ] && dac=1; [ "$dac" -gt 65534 ] && dac=65534
+            l_set "$dac"
           fi
-        fi
-        if [ "$p" = 0 ]; then bad=$((bad + 1)); else bad=0; fi
-        if [ "$bad" -ge 2 ]; then
-          [ -n "$held" ] || held=$(l_dac)
-          watch=0; streak=0; h1=""; h2=""; h3=""
-          l_hold "$held"; logger -t lynx "reference lost: holdover, DAC held at $held"
-        fi
-      elif [ "$(l_manual)" = 1 ]; then
-        # Holding (ours, or left by gpsdo_boot.sh still waiting).
-        if [ "$p" = 1 ]; then good=$((good + 1)); else good=0; fi
-        if [ "$good" -ge 10 ] && [ -n "$held" ]; then
-          l_loop "$held"; watch=15; logger -t lynx "reference back: loop on, from DAC $held"
+        else
+          # Gone, or a reading that makes no sense: stop steering. The DAC
+          # does not move, so this is holdover.
+          closed=0; good=0; e1=""; e2=""; waited=0; frac=0
+          logger -t lynx "reference lost (present $p, error $e Hz): holdover, DAC held at $dac"
         fi
       else
-        closed=1
+        # Holdover. Back to steering after 10 s present and within 20 Hz.
+        if [ "$p" = 1 ] && [ "$ae" -le 20 ]; then
+          good=$((good + 1)); e1=""; e2=""
+          if [ "$good" -ge 10 ]; then
+            closed=1; logger -t lynx "reference back: steering from DAC $dac"
+          fi
+        elif [ "$p" = 1 ] && [ "$ae" -le 2000 ]; then
+          # Back but well off (a long holdover): one full correction, once
+          # three readings agree, then the gentle steering takes over.
+          good=0
+          if [ -n "$e2" ] && [ $(( e - e2 )) -le 3 ] && [ $(( e2 - e )) -le 3 ] \
+              && [ $(( e - e1 )) -le 3 ] && [ $(( e1 - e )) -le 3 ]; then
+            step=$(( -e * SLOPE ))
+            dac=$(( dac + step ))
+            [ "$dac" -lt 1 ] && dac=1; [ "$dac" -gt 65534 ] && dac=65534
+            l_set "$dac"; e1=""; e2=""
+            logger -t lynx "reference back but $e Hz off: DAC moved to $dac"
+            sleep 2
+          else
+            e2=$e1; e1=$e
+          fi
+        else
+          good=0; e1=""; e2=""
+        fi
+        # Present for a minute and still not usable: SV1EIA's acquisition.
+        if [ "$p" = 1 ]; then waited=$((waited + 1)); else waited=0; fi
+        if [ "$waited" -ge 60 ]; then
+          logger -t lynx "reference present 60 s but not usable (error $e Hz): re-acquiring"
+          waited=0; /usr/sbin/gpsdo_boot.sh >/dev/null 2>&1 & sleep 1
+        fi
       fi ;;
     esac
     rx=$(cat $RXB)
