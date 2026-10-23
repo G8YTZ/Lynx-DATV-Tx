@@ -229,8 +229,11 @@ BUILD
 fi
 
 # --- 7. Restart and Shut down buttons --------------------------
-step "7/9 Restart, Shut down and Update buttons"
-echo "$USER ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff, /usr/bin/systemctl restart lynx-tx" |
+step "7/9 Restart, Shut down, Update and Network"
+# The Network card's helper: root's own copy, so the sudoers rule cannot be
+# widened by editing the repository.
+sudo install -o root -g root -m 755 "$APP_DIR/tools/lynx-net.sh" /usr/local/sbin/lynx-net
+echo "$USER ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff, /usr/bin/systemctl restart lynx-tx, /usr/local/sbin/lynx-net" |
   sudo tee /etc/sudoers.d/lynx-tx >/dev/null
 sudo chmod 440 /etc/sudoers.d/lynx-tx
 sudo visudo -c -f /etc/sudoers.d/lynx-tx >/dev/null && note "sudoers rule in place"

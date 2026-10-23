@@ -2350,6 +2350,78 @@ def api_update_apply():
     return {"success": True, "pull": out}
 
 
+
+# ---- the ROCK's LAN address (Network card) ---------------------------------
+# A fixed address keeps the ROCK reachable when it starts before the router's
+# DHCP server (a power cut). Read here without privilege; changed through
+# /usr/local/sbin/lynx-net (tools/lynx-net.sh), which the installer puts in
+# place with a sudoers rule, and which undoes the change by itself if the
+# gateway stops answering.
+def _nm(*args) -> str:
+    r = subprocess.run(["nmcli", *args], capture_output=True, text=True, timeout=10)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+@app.get("/api/network")
+def api_network():
+    r = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True)
+    m = re.search(r"\bvia (\S+) dev (\S+)", r.stdout)
+    if not m:
+        return {"device": None}
+    gw_now, dev = m.group(1), m.group(2)
+    con = _nm("-g", "GENERAL.CONNECTION", "device", "show", dev)
+    a = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", dev], capture_output=True, text=True)
+    addr_now = (re.findall(r"inet (\S+)", a.stdout) or [""])[0]
+    dns_now = _nm("-g", "IP4.DNS", "device", "show", dev).split("|")[0].split("\n")[0]
+    return {
+        "device": dev, "connection": con,
+        "method": _nm("-g", "ipv4.method", "connection", "show", con) if con else "",
+        "address": _nm("-g", "ipv4.addresses", "connection", "show", con).split(",")[0] if con else "",
+        "gateway": _nm("-g", "ipv4.gateway", "connection", "show", con) if con else "",
+        "dns": _nm("-g", "ipv4.dns", "connection", "show", con).split(",")[0] if con else "",
+        "now": {"address": addr_now, "gateway": gw_now, "dns": dns_now},
+        "helper": os.path.exists("/usr/local/sbin/lynx-net"),
+    }
+
+
+class NetworkUpdate(BaseModel):
+    method: str                 # "auto" (DHCP) or "manual" (fixed)
+    address: str = ""           # 192.168.0.50/24
+    gateway: str = ""
+    dns: str = ""
+
+
+@app.post("/api/network")
+def api_network_set(u: NetworkUpdate):
+    import ipaddress
+    if u.method == "auto":
+        args = ["dhcp"]
+    elif u.method == "manual":
+        try:
+            iface = ipaddress.IPv4Interface(u.address.strip())
+            gw = ipaddress.IPv4Address(u.gateway.strip())
+            dns = ipaddress.IPv4Address(u.dns.strip() or u.gateway.strip())
+        except ValueError as e:
+            raise HTTPException(400, f"Not a valid address: {e}")
+        if "/" not in u.address:
+            raise HTTPException(400, "Give the address with its prefix, e.g. 192.168.0.50/24")
+        if gw not in iface.network or gw == iface.ip:
+            raise HTTPException(400, f"The gateway {gw} must be another address in {iface.network}")
+        if iface.ip in (iface.network.network_address, iface.network.broadcast_address):
+            raise HTTPException(400, f"{iface.ip} is not a usable host address in {iface.network}")
+        args = ["static", str(iface), str(gw), str(dns)]
+    else:
+        raise HTTPException(400, "method must be auto or manual")
+    r = subprocess.run(["sudo", "-n", "/usr/local/sbin/lynx-net", *args],
+                       capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        if "password" in r.stderr or not os.path.exists("/usr/local/sbin/lynx-net"):
+            raise HTTPException(503, "The network helper is not installed yet: run the installer "
+                                     "again, or see the Installation Guide, section 7.")
+        raise HTTPException(500, (r.stderr or r.stdout).strip() or "could not change the address")
+    return {"success": True, "detail": r.stdout.strip()}
+
+
 class IdentUpdate(BaseModel):
     callsign: Optional[str] = None
     provider: Optional[str] = None
@@ -3081,10 +3153,99 @@ PAGE = """<!DOCTYPE html>
       </div>
     </div>
   </div>
+  <div class="row g-3 mt-1">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">&#x1F310; Network &mdash; the ROCK's own address</div>
+        <div class="card-body">
+          <div class="small mb-2" id="n-now">&mdash;</div>
+          <div class="row g-3 align-items-end">
+            <div class="col-md-2">
+              <label class="small text-muted">Address from</label>
+              <select class="form-select form-select-sm bg-dark text-light border-secondary"
+                      id="n-method" onchange="netShow()">
+                <option value="auto">DHCP (the router)</option>
+                <option value="manual">Fixed (set here)</option>
+              </select>
+            </div>
+            <div class="col-md-3 n-fixed">
+              <label class="small text-muted">Address / prefix</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="n-addr" placeholder="192.168.0.50/24">
+            </div>
+            <div class="col-md-2 n-fixed">
+              <label class="small text-muted">Gateway</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="n-gw" placeholder="192.168.0.1">
+            </div>
+            <div class="col-md-2 n-fixed">
+              <label class="small text-muted">DNS</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="n-dns" placeholder="192.168.0.1">
+            </div>
+            <div class="col-md-3 d-flex gap-2">
+              <button class="btn btn-sm btn-outline-light n-fixed" onclick="netUseNow()"
+                      title="Fill in what DHCP gave it now">Use current</button>
+              <button class="btn btn-sm btn-warning" onclick="netApply()">Apply</button>
+            </div>
+          </div>
+          <div class="text-muted small mt-2">A fixed address keeps the ROCK reachable when it
+            starts before the router (after a power cut). Use the same address as any
+            reservation in the router. If the gateway does not answer within 30 s of a
+            change, the old setting comes back by itself. The SDR's own port is not touched.</div>
+          <div class="small mt-1" style="color:#f87171" id="n-error"></div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
 let cfg = null;
+
+// ---- Network card --------------------------------------------------------
+let NET = null;
+function netShow() {
+  const fixed = document.getElementById('n-method').value === 'manual';
+  document.querySelectorAll('.n-fixed').forEach(e => e.style.display = fixed ? '' : 'none');
+}
+async function netLoad() {
+  const r = await fetch('/api/network'); NET = await r.json();
+  if (!NET.device) { setText('n-now', 'No LAN connection found.'); return; }
+  const n = NET.now;
+  setText('n-now', `Now: ${n.address || 'no address'} on ${NET.device}, gateway ${n.gateway}, `
+    + `DNS ${n.dns || '\u2014'} (${NET.method === 'manual' ? 'fixed' : 'DHCP'})`
+    + (NET.helper ? '' : '. To change it here, run the installer again first.'));
+  document.getElementById('n-method').value = NET.method === 'manual' ? 'manual' : 'auto';
+  if (NET.method === 'manual') {
+    document.getElementById('n-addr').value = NET.address;
+    document.getElementById('n-gw').value = NET.gateway;
+    document.getElementById('n-dns').value = NET.dns;
+  }
+  netShow();
+}
+function netUseNow() {
+  if (!NET || !NET.now) return;
+  document.getElementById('n-addr').value = NET.now.address;
+  document.getElementById('n-gw').value = NET.now.gateway;
+  document.getElementById('n-dns').value = NET.now.dns || NET.now.gateway;
+}
+async function netApply() {
+  const body = {method: document.getElementById('n-method').value,
+                address: document.getElementById('n-addr').value.trim(),
+                gateway: document.getElementById('n-gw').value.trim(),
+                dns: document.getElementById('n-dns').value.trim()};
+  const to = body.method === 'manual' ? body.address.split('/')[0] : 'whatever the router gives it';
+  if (!confirm(`Change the ROCK's address to ${to}? The page may need reloading at the new address.`)) return;
+  setText('n-error', '');
+  const r = await fetch('/api/network', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                         body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { setText('n-error', j.detail || ('error ' + r.status)); return; }
+  setText('n-error', 'Applied. Checking the gateway answers (30 s)...');
+  setTimeout(() => { netLoad(); setText('n-error', ''); }, 8000);
+}
+netLoad();
 
 async function api(method, path, body) {
   const opts = {method, headers: {'Content-Type': 'application/json'}};
