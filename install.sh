@@ -50,8 +50,15 @@ sudo -v
 
 # --- 1. Packages ----------------------------------------------
 step "1/9 Packages"
+# Debian's "restart services?" screen (needrestart) cannot be answered when
+# the installer comes through a pipe (curl | bash): it hung on an older ROCK,
+# 23 Oct 2026. Restart them automatically instead, and no other questions.
+if [ -d /etc/needrestart ]; then
+  echo "\$nrconf{restart} = 'a';" | sudo tee /etc/needrestart/conf.d/lynx-tx.conf >/dev/null
+fi
+export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update
-sudo apt-get install -y \
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   git curl jq ca-certificates \
   python3 python3-fastapi python3-uvicorn python3-pydantic python3-yaml python3-numpy python3-gi \
   ffmpeg v4l-utils \
@@ -106,14 +113,14 @@ else
   tmp=$(mktemp -d); chmod 755 "$tmp"   # apt reads it as user _apt
   curl -fsSL -o "$tmp/tsduck.deb" "$url" ||
     { echo "Could not download TSDuck from $url"; echo "Install it by hand from github.com/tsduck/tsduck/releases, then re-run."; exit 1; }
-  sudo apt-get install -y "$tmp/tsduck.deb"; rm -rf "$tmp"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$tmp/tsduck.deb"; rm -rf "$tmp"
   note "Installed $(basename "$url")"
 fi
 
 # --- 4. Video loopback (the media player's way into the encoder) ---
 step "4/9 Video loopback /dev/video10"
 if ! modinfo v4l2loopback >/dev/null 2>&1; then
-  sudo apt-get install -y "linux-headers-$(uname -r)" v4l2loopback-dkms ||
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "linux-headers-$(uname -r)" v4l2loopback-dkms ||
     warn "Could not install v4l2loopback: the media player will not work until it is."
 fi
 # Deliberately without exclusive_caps: with it, ffmpeg's format probe fails
@@ -148,7 +155,7 @@ fi
 # memory corruption (segfaults everywhere, panic on restart). Not to return
 # until proven on a spare ROCK. Set LYNX_HDMIRX_OVERLAY=1 only for that test.
 if [ "${LYNX_HDMIRX_OVERLAY:-0}" = 1 ] && [ -d /boot/dtbo ] && [ ! -f /boot/dtbo/lynx-hdmirx-mem.dtbo ]; then
-  sudo apt-get install -y device-tree-compiler >/dev/null 2>&1 || true
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y device-tree-compiler >/dev/null 2>&1 || true
   if sudo dtc -@ -q -I dts -O dtb -o /boot/dtbo/lynx-hdmirx-mem.dtbo "$APP_DIR/tools/lynx-hdmirx-mem.dts" &&
      command -v u-boot-update >/dev/null && sudo u-boot-update >/dev/null; then
     CMA_REBOOT=1; note "HDMI in: fixed 256 MB block, after a restart"
@@ -198,7 +205,7 @@ else
      bash -euo pipefail <<'BUILD'
     # plugins-base dev would drag in an older Mesa than Radxa's, so only
     # its headers are unpacked privately; nothing in the system changes.
-    sudo apt-get install -y meson ninja-build libgstreamer1.0-dev librockchip-mpp-dev librga-dev liborc-0.4-dev
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y meson ninja-build libgstreamer1.0-dev librockchip-mpp-dev librga-dev liborc-0.4-dev
     GSTDEV="$SRC_DIR/gstdev"; rm -rf "$GSTDEV"; mkdir -p "$GSTDEV"; cd "$GSTDEV"
     apt-get download libgstreamer-plugins-base1.0-dev
     dpkg -x libgstreamer-plugins-base1.0-dev_*.deb .
@@ -332,7 +339,7 @@ fi
 # Lynx-Tx's /api/health. Read-only, community "lynx". Nothing on the
 # transmit path depends on it.
 step "Monitoring (SNMP)"
-if sudo apt-get install -y snmpd >/dev/null 2>&1; then
+if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y snmpd >/dev/null 2>&1; then
   sudo install -D -m 755 "$APP_DIR/tools/lynx-snmp-agent.py" /usr/local/lib/lynx-tx/lynx-snmp-agent.py
   sudo install -D -m 644 "$APP_DIR/mibs/LYNX-MIB.txt" /usr/share/snmp/mibs/LYNX-MIB.txt
   # Debian's snmpd answers only the ROCK itself: open it to the network.
