@@ -13,7 +13,7 @@ Companion to the [Lynx DATV Receiver](https://github.com/G8YTZ/lynx-datv-receive
 - **Vision mixer:** Camera (HDMI, up to 4K) and the built-in 4K media player run all the time; the cut happens in front of the encoder, with no break on air
 - **Hardware HEVC:** The RK3588's encoder does 4K25 at about a quarter of one core, with frame-by-frame rate control and sound always ahead of pictures
 - **DVB-S2 and ATSC 3.0** made on the ROCK by Ron Economos W6RZ's gr-dtv and gr-atsc3; DVB-T2 coming soon
-- **Any Pluto-class SDR with Ethernet,** found automatically on its own cable; a PlutoSky on Tezuka is prepared by itself, with its 10 MHz reference held through a GNSS failure
+- **Any Pluto-class SDR with Ethernet,** found automatically on its own cable; a PlutoSky or LibreSDR on Tezuka is prepared by itself, its 10 MHz reference held through a failure
 - **Broadcast habits:** The SDR mutes itself if the ROCK stops, auto-recover with lockout, alarm lamps on the page, and SNMP alarms to Home Assistant
 - **One page** for source, encoder, identity, frequency, power, TX on and off, restart and shut down
 
@@ -45,6 +45,7 @@ The [Installation Guide](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lyn
 
 - **Ron Economos W6RZ:** gr-dtv (DVB-S2) and gr-atsc3, and the rate utilities
 - **Evariste F5OEO:** Tezuka firmware
+- **Christos SV1EIA:** The LibreSDR's 10 MHz disciplining
 - **DL1JM:** The LibreSDR DVB-S2 firmware this project started on
 - **TSDuck** for the transport stream tools, and **Radxa** for the ROCK 5T
 

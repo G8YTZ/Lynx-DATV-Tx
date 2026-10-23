@@ -1,7 +1,7 @@
 title: Lynx
 subtitle: DATV Transmitter (Lynx-Tx)
 tagline: Installation Guide: From Blank SD Card to Working Transmitter
-version: Version 1.0  ·  G8YTZ / EI3IOB  ·  October 2026
+version: Version 1.1  ·  G8YTZ / EI3IOB  ·  October 2026
 
 # 1. Before You Start
 
@@ -196,14 +196,19 @@ If Radxa's automatic "Wired connection 2" is on the same port, delete it: `sudo 
 - If you have a 10 MHz reference, into the SDR's 10 MHz input (MMCX on both boards).
 - Within a minute or so the board appears on the page's Transmit card with its model and firmware.
 
-**First time only, a PlutoSky:** Lynx-Tx prepares it as soon as it finds it, off air. The Transmit card says "SDR: Lynx-Tx script installed - the SDR is restarting (about a minute)", the board restarts once, and it is ready. Nothing to type. Section 5.4 says what the script does.
+**First time only, a PlutoSky or LibreSDR on Tezuka:** Lynx-Tx prepares it as soon as it finds it, off air. The Transmit card says "SDR: Lynx-Tx script installed - the SDR is restarting (about a minute)", the board restarts once, and it is ready. Nothing to type. Section 5.4 says what the script does.
 
-## 5.4 What Lynx-Tx Does to a PlutoSky
+## 5.4 What Lynx-Tx Does to a PlutoSky or LibreSDR
 
 Tezuka is a do-everything SDR: receiver, waterfall, web control, DATV modes. As a dedicated wideband transmitter three of those got in the way of ATSC 3.0, so Lynx-Tx installs one script in the board's own flash (`/mnt/jffs2/autorun.sh`). It survives a card change, and a newer Lynx-Tx updates it by itself.
 
 - **Quiet mode:** Stops Tezuka's extras, which starved the board's processor at ATSC 3.0 rates (combing, lost lock).
-- **The 10 MHz reference, held:** Tezuka's automatic mode re-checks the reference once a second, and each check nudges the oscillator, which ATSC 3.0 cannot tolerate. The script holds the loop locked while the 10 MHz is there, lets go within 2 s if it disappears (holdover on the board's own oscillator: still on air, a few hundred hertz adrift), and locks again once it has been back for 10 s. The page's **10 MHz Reference** lamp shows the state.
+- **The 10 MHz reference, held:** ATSC 3.0 cannot tolerate the oscillator being nudged, so the script takes charge of the reference. The page's **10 MHz Reference** lamp shows the state: Green locked, amber acquiring or in holdover, red unlocked.
+  - **PlutoSky:** Tezuka's automatic mode re-checks the reference once a second, and each check nudges the oscillator. The script holds the loop locked while the 10 MHz is there, lets go within 2 s if it disappears (holdover on the board's own oscillator: still on air, a few hundred hertz adrift), and locks again once it has been back for 10 s.
+  - **LibreSDR:** The board steers its own oscillator to the 10 MHz (Christos SV1EIA's disciplining, which acquires the reference at start-up). After that the script does the steering, gently, and ignores any reading that makes no sense, so pulling the 10 MHz lead moves nothing: the board carries on where it was (holdover) and picks up again 10 s after the reference returns. No glitch either way (bench, 23 Oct 2026).
+
+> Losing GNSS (the antenna, jamming, weather) never reaches the SDR: the LBE-1420 carries on giving 10 MHz from its own oscillator, so the lamp stays green and nothing on air changes. Holdover here is for the 10 MHz itself going (a lead, the GPSDO's power).
+
 - **Starvation mute:** If the IQ stops arriving (the ROCK restarting or failing, a cable out) the board turns its transmitter off within 2 s rather than radiating junk. Lynx-Tx turns it back on at the next TX On.
 - **The ROCK's SSH key,** so Lynx-Tx never needs a password. It is put there once with Tezuka's factory password (`analog`).
 
@@ -211,7 +216,7 @@ To give the board back to plain Tezuka: over SSH, `rm /mnt/jffs2/autorun.sh`, th
 
 ## 5.5 LibreSDR Notes
 
-- **With Tezuka:** Set it up exactly as the PlutoSky. Its settings live in the board's flash, not on the card. Lynx-Tx does not yet prepare a LibreSDR by itself, so for ATSC 3.0 on a LibreSDR use DL1JM's firmware, which is clean.
+- **With Tezuka:** Set it up exactly as the PlutoSky; Lynx-Tx prepares it by itself (Section 5.4), and DVB-S2 and ATSC 3.0 are both clean. Its settings live in the board's flash, not on the card. Allow a minute and a half after it starts for the 10 MHz to be acquired: the lamp is amber "acquiring" until then.
 - **Coming from DL1JM's firmware:** It leaves `mode=2r2t` in the board's flash, and Tezuka obeys it: the signal comes out twice as wide and never locks. Fix it once over SSH: `fw_setenv mode 1r1t`, `sync`, `reboot`.
 - **With DL1JM's firmware:** Supported, for a LibreSDR that also serves Portsdown. Keep each firmware on its own card. As an IQ transmitter (Modulator: ROCK) Lynx-Tx stops DL1JM's modulator for the duration, and **PTT is not keyed**: key your PA another way. The 10 MHz Reference lamp reads "not reported".
 
@@ -323,7 +328,7 @@ A password saved in the board's flash overrides `analog`. Plug the board into a 
 
 - Power at −20 dB or lower (Section 6).
 - On a PlutoSky, check the Lynx-Tx script is installed: the Transmit card says so, or `ssh root@192.168.254.2 ls /mnt/jffs2/autorun.sh`.
-- On a LibreSDR, use DL1JM's firmware for ATSC 3.0 (Section 5.5).
+- On a LibreSDR on DL1JM's firmware, which does not have the Lynx-Tx script: use Tezuka (Section 5.5).
 
 ## 11.7 The signal is twice as wide and never locks (LibreSDR)
 
@@ -348,7 +353,6 @@ Leave it running while you reproduce the problem.
 # 12. What's Not Yet Covered By This Guide
 
 - DVB-T2 mode (coming soon).
-- Preparing a LibreSDR on Tezuka automatically, with its own reference control.
 - PTT keyed by Lynx-Tx itself.
 - Exact part numbers for filters, amplifiers and antennas (Appendix C, marked TBC).
 

@@ -29,6 +29,9 @@
 # Proven on the bench, 19 Oct 2026 (PlutoSky R2, Tezuka v0.3.24): no
 # underruns at 2x with the extras stopped; ATSC 3.0 at 2x clean with the
 # loop held closed, and clean in holdover with the reference pulled.
+# LibreSDR Rev.5, Tezuka v0.3.24, 23 Oct 2026: DVB-S2 and ATSC 3.0 clean;
+# with the script steering, the 10 MHz lead pulled and replaced twice on
+# air with no glitch.
 
 # SSH keys: Tezuka's /root is in RAM, so the ROCK's key is kept here in the
 # board's flash and put back at every boot (no password prompts from Lynx-Tx).
