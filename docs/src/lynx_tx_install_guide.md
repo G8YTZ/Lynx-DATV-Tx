@@ -77,7 +77,7 @@ One command installs everything:
 curl -sSL https://raw.githubusercontent.com/G8YTZ/Lynx-DATV-Tx/main/install.sh | bash
 ```
 
-It installs every package, TSDuck, the video loopback for the media player, Ron Economos W6RZ's gr-atsc3, the patched HEVC encoder, Lynx-Tx itself, the direct link to the SDR (with DHCP, so the SDR needs no setting up), SNMP monitoring, and the service that starts it at boot. It asks for your password once at the start.
+It installs every package, TSDuck, the video loopback for the media player, Ron Economos W6RZ's gr-atsc3, the patched HEVC encoder, Lynx-Tx itself, the direct link to the SDR (with DHCP, so the SDR needs no setting up), SNMP monitoring, quiet fan control, and the service that starts it at boot. It asks for your password once at the start.
 
 > About 15 minutes on a fresh ROCK, most of it compiling. Leave it running; if your ssh connection drops, run the command again: it carries on where it left off.
 
@@ -146,7 +146,9 @@ sudo chmod 440 /etc/sudoers.d/lynx-tx && sudo visudo -c
 
 **8. The direct link to the SDR:** See Section 5.2 for the commands. The installer also makes the ROCK an SSH key (`ssh-keygen -t ed25519`), which Lynx-Tx puts on a PlutoSky by itself.
 
-**9. Monitoring and the service:** SNMP is set up as in the Monitoring Guide, and the service as in Section 7.
+**9. Fan control:** Radxa's image runs the fan flat out even when the ROCK is cool. `tools/lynx_fan.py` (the same as the Lynx Receiver's) holds the processor at a steady 40 °C instead: on at 35 °C at its slowest reliable speed, faster as needed, off below 30 °C. The kernel's own fan step at 60 °C and throttling at 85 °C stay as the safety net. The installer puts it in `/usr/local/sbin/lynx-fan` with a service, `lynx-fan.service`; the settings are in `/etc/default/lynx-fan`.
+
+**10. Monitoring and the service:** SNMP is set up as in the Monitoring Guide, and the service as in Section 7.
 
 # 5. Connecting the SDR
 
@@ -280,7 +282,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now lynx-tx
 From the ROCK:
 
 ```
-systemctl is-active lynx-tx
+systemctl is-active lynx-tx lynx-fan
 gst-inspect-1.0 mpph265enc | head -3
 python3 -c "import atsc3; print('gr-atsc3 ok')"
 ls /dev/video10
@@ -288,7 +290,7 @@ grep -o 'cma=[^ ]*' /proc/cmdline
 iio_attr -u ip:192.168.254.2 -C
 ```
 
-In order: `active`; the encoder's description; `gr-atsc3 ok`; `/dev/video10`; `cma=1024M`; and the SDR's model and firmware (use the address the Transmit card shows if it is not .2).
+In order: `active` twice (Lynx-Tx and the fan control); the encoder's description; `gr-atsc3 ok`; `/dev/video10`; `cma=1024M`; and the SDR's model and firmware (use the address the Transmit card shows if it is not .2).
 
 On the page: the SDR shows its model and firmware, the **SDR** and **HDMI** lamps are green (HDMI only with a source plugged in), and with a 10 MHz reference connected the **10 MHz Reference** lamp goes green within a few seconds of the board starting.
 

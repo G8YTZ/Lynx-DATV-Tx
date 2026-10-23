@@ -4,6 +4,7 @@
 #
 #  One script, everything: packages (GNU Radio with Ron Economos W6RZ's
 #  DVB-S2 blocks), TSDuck, the video loopback, Ron's gr-atsc3, the patched Rockchip HEVC encoder,
+#  fan control,
 #  Lynx-Tx itself, the direct link to the SDR and the service that
 #  starts it at boot.
 #
@@ -287,6 +288,43 @@ else
   sdr_dhcp
   sudo nmcli con up lynx-sdr >/dev/null 2>&1 || true
   note "lynx-sdr: ROCK 192.168.254.1, SDR gets 192.168.254.2"
+fi
+
+# --- Fan: hold the SoC at a steady 40 C --------------------------------
+# The same fan control as the Lynx Receiver (tools/lynx_fan.py): on at 35 C
+# at its slowest reliable speed, faster as needed to hold 40 C, off below
+# 30 C. Radxa's image otherwise leaves the fan at full speed even when cool.
+# The kernel's 60 C fan step and 85 C CPU throttling stay as the safety net.
+# Settings: /etc/default/lynx-fan.
+step "Fan control (steady 40 C)"
+sudo install -m 755 "$APP_DIR/tools/lynx_fan.py" /usr/local/sbin/lynx-fan
+[ -f /etc/default/lynx-fan ] || sudo tee /etc/default/lynx-fan >/dev/null <<'FAN'
+# Lynx fan control - see tools/lynx_fan.py
+LYNX_FAN_SET_C=40
+LYNX_FAN_ON_C=35
+LYNX_FAN_OFF_C=30
+LYNX_FAN_MIN_PWM=128
+FAN
+sudo tee /etc/systemd/system/lynx-fan.service >/dev/null <<'FAN'
+[Unit]
+Description=Lynx fan control (hold the SoC at a steady temperature)
+After=systemd-modules-load.service
+
+[Service]
+EnvironmentFile=-/etc/default/lynx-fan
+ExecStart=/usr/bin/python3 /usr/local/sbin/lynx-fan
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+FAN
+sudo systemctl daemon-reload
+sudo systemctl enable lynx-fan.service >/dev/null 2>&1
+if sudo systemctl restart lynx-fan.service && sleep 3 && systemctl is-active --quiet lynx-fan.service; then
+  note "Fan: holding 40 C ($(journalctl -u lynx-fan -n 1 -o cat 2>/dev/null | sed 's/^lynx-fan: //'))"
+else
+  warn "Fan control did not start: journalctl -u lynx-fan -n 20"
 fi
 
 # --- Monitoring: SNMP for Home Assistant and the like ----------------
