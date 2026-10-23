@@ -190,6 +190,20 @@ DEFAULT_CONFIG = {
         "audio_pid": 0x102,
         "polarization": "horizontal",
     },
+    # Programme 2 (DVB-S2): a carousel of 4K stills as a second service,
+    # carried in the main stream's null packets (carousel.py). Takes effect
+    # at the next TX On.
+    "carousel": {
+        "enabled": False,
+        "name": "",                     # blank: the callsign + " 4K"
+        "service_id": 2,
+        "lcn": 2,
+        "seconds": 60,                  # each still on screen
+        "keyframe_s": 10,               # a viewer switching over waits up to this
+        "qp": 34,
+        "folder": "",                   # blank: the stills in the media library
+        "delay_s": 4.0,                 # clock lead for keyframes riding in spare packets
+    },
 }
 
 
@@ -1013,6 +1027,48 @@ _NIT_MODULATION = {"QPSK": "QPSK", "8PSK": "8PSK", "16APSK": "16-QAM",
 nit_status = {"ok": False, "detail": "Not built yet"}
 
 
+def carousel_on() -> Optional[dict]:
+    """Programme 2's settings when it is to go out (DVB-S2 only), else None."""
+    car = config.get("carousel") or {}
+    if not car.get("enabled") or is_atsc3():
+        return None
+    return car
+
+
+def carousel_dir() -> Path:
+    car = config.get("carousel") or {}
+    return MEDIA_DIR / car["folder"] if car.get("folder") else MEDIA_DIR
+
+
+def carousel_stills() -> list:
+    try:
+        return sorted(f.name for f in carousel_dir().iterdir()
+                      if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp")
+                      and not f.name.startswith("."))
+    except OSError:
+        return []
+
+
+def carousel_merge() -> str:
+    """The tsp stage that puts programme 2 into the main stream's null
+    packets (TSDuck merge), or "" when it is off. The live programme loses
+    nothing: merge only ever takes a packet that would have been stuffing."""
+    car = carousel_on()
+    if not car:
+        return ""
+    ident = config["identity"]
+    name = car.get("name") or f"{config['callsign']} 4K"
+    cmd = (f"python3 {shlex.quote(str(APP_DIR / 'carousel.py'))} "
+           f"--dir {shlex.quote(str(carousel_dir()))} "
+           f"--seconds {float(car.get('seconds', 60))} --keyframe {float(car.get('keyframe_s', 10))} "
+           f"--qp {int(car.get('qp', 34))} --delay {float(car.get('delay_s', 4.0))} "
+           f"--service-id {int(car['service_id'])} --name {shlex.quote(name)} "
+           f"--provider {shlex.quote(config.get('provider') or '')} "
+           f"--tsid {ident['ts_id']} --onid {ident['original_network_id']} "
+           f"2>>/tmp/lynx-carousel.log")
+    return f"-P merge {shlex.quote(cmd)} --max-queue 4000 --no-smoothing --restart "
+
+
 def build_nit() -> Optional[Path]:
     """The NIT as TSDuck XML, compiled to a section file for tsp.
 
@@ -1029,11 +1085,20 @@ def build_nit() -> Optional[Path]:
     stype = _SERVICE_TYPE_CODE.get(ident["service_type"], 0x01)
     sid = ident["service_id"]
     lcn = ""
+    vis = "true" if ident.get("lcn_visible", True) else "false"
+    car = carousel_on()
+    services = f'        <service service_id="{sid}" service_type="{stype}"/>\n'
+    if car:
+        services += f'        <service service_id="{car["service_id"]}" service_type="31"/>\n'
     if ident.get("lcn"):
+        lcns = (f'        <service service_id="{sid}" logical_channel_number="{int(ident["lcn"])}" '
+                f'visible_service="{vis}"/>\n')
+        if car and car.get("lcn"):
+            lcns += (f'        <service service_id="{car["service_id"]}" '
+                     f'logical_channel_number="{int(car["lcn"])}" visible_service="{vis}"/>\n')
         lcn = (f'      <private_data_specifier_descriptor private_data_specifier="EACEM"/>\n'
                f'      <eacem_logical_channel_number_descriptor>\n'
-               f'        <service service_id="{sid}" logical_channel_number="{int(ident["lcn"])}" '
-               f'visible_service="{"true" if ident.get("lcn_visible", True) else "false"}"/>\n'
+               f'{lcns}'
                f'      </eacem_logical_channel_number_descriptor>\n')
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n<tsduck>\n'
@@ -1042,7 +1107,7 @@ def build_nit() -> Optional[Path]:
         f'    <transport_stream transport_stream_id="{ident["ts_id"]}" '
         f'original_network_id="{ident["original_network_id"]}">\n'
         f'      <service_list_descriptor>\n'
-        f'        <service service_id="{sid}" service_type="{stype}"/>\n'
+        f'{services}'
         f'      </service_list_descriptor>\n'
         f'      <satellite_delivery_system_descriptor '
         f'frequency="{int(round(m["frequency_mhz"] * 1e6))}" orbital_position="0.0" '
@@ -1764,12 +1829,12 @@ def build_pipeline() -> str:
         # but the NIT still rides along - it is a DVB table.
         parts.append(
             f" | tsp --buffer-size-mb 0.05 -I file - "
-            f"{nit_stage}{tap}-O file {dvbs2mod.TS_FIFO}")
+            f"{nit_stage}{carousel_merge()}{tap}-O file {dvbs2mod.TS_FIFO}")
         return dvbs2mod.modulator_shell(sdr_uri(), APP_DIR, m) + "".join(parts)
 
     parts.append(
         f" | tsp --realtime --buffer-size-mb 0.05 -I file - "
-        f"{nit_stage}{tap}-P regulate --bitrate {paced} "
+        f"{nit_stage}{carousel_merge()}{tap}-P regulate --bitrate {paced} "
         f"-O ip {libre_host()}:8282")
 
     return "".join(parts)
@@ -2358,13 +2423,19 @@ def api_update_apply():
 # place with a sudoers rule, and which undoes the change by itself if the
 # gateway stops answering.
 def _nm(*args) -> str:
-    r = subprocess.run(["nmcli", *args], capture_output=True, text=True, timeout=10)
+    try:
+        r = subprocess.run(["nmcli", *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
 @app.get("/api/network")
 def api_network():
-    r = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["ip", "route", "show", "default"], capture_output=True, text=True)
+    except OSError:
+        return {"device": None}
     m = re.search(r"\bvia (\S+) dev (\S+)", r.stdout)
     if not m:
         return {"device": None}
@@ -2420,6 +2491,42 @@ def api_network_set(u: NetworkUpdate):
                                      "again, or see the Installation Guide, section 7.")
         raise HTTPException(500, (r.stderr or r.stdout).strip() or "could not change the address")
     return {"success": True, "detail": r.stdout.strip()}
+
+
+# ---- Programme 2: the 4K stills carousel (DVB-S2) ---------------------------
+class CarouselUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    name: Optional[str] = None
+    service_id: Optional[int] = None
+    lcn: Optional[int] = None
+    seconds: Optional[float] = None
+
+
+@app.get("/api/carousel")
+def api_carousel():
+    car = dict(config.get("carousel") or {})
+    files = carousel_stills()
+    r = subprocess.run(["pgrep", "-f", "carousel.py"], capture_output=True)
+    return {"carousel": car, "stills": files, "folder": str(carousel_dir()),
+            "default_name": f"{config['callsign']} 4K",
+            "running": r.returncode == 0, "atsc3": is_atsc3()}
+
+
+@app.post("/api/carousel")
+def api_carousel_set(req: CarouselUpdate):
+    car = dict(config.get("carousel") or {})
+    for k, v in dump(req).items():
+        if v is not None:
+            car[k] = v.strip() if isinstance(v, str) else v
+    sid = int(car.get("service_id", 2))
+    if not 1 <= sid <= 0xFFFF or sid == int(config["identity"]["service_id"]):
+        raise HTTPException(400, "Programme 2's Service ID must be 1-65535 and differ from programme 1's")
+    if car.get("lcn") and not 1 <= int(car["lcn"]) <= 1023:
+        raise HTTPException(400, "LCN must be 1-1023")
+    car["seconds"] = max(5.0, min(3600.0, float(car.get("seconds", 60))))
+    config["carousel"] = car
+    save_config(config)
+    return {"success": True, "carousel": car}
 
 
 class IdentUpdate(BaseModel):
@@ -3198,6 +3305,51 @@ PAGE = """<!DOCTYPE html>
       </div>
     </div>
   </div>
+
+  <div class="row g-3 mt-1">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">&#x1F5BC;&#xFE0F; Programme 2 &mdash; 4K stills carousel (DVB-S2)</div>
+        <div class="card-body">
+          <div class="row g-3 align-items-end">
+            <div class="col-md-2">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="c-on" onchange="carSave()">
+                <label class="form-check-label small" for="c-on">On</label>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="small text-muted">Service name</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="c-name" maxlength="32" onchange="carSave()">
+            </div>
+            <div class="col-md-2">
+              <label class="small text-muted">Service ID</label>
+              <input type="number" min="1" max="65535" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="c-sid" onchange="carSave()">
+            </div>
+            <div class="col-md-2">
+              <label class="small text-muted">LCN</label>
+              <input type="number" min="0" max="1023" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="c-lcn" onchange="carSave()">
+            </div>
+            <div class="col-md-3">
+              <label class="small text-muted">Each still on screen (s)</label>
+              <input type="number" min="5" max="3600" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="c-secs" onchange="carSave()">
+            </div>
+          </div>
+          <div class="small mt-2" id="c-status">&mdash;</div>
+          <div class="text-muted small mt-1">A second programme in the same carrier: the stills in
+            the media library, in name order (01_, 02_ ... set the sequence), shown in 4K HEVC. It
+            travels only in the packets the channel would otherwise fill with stuffing, so the live
+            programme loses nothing. A viewer switching over waits up to 10 s for a picture.
+            Takes effect at the next TX On.</div>
+          <div class="small mt-1" style="color:#f87171" id="c-error"></div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -3246,6 +3398,38 @@ async function netApply() {
   setTimeout(() => { netLoad(); setText('n-error', ''); }, 8000);
 }
 netLoad();
+
+// ---- Programme 2 card ------------------------------------------------------
+async function carLoad() {
+  const r = await fetch('/api/carousel'); const j = await r.json();
+  const c = j.carousel || {};
+  document.getElementById('c-on').checked = !!c.enabled;
+  const nm = document.getElementById('c-name');
+  nm.value = c.name || ''; nm.placeholder = j.default_name;
+  document.getElementById('c-sid').value = c.service_id;
+  document.getElementById('c-lcn').value = c.lcn;
+  document.getElementById('c-secs').value = c.seconds;
+  const n = j.stills.length;
+  let st = n ? `${n} still${n > 1 ? 's' : ''}: ${j.stills.slice(0, 6).join(', ')}${n > 6 ? ' ...' : ''}`
+             : 'No stills in the media library yet: colour bars until there are.';
+  if (j.atsc3) st += ' · Not sent in ATSC 3.0 mode.';
+  else if (c.enabled) st += j.running ? ' · On air.' : ' · Goes out at the next TX On.';
+  setText('c-status', st);
+}
+async function carSave() {
+  setText('c-error', '');
+  const body = {enabled: document.getElementById('c-on').checked,
+                name: document.getElementById('c-name').value,
+                service_id: parseInt(document.getElementById('c-sid').value, 10),
+                lcn: parseInt(document.getElementById('c-lcn').value || '0', 10),
+                seconds: parseFloat(document.getElementById('c-secs').value)};
+  const r = await fetch('/api/carousel', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                          body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) setText('c-error', j.detail || ('error ' + r.status));
+  carLoad();
+}
+carLoad();
 
 async function api(method, path, body) {
   const opts = {method, headers: {'Content-Type': 'application/json'}};
