@@ -112,6 +112,7 @@ fi
   }
 
   closed=0; good=0; bad=0; p=0; l=0; held=""; acq=0
+  streak=0; h1=""; h2=""; h3=""; watch=0
   case $BOARD in
     sky)
       if [ "$(gpioget $CHIP $PRESENT)" = 1 ]; then loop_close; else loop_open; fi
@@ -143,21 +144,40 @@ fi
         # SV1EIA's boot acquisition is still running: hands off.
         closed=0; good=0; acq=1
       elif [ "$closed" = 1 ]; then
-        # Remember the DAC while the loop is locked and on frequency, as the
-        # value to hold if the reference goes.
-        if [ "$l" = 1 ] && [ "$p" = 1 ]; then
-          e=$(l_err); [ "${e#-}" -le 2 ] && held=$(l_dac)
+        # The value to hold if the reference goes: the DAC from 3 s earlier,
+        # and only after at least 5 s locked and on frequency. When the
+        # 10 MHz is pulled the board takes a second or two to flag it, and in
+        # that gap the loop, fed nothing, swings the DAC hard while the error
+        # register still shows its last small reading: holding "the latest
+        # good" value held 59945 instead of 42789 (bench, 23 Oct 2026).
+        e=$(l_err)
+        if [ "$l" = 1 ] && [ "$p" = 1 ] && [ "${e#-}" -le 2 ]; then
+          streak=$((streak + 1)); h3=$h2; h2=$h1; h1=$(l_dac)
+          [ "$streak" -ge 5 ] && [ -n "$h3" ] && held=$h3
+        else
+          streak=0; h1=""; h2=""; h3=""
+        fi
+        # After a hand-back, the loop must be locked and on frequency within
+        # 15 s; if not, SV1EIA's acquisition finds the right value again.
+        if [ "$watch" -gt 0 ]; then
+          watch=$((watch - 1))
+          if [ "$watch" = 0 ] && { [ "$l" != 1 ] || [ "${e#-}" -gt 20 ]; }; then
+            logger -t lynx "loop not locked 15 s after the reference came back (error $e Hz): re-acquiring"
+            /usr/sbin/gpsdo_boot.sh >/dev/null 2>&1 &
+            sleep 1
+          fi
         fi
         if [ "$p" = 0 ]; then bad=$((bad + 1)); else bad=0; fi
         if [ "$bad" -ge 2 ]; then
           [ -n "$held" ] || held=$(l_dac)
+          watch=0; streak=0; h1=""; h2=""; h3=""
           l_hold "$held"; logger -t lynx "reference lost: holdover, DAC held at $held"
         fi
       elif [ "$(l_manual)" = 1 ]; then
         # Holding (ours, or left by gpsdo_boot.sh still waiting).
         if [ "$p" = 1 ]; then good=$((good + 1)); else good=0; fi
         if [ "$good" -ge 10 ] && [ -n "$held" ]; then
-          l_loop "$held"; logger -t lynx "reference back: loop on, from DAC $held"
+          l_loop "$held"; watch=15; logger -t lynx "reference back: loop on, from DAC $held"
         fi
       else
         closed=1

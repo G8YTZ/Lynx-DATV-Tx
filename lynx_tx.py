@@ -3596,10 +3596,23 @@ async function poll() {
   // not (no lock, or no 10 MHz feed), grey when the board cannot say
   // (DL1JM's firmware has no way to report it). Always shown, so its
   // absence is never mistaken for an answer.
+  // Lynx-Tx's script on the board also says why: holdover (the 10 MHz
+  // has gone and the oscillator is held at its last good setting: still on
+  // air, slowly drifting) and acquiring or returning are amber; only a
+  // loop that should be locked and is not, or no reference at all, is red.
   const R = S.ref;
-  setText('ref-badge', R ? '10 MHz Reference ' + (R.locked ? 'Locked' : 'Unlocked')
-                         : '10 MHz Reference: not reported');
-  setStyle('ref-badge', 'background', R ? (R.locked ? '#16a34a' : '#b91c1c') : '#3a4a63');
+  const RS = R ? (R.state || '') : '';
+  const refLamp = !R ? ['10 MHz Reference: not reported', '#3a4a63']
+    : RS === 'locked' || (!RS && R.locked) ? ['10 MHz Reference Locked', '#16a34a']
+    : RS === 'holdover' ? ['10 MHz Reference: holdover', '#d97706']
+    : RS === 'acquire' || RS === 'returning' ? ['10 MHz Reference: acquiring', '#d97706']
+    : ['10 MHz Reference Unlocked', '#b91c1c'];
+  setText('ref-badge', refLamp[0]);
+  setStyle('ref-badge', 'background', refLamp[1]);
+  setAttr('ref-badge', 'title', !R ? 'The SDR cannot report its reference (DL1JM firmware).'
+    : RS === 'holdover' ? 'No 10 MHz: the oscillator is held at its last locked setting. Still on air, drifting slowly.'
+    : 'Reference ' + (RS || (R.locked ? 'locked' : 'unlocked'))
+      + (R.error_hz !== undefined ? ', error ' + R.error_hz + ' Hz at 40 MHz' : ''));
   setStyle('ref-badge', 'display', '');
 
   // Alarm lamps, always shown: the SDR (keyed and fed, muted itself, not
