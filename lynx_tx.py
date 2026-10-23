@@ -1964,6 +1964,71 @@ REF_STATES = {"locked": 1, "acquire": 2, "holdover": 3, "returning": 3, "absent"
 CAMERA_STATES = {"live": 1, "bars": 2, "unstable": 3}
 
 
+THERMAL_SYSFS = os.environ.get("LYNX_THERMAL_SYSFS", "/sys/class")
+_board_cache = {"t": 0.0, "v": None}
+
+
+def read_board() -> Optional[dict]:
+    """Processor temperature and fan speed, from the kernel: the same
+    reading as the Lynx Receiver's board badge. Prefers the RK3588's
+    soc-thermal sensor; the fan is the pwm-fan PWM that lynx-fan sets
+    (tools/lynx_fan.py). No RPM on the ROCK 5T: its fan header has no
+    tachometer pin. Cached for 3 s, so the page and SNMP cost nothing."""
+    if time.time() - _board_cache["t"] < 3:
+        return _board_cache["v"]
+    import glob
+
+    def rd(p):
+        with open(p) as f:
+            return f.read().strip()
+    info = None
+    zones = {}
+    for z in sorted(glob.glob(f"{THERMAL_SYSFS}/thermal/thermal_zone*")):
+        try:
+            zones[rd(f"{z}/type")] = z
+        except OSError:
+            pass
+    if zones:
+        sensor = next((n for n in ("soc-thermal", "cpu-thermal") if n in zones), next(iter(zones)))
+        try:
+            info = {"temp_c": round(int(rd(f"{zones[sensor]}/temp")) / 1000.0, 1), "sensor": sensor,
+                    "fan_pwm": None, "fan_pct": None, "fan_rpm": None}
+        except (OSError, ValueError):
+            info = None
+    if info:
+        for h in sorted(glob.glob(f"{THERMAL_SYSFS}/hwmon/hwmon*")):
+            try:
+                if rd(f"{h}/name") not in ("pwmfan", "pwm-fan", "cooling_fan"):
+                    continue
+                pwm = int(rd(f"{h}/pwm1"))
+                info.update(fan_pwm=pwm, fan_pct=round(pwm * 100 / 255))
+                try:
+                    info["fan_rpm"] = int(rd(f"{h}/fan1_input"))
+                except (OSError, ValueError):
+                    pass
+                break
+            except (OSError, ValueError):
+                continue
+    _board_cache.update(t=time.time(), v=info)
+    return info
+
+
+def read_host() -> dict:
+    """The ROCK's own health, for SNMP: how long since it started (an
+    unexpected restart shows as a drop), how busy it is over the last
+    minute (load average as a share of all eight cores), and the space
+    left on the system drive (media uploads and logs live there; a full
+    card stops everything)."""
+    out = {"uptime_s": 0, "load_pct": 0, "disk_free_mb": 0}
+    try:
+        out["uptime_s"] = int(float(Path("/proc/uptime").read_text().split()[0]))
+        out["load_pct"] = int(round(os.getloadavg()[0] * 100 / (os.cpu_count() or 1)))
+        out["disk_free_mb"] = shutil.disk_usage("/").free // (1 << 20)
+    except (OSError, ValueError):
+        pass
+    return out
+
+
 @app.get("/api/health")
 def api_health():
     """Everything the SNMP agent serves (tools/lynx-snmp-agent.py, MIB in
@@ -1986,7 +2051,8 @@ def api_health():
     c = config["atsc3"] if is_atsc3() else config["modulation"]
     anon = _read_int("/sys/fs/cgroup/system.slice/lynx-tx.service/memory.stat", "anon ")
     cma = _read_int("/proc/meminfo", "CmaFree:")
-    temp = _read_int("/sys/class/thermal/thermal_zone0/temp")
+    board = read_board() or {}
+    host = read_host()
     return {
         "txState": state,
         "sdrReachable": 1 if (tx_alarm["sdr_ok"] if on else found) else 2,
@@ -1999,9 +2065,13 @@ def api_health():
         "sdrMutes": tx_alarm.get("mutes", 0),
         "memAnonMB": (anon or 0) // (1 << 20),
         "cmaFreeMB": (cma or 0) // 1024,
-        "cpuTempDeciC": (temp or 0) // 100,
+        "cpuTempDeciC": int(round((board.get("temp_c") or 0) * 10)),
         "cameraState": CAMERA_STATES.get(sw.get("camera", ""), 4),
         "autoRecoveries": tx_alarm["recoveries"],
+        "fanPercent": board.get("fan_pct") or 0,
+        "uptimeS": host["uptime_s"],
+        "cpuLoadPct": host["load_pct"],
+        "diskFreeMB": host["disk_free_mb"],
     }
 
 
@@ -2038,6 +2108,7 @@ def api_status():
         "uptime": int(time.time() - tx_started_at) if tx_running() else 0,
         "config": config,
         "hdmi": hdmi_format(),
+        "board": read_board(),
         "media": media_files(),
         "ts_bitrate": theoretical,
         "libre": libre_status(),
@@ -2529,6 +2600,8 @@ PAGE = """<!DOCTYPE html>
           style="background:#3a4a63;color:#fff;cursor:default">SDR idle</span>
     <span class="btn btn-sm" id="hdmi-badge"
           style="background:#3a4a63;color:#fff;cursor:default">HDMI ?</span>
+    <span class="btn btn-sm" id="board-badge" title="Processor temperature and fan"
+          style="background:#3a4a63;color:#fff;cursor:default;display:none">--</span>
     <span class="ms-auto d-flex gap-2 align-items-center">
       <span class="btn btn-sm" id="version-badge" title="Not yet checked: click Check updates"
             style="background:#3a4a63;color:#fff;cursor:default">version ?</span>
@@ -3429,6 +3502,33 @@ function setClass(e, v) {
   if (e && e.className !== v) e.className = v;
 }
 
+// Processor temperature and fan, as on the Lynx Receiver: "38°C fan 50%".
+// Amber from 60 C (where the kernel starts stepping the fan), red from 80 C
+// (the CPU throttles at 85), red with STALLED if a fan with a speed sensor
+// is asked to run but reports 0 rpm.
+function renderBoardBadge(b) {
+  const el = document.getElementById('board-badge');
+  if (!el) return;
+  if (!b || b.temp_c === null || b.temp_c === undefined) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  const deg = String.fromCharCode(176);
+  let stalled = false;
+  let txt = Math.round(b.temp_c) + deg + 'C';
+  let tip = 'Processor ' + b.temp_c + deg + 'C (' + b.sensor + ')';
+  if (b.fan_pct !== null && b.fan_pct !== undefined) {
+    txt += b.fan_pct > 0 ? ' fan ' + b.fan_pct + '%' : ' fan off';
+    tip += '. Fan ' + (b.fan_pct > 0 ? b.fan_pct + '% (PWM ' + b.fan_pwm + ')' : 'off');
+    if (b.fan_pct > 0 && b.fan_rpm !== null && b.fan_rpm !== undefined) {
+      if (b.fan_rpm === 0) { stalled = true; txt += ' STALLED'; tip += ', but not turning (0 rpm)'; }
+      else { txt += ' ' + b.fan_rpm + 'rpm'; tip += ', ' + b.fan_rpm + ' rpm'; }
+    }
+  }
+  tip += '. Held at 40' + deg + 'C by lynx-fan.';
+  el.textContent = txt;
+  el.title = tip;
+  el.style.background = (stalled || b.temp_c >= 80) ? '#b91c1c' : b.temp_c >= 60 ? '#d97706' : '#3a4a63';
+}
+
 async function poll() {
   try {
     cfg = await (await fetch('/api/status')).json();
@@ -3518,6 +3618,7 @@ async function poll() {
     : ['HDMI ?', '#3a4a63', 'The mixer is not reporting.'];
   setText('hdmi-badge', hdmiLamp[0]); setStyle('hdmi-badge', 'background', hdmiLamp[1]);
   setAttr('hdmi-badge', 'title', hdmiLamp[2]);
+  renderBoardBadge(cfg.board);
 
   // As an IQ transmitter DL1JM's modulator is stopped on purpose (or absent),
   // so "idle" would read as a fault: the badge shows the SDR instead.

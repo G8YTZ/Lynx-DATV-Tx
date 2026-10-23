@@ -18,10 +18,12 @@ IMPORTS
         FROM NET-SNMP-MIB;
 
 lynx MODULE-IDENTITY
-    LAST-UPDATED "202610192000Z"
+    LAST-UPDATED "202610231400Z"
     ORGANIZATION "Lynx DATV"
     CONTACT-INFO "Justin Cockett, G8YTZ"
     DESCRIPTION  "Status of the Lynx DATV transmitter and receiver."
+    REVISION     "202610231400Z"
+    DESCRIPTION  "The ROCK's own health: fan, uptime, load, free space (15 to 18)."
     REVISION     "202610192000Z"
     DESCRIPTION  "First version: Lynx-Tx."
     ::= { netSnmpPlaypen 1 }
@@ -125,7 +127,8 @@ lynxCpuTemp OBJECT-TYPE
     UNITS       "tenths of a degree C"
     MAX-ACCESS  read-only
     STATUS      current
-    DESCRIPTION "The ROCK's SoC temperature."
+    DESCRIPTION "The ROCK's SoC temperature (the soc-thermal sensor), held
+        at about 40 C by the fan control (lynx-fan)."
     ::= { lynxTx 12 }
 
 lynxCameraState OBJECT-TYPE
@@ -145,11 +148,51 @@ lynxAutoRecoveries OBJECT-TYPE
     DESCRIPTION "Times auto-recover has restarted the transmitter since Lynx-Tx started."
     ::= { lynxTx 14 }
 
+lynxFanPercent OBJECT-TYPE
+    SYNTAX      Gauge32 (0..100)
+    UNITS       "percent"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The ROCK's fan speed as set by lynx-fan: 0 off, 50 its slowest
+        reliable speed, 100 full. Full speed with a normal temperature
+        means the fan control has stopped."
+    ::= { lynxTx 15 }
+
+lynxUptime OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "seconds"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Seconds since the ROCK started. A drop means it restarted."
+    ::= { lynxTx 16 }
+
+lynxCpuLoad OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "percent"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The ROCK's one-minute load average as a share of all its cores.
+        About 20 on air at 4K; a sustained 80 or more leaves no headroom."
+    ::= { lynxTx 17 }
+
+lynxDiskFreeMB OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "MB"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Free space on the ROCK's system drive, where media and logs live.
+        A full drive stops everything."
+    ::= { lynxTx 18 }
+
 lynxTxGroup OBJECT-GROUP
     OBJECTS { lynxTxState, lynxSdrReachable, lynxRefState, lynxMixerRunning,
               lynxHdmiSignal, lynxTxFrequency, lynxTxPower, lynxMode,
               lynxSdrMutes, lynxMemAnonMB, lynxCmaFreeMB, lynxCpuTemp,
-              lynxCameraState, lynxAutoRecoveries }
+              lynxCameraState, lynxAutoRecoveries, lynxFanPercent,
+              lynxUptime, lynxCpuLoad, lynxDiskFreeMB }
     STATUS      current
     DESCRIPTION "Lynx-Tx status."
     ::= { lynxConformance 1 }

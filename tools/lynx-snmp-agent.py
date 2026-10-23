@@ -38,6 +38,10 @@ OBJECTS = {
     12: ("cpuTempDeciC", "integer", 0),
     13: ("cameraState", "integer", 4),
     14: ("autoRecoveries", "counter", 0),
+    15: ("fanPercent", "gauge", 0),
+    16: ("uptimeS", "gauge", 0),
+    17: ("cpuLoadPct", "gauge", 0),
+    18: ("diskFreeMB", "gauge", 0),
 }
 OIDS = [f"{BASE}.{n}.0" for n in sorted(OBJECTS)]
 

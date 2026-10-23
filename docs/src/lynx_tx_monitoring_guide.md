@@ -1,7 +1,7 @@
 title: Lynx
 subtitle: DATV Transmitter (Lynx-Tx)
 tagline: Monitoring Guide: Alarms, SNMP and Home Assistant
-version: Version 1.0  ·  G8YTZ / EI3IOB  ·  October 2026
+version: Version 1.1  ·  G8YTZ / EI3IOB  ·  October 2026
 
 # 1. Overview
 
@@ -33,9 +33,13 @@ The branch is Net-SNMP's test branch until the repeater group has its own Privat
 | `.9.0` | lynxSdrMutes | times the SDR has muted itself | it goes up |
 | `.10.0` | lynxMemAnonMB | real memory held by Lynx-Tx, MB | above about 1500 |
 | `.11.0` | lynxCmaFreeMB | free 4K buffer memory, MB | (informational: the cache borrows it) |
-| `.12.0` | lynxCpuTemp | tenths of a °C | above 850 (85 °C) |
+| `.12.0` | lynxCpuTemp | tenths of a °C (held at about 400 by the fan control) | above 600 (60 °C): the fan is not coping; the CPU throttles at 85 °C |
 | `.13.0` | lynxCameraState | 1 live, 2 colour bars, 3 unstable, 4 unknown | 3 |
 | `.14.0` | lynxAutoRecoveries | times auto-recover has restarted the transmitter | it goes up |
+| `.15.0` | lynxFanPercent | fan speed, % (0 off, 50 slowest, 100 full) | 100 while the temperature is normal: the fan control has stopped |
+| `.16.0` | lynxUptime | seconds since the ROCK started | it drops: the ROCK restarted |
+| `.17.0` | lynxCpuLoad | one-minute load, % of all cores (about 20 on air at 4K) | 80 or more for 10 minutes |
+| `.18.0` | lynxDiskFreeMB | free space on the system drive, MB | below 2000 |
 
 **Muted by the SDR:** Lynx-Tx thinks it is on air, but the SDR has turned its transmitter off because its IQ stopped arriving (see the Installation Guide, Section 5.4). TX Off then TX On restores it. **Fault:** The transmit chain stopped by itself, or Lynx-Tx is not answering at all.
 
@@ -58,7 +62,7 @@ sudo apt install -y snmp
 snmpwalk -v2c -c lynx -On localhost .1.3.6.1.4.1.8072.9999.1.1 2>/dev/null
 ```
 
-Fourteen lines, by number. Debian's `snmpwalk` comes without the standard IETF MIB files, so names (`LYNX-MIB::lynxTx`) only work after `sudo apt install snmp-mibs-downloader && sudo download-mibs` and commenting out the `mibs :` line in `/etc/snmp/snmp.conf`; without them it prints pages of "Cannot find module" warnings, which are harmless. Home Assistant uses the numbers and needs none of this.
+Eighteen lines, by number. Debian's `snmpwalk` comes without the standard IETF MIB files, so names (`LYNX-MIB::lynxTx`) only work after `sudo apt install snmp-mibs-downloader && sudo download-mibs` and commenting out the `mibs :` line in `/etc/snmp/snmp.conf`; without them it prints pages of "Cannot find module" warnings, which are harmless. Home Assistant uses the numbers and needs none of this.
 
 # 5. Home Assistant
 
@@ -105,6 +109,44 @@ sensor:
     baseoid: 1.3.6.1.4.1.8072.9999.1.1.12.0
     unit_of_measurement: "°C"
     value_template: "{{ (value | int / 10) | round(1) }}"
+
+  - platform: snmp
+    name: Lynx-Tx ROCK fan
+    unique_id: lynx_tx_fan
+    host: 192.168.0.50
+    community: lynx
+    version: "2c"
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.15.0
+    unit_of_measurement: "%"
+
+  - platform: snmp
+    name: Lynx-Tx ROCK uptime
+    unique_id: lynx_tx_uptime
+    host: 192.168.0.50
+    community: lynx
+    version: "2c"
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.16.0
+    unit_of_measurement: "h"
+    value_template: "{{ (value | int / 3600) | round(1) }}"
+
+  - platform: snmp
+    name: Lynx-Tx ROCK load
+    unique_id: lynx_tx_load
+    host: 192.168.0.50
+    community: lynx
+    version: "2c"
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.17.0
+    unit_of_measurement: "%"
+
+  - platform: snmp
+    name: Lynx-Tx ROCK free space
+    unique_id: lynx_tx_disk_free
+    host: 192.168.0.50
+    community: lynx
+    version: "2c"
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.18.0
+    unit_of_measurement: "GB"
+    value_template: "{{ (value | int / 1024) | round(1) }}"
 ```
 
 The notification to your phone, in `automations.yaml` (use your own phone's notify service):
@@ -128,6 +170,17 @@ The notification to your phone, in `automations.yaml` (use your own phone's noti
       entity_id: sensor.lynx_tx_camera
       to: "unstable"
       for: "00:01:00"
+    - platform: numeric_state
+      entity_id: sensor.lynx_tx_rock_temperature
+      above: 60
+      for: "00:05:00"
+    - platform: numeric_state
+      entity_id: sensor.lynx_tx_rock_free_space
+      below: 2
+    - platform: numeric_state
+      entity_id: sensor.lynx_tx_rock_load
+      above: 80
+      for: "00:10:00"
   action:
     - service: notify.mobile_app_your_iphone
       data:
@@ -135,10 +188,11 @@ The notification to your phone, in `automations.yaml` (use your own phone's noti
         message: "{{ trigger.to_state.name }}: {{ trigger.to_state.state }}"
 ```
 
-The `for:` delays stop a momentary blip from waking you: an alarm has to hold for that long before it is sent. Muted and fault wait 90 seconds, long enough for auto-recover to put it right by itself; lockout is sent at once, because it needs you.
+The `for:` delays stop a momentary blip from waking you: an alarm has to hold for that long before it is sent. Muted and fault wait 90 seconds, long enough for auto-recover to put it right by itself; lockout is sent at once, because it needs you. The ROCK's own health alarms wait longer: a hot spell of five minutes, or ten minutes flat out, before they bother you.
 
 # 6. Document Version History
 
 | Version | Date | Changes |
 |---|---|---|
 | 1.0 | October 2026 | First edition, from the Markdown page: SNMP objects, auto-recover and lockout, Home Assistant sensors and alarm |
+| 1.1 | 23 October 2026 | The ROCK's own health: fan speed, uptime, load and free space (objects 15 to 18), with Home Assistant sensors and alarms |
