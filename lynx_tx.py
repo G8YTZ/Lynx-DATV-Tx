@@ -1947,6 +1947,21 @@ def tx_running() -> bool:
 app = FastAPI(title="Lynx-Tx", docs_url="/api/docs")
 
 
+# The page's styling (Bootstrap 5.3.2, MIT) is served from here, not from a
+# CDN: at a repeater site, or on a phone over a mobile router, the browser
+# may not reach the internet, and the page came up unformatted (24 Oct 2026).
+STATIC_DIR = APP_DIR / "static"
+
+
+@app.get("/static/bootstrap.min.css", include_in_schema=False)
+def static_bootstrap():
+    f = STATIC_DIR / "bootstrap.min.css"
+    if not f.is_file():
+        raise HTTPException(404, "static/bootstrap.min.css missing")
+    return Response(f.read_bytes(), media_type="text/css",
+                    headers={"Cache-Control": "public, max-age=604800"})
+
+
 @app.on_event("shutdown")
 def mute_on_shutdown():
     """The ROCK restarting or shutting down: mute the SDR while the IQ is
@@ -2744,7 +2759,7 @@ PAGE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lynx-Tx</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="/static/bootstrap.min.css" rel="stylesheet">
 <style>
   body { background: #1a1a2e; color: #e0e0e0; }
   .card { background: #16213e; border: 1px solid #0f3460; }
@@ -4147,7 +4162,7 @@ MEDIA_PAGE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lynx-Tx - Media</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="/static/bootstrap.min.css" rel="stylesheet">
 <style>
   body { background: #1a1a2e; color: #e0e0e0; }
   .card { background: #16213e; border: 1px solid #0f3460; }
