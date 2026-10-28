@@ -143,6 +143,9 @@ DEFAULT_CONFIG = {
         "fps": 50,
         "audio": True,
         "audio_bitrate": 192000,
+        # "stereo": AAC (as proven on air). "5.1": AC-3, six channels from a
+        # 5.1 clip; the camera and stereo clips go out on front left/right.
+        "audio_format": "stereo",
         # The tweaks (Source and Encoder tweak cards): the values proven on
         # air on 6 Oct 2026 - QPSK 3/4 2000 kS/s, 16 minutes of Save Tonight,
         # nothing late. TESTED_TWEAKS below is the same set, for the page's
@@ -1459,7 +1462,8 @@ def build_pipeline() -> str:
     # Independent of picture_share, so a bigger share means the floor works
     # harder - not that the controller believes there is more channel.
     pkts = rate / 1504.0
-    aac_fps = 48000 / 1024.0
+    # One PES per codec frame: AAC 1024 samples (21 ms), AC-3 1536 (32 ms).
+    aac_fps = 48000 / (1536.0 if enc.get("audio_format") == "5.1" else 1024.0)
     sound_pkts = aac_fps * ((enc["audio_bitrate"] / 8 / aac_fps + 21) / 184 + 0.6)
     pic_pkts = pkts - sound_pkts - 1 / 0.035 - 12
     picture_channel_bps = int((pic_pkts * 184 * 8 - 25 * (20 + 92) * 8) * 0.97)
@@ -1605,7 +1609,8 @@ def build_pipeline() -> str:
         core = (f"python3 {shlex.quote(str(APP_DIR / 'switcher.py'))} "
                 f"--media-dir {shlex.quote(str(MEDIA_DIR))} "
                 f"--udp 127.0.0.1:{MIXER_PORT} --bps {video_bps} "
-                f"--gop {enc['gop']} --qp-floor {int(enc.get('qp_floor', 34))} --audio-bitrate {enc['audio_bitrate']} --slack {slack} "
+                f"--gop {enc['gop']} --qp-floor {int(enc.get('qp_floor', 34))} --audio-bitrate {enc['audio_bitrate']} "
+                f"--audio-format {'5.1' if enc.get('audio_format') == '5.1' else 'stereo'} --slack {slack} "
                 f"--rc {rate_control} "
                 f"--rc-rate {picture_channel_bps} "
                 f"--look {float(enc.get('look_ahead', 0.5))} "
@@ -1690,6 +1695,10 @@ def build_pipeline() -> str:
         (f"ffmpeg -loglevel warning -analyzeduration 1000000 -f mpegts -i {stream_in}"
          if not parts else " | ffmpeg -loglevel warning -analyzeduration 1000000 -f mpegts -i -")
         + f" -map 0:v:0 -map '0:a:0?' -c copy -f mpegts {muxrate}"
+        # AC-3 the DVB way (stream type 0x06 with an AC-3 descriptor), not
+        # ATSC's 0x81: what DVB receivers (Enigma2, set-top boxes) look for.
+        + ("-mpegts_flags system_b " if enc.get("audio_format") == "5.1" else "")
+        + f""
         f"-metadata service_provider={shlex.quote(config['provider'])} "
         f"-metadata service_name={shlex.quote(config['callsign'])} "
         f"-mpegts_original_network_id {ident['original_network_id']} "
@@ -1933,6 +1942,7 @@ class EncoderUpdate(BaseModel):
     fps: Optional[int] = None
     audio: Optional[bool] = None
     audio_bitrate: Optional[int] = None
+    audio_format: Optional[str] = None
 
 
 class TweaksUpdate(BaseModel):
@@ -2473,6 +2483,15 @@ def api_encoder(req: EncoderUpdate):
     for k, v in dump(req).items():
         if v is not None:
             config["encoder"][k] = v
+    e = config["encoder"]
+    if e.get("audio_format") not in ("stereo", "5.1"):
+        e["audio_format"] = "stereo"
+    # Each format at a sensible rate: AC-3 5.1 wants 384k (256k at least);
+    # AAC stereo never needs more than 192k.
+    if e["audio_format"] == "5.1" and e["audio_bitrate"] < 256000:
+        e["audio_bitrate"] = 384000
+    if e["audio_format"] == "stereo" and e["audio_bitrate"] > 192000:
+        e["audio_bitrate"] = 192000
     save_config(config)
     if tx_running():
         start_tx()
@@ -2884,6 +2903,12 @@ PAGE = """<!DOCTYPE html>
                    onchange="saveEnc()">
             <label class="form-check-label small" for="e-audio">Audio</label>
           </div>
+          <label class="small text-muted">Sound</label>
+          <select class="form-select form-select-sm bg-dark text-light border-secondary mb-2"
+                  id="e-afmt" onchange="saveEnc()">
+            <option value="stereo">Stereo (AAC)</option>
+            <option value="5.1">5.1 surround (Dolby Digital AC-3)</option>
+          </select>
           <label class="small text-muted">Audio bitrate</label>
           <select class="form-select form-select-sm bg-dark text-light border-secondary mb-2"
                   id="e-abr" onchange="saveEnc()">
@@ -2891,6 +2916,9 @@ PAGE = """<!DOCTYPE html>
             <option value="96000">96 kb/s</option>
             <option value="128000">128 kb/s</option>
             <option value="192000">192 kb/s</option>
+            <option value="256000">256 kb/s (5.1)</option>
+            <option value="384000">384 kb/s (5.1)</option>
+            <option value="448000">448 kb/s (5.1)</option>
           </select>
           <div class="text-muted small mb-2">
             Below about 96 kb/s AAC sounds broken in a way easily
@@ -3367,13 +3395,16 @@ async function applyUpdate() {
 }
 
 async function saveEnc() {
-  await api('POST', '/api/encoder', {
+  const j = await api('POST', '/api/encoder', {
     width: parseInt(document.getElementById('e-format').value.split('x')[0], 10),
     height: parseInt(document.getElementById('e-format').value.split('x')[1], 10),
     fps: parseInt(document.getElementById('e-fps').value, 10),
     audio: document.getElementById('e-audio').checked,
     audio_bitrate: parseInt(document.getElementById('e-abr').value, 10),
+    audio_format: document.getElementById('e-afmt').value,
   });
+  // The server moves the bitrate to suit the format: show what it chose.
+  if (j && j.config) document.getElementById('e-abr').value = j.config.audio_bitrate;
   poll();
 }
 
@@ -3736,6 +3767,7 @@ async function poll() {
     document.getElementById('e-fps').value = e.fps;
     document.getElementById('e-audio').checked = e.audio;
     document.getElementById('e-abr').value = e.audio_bitrate;
+    document.getElementById('e-afmt').value = e.audio_format || 'stereo';
     PRESETS = cfg.tweaks.presets; TESTED = cfg.tweaks.tested;
     showTested();
     fillTweaks(e);

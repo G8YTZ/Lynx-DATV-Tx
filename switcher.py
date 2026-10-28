@@ -77,6 +77,8 @@ ap.add_argument("--qp-floor", type=int, default=34,
                 help="finest QP the encoder may use (its floor when the picture is easy); "
                      "lower = sharper still detail, bigger keyframes")
 ap.add_argument("--audio-bitrate", type=int, default=192000)
+ap.add_argument("--audio-format", choices=("stereo", "5.1"), default="stereo",
+                help="stereo: AAC, as always; 5.1: AC-3 (Dolby Digital), six channels")
 ap.add_argument("--width", type=int, default=3840)
 ap.add_argument("--height", type=int, default=2160)
 ap.add_argument("--video-device", default="/dev/video0")
@@ -113,7 +115,17 @@ Gst.init(None)
 FRAME = Gst.SECOND // 25
 W, H = a.width, a.height
 VCAPS = f"video/x-raw,format=NV16,width={W},height={H},framerate=25/1"
-ACAPS = "audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2"
+# The sound bus. In 5.1 every source is converted to six channels on the
+# way in (FL FR FC LFE RL RR, mask 0x3f): stereo sources (the camera's HDMI
+# sound, a stereo clip) land on front left and right, a 5.1 clip keeps all
+# six. In stereo, a 5.1 clip is folded down as before.
+if a.audio_format == "5.1":
+    ACAPS = ("audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=6,"
+             "channel-mask=(bitmask)0x3f")
+    AENC = f"avenc_ac3 bitrate={a.audio_bitrate} ! ac3parse"
+else:
+    ACAPS = "audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2"
+    AENC = f"avenc_aac bitrate={a.audio_bitrate} ! aacparse"
 Q = "queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0"
 MEDIA_DIR = Path(a.media_dir)
 loop = GLib.MainLoop()
@@ -245,7 +257,7 @@ prog = Gst.parse_launch(
     f"input-selector name=vsel ! identity name=vstamp ! {LOOK_Q}{VCAPS} ! {encode} ! "
     f"h265parse config-interval=-1 ! {Q} ! mux. "
     f"audiomixer name=amix ! {ACAPS} ! {LOOK_Q}audioconvert ! "
-    f"avenc_aac bitrate={a.audio_bitrate} ! aacparse ! {Q} ! mux. "
+    f"{AENC} ! {Q} ! mux. "
     f"mpegtsmux name=mux{' alignment=7' if a.udp else ''} ! {sink} "
     f"intervideosrc name=src_cam channel=cam timeout=10000000000 ! {VCAPS} ! vsel. "
     f"intervideosrc name=src_med channel=med timeout=10000000000 ! {VCAPS} ! vsel. "
