@@ -48,8 +48,8 @@ ap.add_argument("--video-pid", type=lambda v: int(v, 0), default=0x201)
 ap.add_argument("--delay", type=float, default=4.0,
                 help="how far the stream clock runs ahead of the pictures, s: a keyframe "
                      "travels in the main stream's spare packets, which takes seconds")
-ap.add_argument("--pad", type=float, default=2e6,
-                help="output rate with null packets, b/s (see the ffmpeg call)")
+ap.add_argument("--pad", type=float, default=0,
+                help="no longer used: kept so older command lines still run")
 ap.add_argument("--sim", action="store_true", help="software encoder (testing off the ROCK)")
 a = ap.parse_args()
 
@@ -105,10 +105,15 @@ ff = subprocess.Popen(
      "-mpegts_service_id", str(a.service_id), "-mpegts_service_type", str(a.service_type),
      "-mpegts_pmt_start_pid", str(a.pmt_pid), "-streamid", f"0:{a.video_pid}",
      "-max_delay", str(int(a.delay * 1e6)), "-pat_period", "0.5", "-sdt_period", "1",
-     # Padded with null packets to --pad b/s: TSDuck's merge reads its
-     # command in ~95 kB blocks, which a bare 100 kb/s stream takes 8 s to
-     # fill (the pictures then arrive too late). The nulls are not merged.
-     "-muxrate", str(int(a.pad)), "pipe:1"],
+     # No null padding: TSDuck's merge spends one of the main stream's null
+     # slots on every packet it takes, its own nulls included (tsMergePlugin
+     # processMergePacket: the PID filter runs after the slot is used). Padded
+     # to 2 Mb/s into a few hundred kb/s of spare slots, programme 2 ran at a
+     # fraction of real time and fell further and further behind, until its
+     # pictures arrived too late to show. Unpadded, it costs only its pictures.
+     # Flushed packet by packet instead, so nothing sits in ffmpeg's buffer
+     # (the delay the padding was there to hide).
+     "-flush_packets", "1", "pipe:1"],
     stdin=subprocess.PIPE, stdout=sys.stdout.buffer)
 pipe = Gst.parse_launch(
     f"appsrc name=src is-live=true format=time do-timestamp=false caps={CAPS} ! "
