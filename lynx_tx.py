@@ -2528,6 +2528,7 @@ class CarouselUpdate(BaseModel):
     lcn: Optional[int] = None
     seconds: Optional[float] = None
     reserve_kbps: Optional[int] = None
+    keyframe_s: Optional[float] = None
 
 
 @app.get("/api/carousel")
@@ -2553,6 +2554,7 @@ def api_carousel_set(req: CarouselUpdate):
         raise HTTPException(400, "LCN must be 1-1023")
     car["seconds"] = max(5.0, min(3600.0, float(car.get("seconds", 60))))
     car["reserve_kbps"] = max(0, min(5000, int(car.get("reserve_kbps", 300))))
+    car["keyframe_s"] = max(1.0, min(60.0, float(car.get("keyframe_s", 10))))
     config["carousel"] = car
     save_config(config)
     return {"success": True, "carousel": car}
@@ -3372,6 +3374,11 @@ PAGE = """<!DOCTYPE html>
               <input type="number" min="0" max="5000" step="50" class="form-control form-control-sm bg-dark text-light border-secondary"
                      id="c-res" onchange="carSave()">
             </div>
+            <div class="col-md-3">
+              <label class="small text-muted">Keyframe every (s)</label>
+              <input type="number" min="1" max="60" step="1" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="c-key" onchange="carSave()">
+            </div>
           </div>
           <div class="small mt-2" id="c-status">&mdash;</div>
           <div class="text-muted small mt-1">A second programme in the same carrier: the stills in
@@ -3379,7 +3386,8 @@ PAGE = """<!DOCTYPE html>
             travels in the packets the channel would otherwise fill with stuffing. Room reserved
             takes that much off the live picture while programme 2 is on, so its stills always
             find space: raise it if programme 2's picture drops out on detailed stills, 0 for none.
-            A viewer switching over waits up to 10 s for a picture.
+            Keyframe every: how long a viewer switching over may wait for a picture. Halving it
+            about doubles programme 2's rate, so give it more room reserved to match.
             Takes effect at the next TX On.</div>
           <div class="small mt-1" style="color:#f87171" id="c-error"></div>
         </div>
@@ -3446,6 +3454,7 @@ async function carLoad() {
   document.getElementById('c-lcn').value = c.lcn;
   document.getElementById('c-secs').value = c.seconds;
   document.getElementById('c-res').value = c.reserve_kbps ?? 300;
+  document.getElementById('c-key').value = c.keyframe_s ?? 10;
   const n = j.stills.length;
   let st = n ? `${n} still${n > 1 ? 's' : ''}: ${j.stills.slice(0, 6).join(', ')}${n > 6 ? ' ...' : ''}`
              : 'No stills in the media library yet: colour bars until there are.';
@@ -3459,7 +3468,8 @@ async function carSave() {
                 service_id: parseInt(document.getElementById('c-sid').value, 10),
                 lcn: parseInt(document.getElementById('c-lcn').value || '0', 10),
                 seconds: parseFloat(document.getElementById('c-secs').value),
-                reserve_kbps: parseInt(document.getElementById('c-res').value || '0', 10)};
+                reserve_kbps: parseInt(document.getElementById('c-res').value || '0', 10),
+                keyframe_s: parseFloat(document.getElementById('c-key').value || '10')};
   const r = await fetch('/api/carousel', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                           body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({}));
