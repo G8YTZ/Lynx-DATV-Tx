@@ -190,7 +190,7 @@ DEFAULT_CONFIG = {
         "audio_pid": 0x102,
         "polarization": "horizontal",
     },
-    # Programme 2 (DVB-S2): a carousel of 4K stills as a second service,
+    # Programme 2: a carousel of 4K stills as a second service,
     # carried in the main stream's null packets (carousel.py). Takes effect
     # at the next TX On.
     "carousel": {
@@ -1028,9 +1028,11 @@ nit_status = {"ok": False, "detail": "Not built yet"}
 
 
 def carousel_on() -> Optional[dict]:
-    """Programme 2's settings when it is to go out (DVB-S2 only), else None."""
+    """Programme 2's settings when it is to go out, else None. DVB-S2 and
+    ATSC 3.0 alike: in both the stream reaching the modulator is a
+    constant-rate TS with nulls in it, and merge only takes nulls."""
     car = config.get("carousel") or {}
-    if not car.get("enabled") or is_atsc3():
+    if not car.get("enabled"):
         return None
     return car
 
@@ -1820,9 +1822,10 @@ def build_pipeline() -> str:
         # No regulate: the modulator's pull is the pace (see atsc3mod.py),
         # and tsprio above has already made the stream constant-rate.
         flowgraph = atsc3mod.build_flowgraph(config["atsc3"], APP_DIR)
+        # Programme 2 rides in tsprio's nulls here too (merge takes nothing else).
         parts.append(
             f" | tsp --buffer-size-mb 0.05 -I file - "
-            f"{tap}-O file {atsc3mod.TS_FIFO}")
+            f"{carousel_merge()}{tap}-O file {atsc3mod.TS_FIFO}")
         return atsc3mod.modulator_shell(sdr_uri(), flowgraph) + "".join(parts)
     if iq:
         # DVB-S2 from the ROCK: as ATSC 3.0 (the DAC's pull is the pace),
@@ -2508,7 +2511,7 @@ def api_network_set(u: NetworkUpdate):
     return {"success": True, "detail": r.stdout.strip()}
 
 
-# ---- Programme 2: the 4K stills carousel (DVB-S2) ---------------------------
+# ---- Programme 2: the 4K stills carousel -------------------------------------
 class CarouselUpdate(BaseModel):
     enabled: Optional[bool] = None
     name: Optional[str] = None
@@ -3324,7 +3327,7 @@ PAGE = """<!DOCTYPE html>
   <div class="row g-3 mt-1">
     <div class="col-12">
       <div class="card">
-        <div class="card-header">&#x1F5BC;&#xFE0F; Programme 2 &mdash; 4K stills carousel (DVB-S2)</div>
+        <div class="card-header">&#x1F5BC;&#xFE0F; Programme 2 &mdash; 4K stills carousel</div>
         <div class="card-body">
           <div class="row g-3 align-items-end">
             <div class="col-md-2">
@@ -3427,8 +3430,7 @@ async function carLoad() {
   const n = j.stills.length;
   let st = n ? `${n} still${n > 1 ? 's' : ''}: ${j.stills.slice(0, 6).join(', ')}${n > 6 ? ' ...' : ''}`
              : 'No stills in the media library yet: colour bars until there are.';
-  if (j.atsc3) st += ' · Not sent in ATSC 3.0 mode.';
-  else if (c.enabled) st += j.running ? ' · On air.' : ' · Goes out at the next TX On.';
+  if (c.enabled) st += j.running ? ' · On air.' : ' · Goes out at the next TX On.';
   setText('c-status', st);
 }
 async function carSave() {
