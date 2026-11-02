@@ -296,6 +296,7 @@ class ChatOnAir:
     all drawing happens on the main loop."""
 
     SLOTS, MARGIN = 3, 40                    # MARGIN in pixels at 1080 lines
+    RECENT = 50                              # kept for the keeper's page (12 on a receiver)
 
     def __init__(self):
         from collections import deque as _dq
@@ -303,7 +304,7 @@ class ChatOnAir:
         self.c = batc_chat
         self.room, self.listener = "", None
         self.hidden = batc_chat.load_hidden(a.chat_hidden)
-        self.recent = _dq(maxlen=batc_chat.RECENT)
+        self.recent = _dq(maxlen=self.RECENT)
         self.bubbles = []                    # [name, text, hhmm, until]
         self.n = 0
         GLib.timeout_add(500, self._tick)

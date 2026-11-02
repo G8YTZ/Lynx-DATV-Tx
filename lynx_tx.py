@@ -3230,8 +3230,8 @@ PAGE = """<!DOCTYPE html>
               <div class="small mt-2" id="c-status">&mdash;</div>
             </div>
             <div class="col-md-5">
-              <label class="small text-muted">Last messages &mdash; Hide keeps a sender off air</label>
-              <div id="c-recent" class="small"></div>
+              <label class="small text-muted">Last 50 messages, newest first &mdash; Hide keeps a sender off air</label>
+              <div id="c-recent" class="small" style="max-height:22rem;overflow-y:auto"></div>
             </div>
             <div class="col-md-3">
               <label class="small text-muted">Hidden senders</label>
