@@ -3273,17 +3273,17 @@ async function chatPoll() {
   rec.innerHTML = (j.recent || []).length ? j.recent.map(m =>
     '<div class="d-flex justify-content-between align-items-start border-bottom border-secondary py-1">' +
     '<div><span class="text-muted">' + esc(m.time) + '</span> <b style="color:#d6e8ff">' + esc(m.name) +
-    '</b> ' + esc(m.text) + '</div>' +
+    '</b> <span class="text-light">' + esc(m.text) + '</span></div>' +
     '<button class="btn btn-outline-danger btn-sm py-0 ms-2" data-n="' + esc(m.name) +
     '" onclick="hideChat(this.dataset.n, true)">Hide</button></div>').join('')
-    : '<span class="text-muted">Nothing heard yet.</span>';
+    : '<span class="text-light">Nothing heard yet.</span>';
   const hid = document.getElementById('c-hidden');
   hid.innerHTML = (j.hidden || []).length ? j.hidden.map(h =>
-    '<div class="d-flex justify-content-between align-items-center py-1"><span>' + esc(h.name) +
-    (h.held ? ' <span class="text-muted">(' + h.held + ')</span>' : '') + '</span>' +
+    '<div class="d-flex justify-content-between align-items-center py-1"><span style="color:#d6e8ff"><b>' + esc(h.name) + '</b>' +
+    (h.held ? ' <span class="text-muted">(' + h.held + (h.held === 1 ? ' message' : ' messages') + ' held back)</span>' : '') + '</span>' +
     '<button class="btn btn-outline-secondary btn-sm py-0 ms-2" data-n="' + esc(h.name) +
     '" onclick="hideChat(this.dataset.n, false)">Show</button></div>').join('')
-    : '<span class="text-muted">None.</span>';
+    : '<span class="text-light">None.</span>';
 }
 
 async function saveChat() {
