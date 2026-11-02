@@ -297,6 +297,7 @@ class ChatOnAir:
 
     SLOTS, MARGIN = 3, 40                    # MARGIN in pixels at 1080 lines
     RECENT = 50                              # kept for the keeper's page (12 on a receiver)
+    TOP = 1 / 3                              # the first bubble's top, as a share of the height
 
     def __init__(self):
         from collections import deque as _dq
@@ -361,7 +362,9 @@ class ChatOnAir:
             pic.save(path)
             m = int(round(self.MARGIN * H / 1080))
             chatov.set_property("offset-x", W - pic.width - m)
-            chatov.set_property("offset-y", m)
+            # A third of the way down: clear of a receiver's own MER and
+            # signal display at the top (Justin, 2 Nov 2026).
+            chatov.set_property("offset-y", int(H * self.TOP))
             chatov.set_property("location", path)
         except Exception as e:
             log(f"chat: could not draw: {e}")

@@ -3225,7 +3225,7 @@ PAGE = """<!DOCTYPE html>
                      id="c-room" maxlength="40" onchange="saveChat()">
               <div class="text-muted small">Whose chat: the end of its BATC address
                 (batc.org.uk/live/<i>gb3oo</i>). Empty: the one named after your callsign.
-                New messages appear as blue bubbles top right, about 10 s each, on Camera
+                New messages appear as blue bubbles on the right, from a third of the way down (clear of a receiver's MER display), about 10 s each, on Camera
                 and Media alike. Changing this never interrupts the transmission.</div>
               <div class="small mt-2" id="c-status">&mdash;</div>
             </div>
