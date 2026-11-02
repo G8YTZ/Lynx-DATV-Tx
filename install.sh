@@ -61,6 +61,7 @@ sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   git curl jq ca-certificates \
   python3 python3-fastapi python3-uvicorn python3-pydantic python3-yaml python3-numpy python3-gi \
+  python3-pil fonts-dejavu-core \
   ffmpeg v4l-utils \
   gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad gstreamer1.0-libav gir1.2-gstreamer-1.0 \

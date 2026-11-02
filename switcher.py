@@ -41,6 +41,9 @@ Control (Lynx-Tx calls these; the page at / is for stand-alone use):
   POST /load?file=<name>        play <name> from --media-dir in the Media player
   POST /keyframe                a keyframe now (Lynx-Tx asks at every key-up)
   GET  /status                  JSON: on air, media, camera state
+  GET  /chat                    JSON: the chat room, last messages, hidden senders
+  POST /chat?room=<stream>      show that BATC stream's chat on the programme ("" = off)
+  POST /chat/hide?name=<who>    hide (or /chat/show: show again) one sender's messages
 
   python3 switcher.py --media-dir /srv/lynxdeck/media --media Ayo4k.mp4 [--out f.ts] [--sim]
 """
@@ -102,6 +105,10 @@ ap.add_argument("--look", type=float, default=0.5,
                 help="with --rc buffer/hybrid: look-ahead delay in seconds (0 = react only)")
 ap.add_argument("--buffer-json", default="/tmp/lynx-buffer.json",
                 help="the buffer monitor's live reading, for the bitrate trim")
+ap.add_argument("--chat-room", default="",
+                help="BATC stream whose chat shows on the programme, as bubbles (empty: none)")
+ap.add_argument("--chat-hidden", default="/tmp/lynx-chat-hidden.json",
+                help="the keeper's list of hidden chat senders")
 a = ap.parse_args()
 
 STILL_EXT = {".png", ".jpg", ".jpeg", ".bmp"}
@@ -251,11 +258,24 @@ if a.udp:
 else:
     sink = f"filesink location={a.out}" if a.out else "fdsink fd=1"
 
+# BATC chat on the programme: a picture of the bubbles laid over whichever
+# input is on air, straight on the NV16 frames (no conversion; checked on
+# the ROCK, 2 Nov 2026). With nothing to show it lays a transparent pixel.
+CHAT_BLANK = "/tmp/lynx-chat-blank.png"
+try:
+    from PIL import Image as _Image
+    _Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(CHAT_BLANK)
+except Exception as _e:                              # no Pillow: chat stays off
+    with open(CHAT_BLANK, "wb") as _f:
+        _f.write(bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                               "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"))
+
 LOOK = a.look if a.rc in ("buffer", "hybrid") else 0.0
 LOOK_Q = (f"queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 "
           f"min-threshold-time={int(LOOK * 1e9)} ! ") if LOOK > 0 else ""
 prog = Gst.parse_launch(
-    f"input-selector name=vsel ! identity name=vstamp ! {LOOK_Q}{VCAPS} ! {encode} ! "
+    f"input-selector name=vsel ! gdkpixbufoverlay name=chatov location={CHAT_BLANK} ! "
+    f"identity name=vstamp ! {LOOK_Q}{VCAPS} ! {encode} ! "
     f"h265parse config-interval=-1 ! {Q} ! mux. "
     f"audiomixer name=amix ! {ACAPS} ! {LOOK_Q}audioconvert ! "
     f"{AENC} ! {Q} ! mux. "
@@ -265,6 +285,118 @@ prog = Gst.parse_launch(
     f"interaudiosrc name=asrc_cam channel=cam_a ! {ACAPS} ! amix.sink_0 "
     f"interaudiosrc name=asrc_med channel=med_a ! {ACAPS} ! amix.sink_1")
 vsel, amix, enc = (prog.get_by_name(n) for n in ("vsel", "amix", "enc"))
+chatov = prog.get_by_name("chatov")
+
+
+class ChatOnAir:
+    """One BATC stream's chat as bubbles on the programme (the keeper's own
+    repeater): new messages only, each up 10 s (a second more for each line
+    past two), at most three, newest at the bottom; the keeper's hidden
+    senders never reach the picture. The listener runs in its own threads;
+    all drawing happens on the main loop."""
+
+    SLOTS, MARGIN = 3, 40                    # MARGIN in pixels at 1080 lines
+
+    def __init__(self):
+        from collections import deque as _dq
+        import batc_chat
+        self.c = batc_chat
+        self.room, self.listener = "", None
+        self.hidden = batc_chat.load_hidden(a.chat_hidden)
+        self.recent = _dq(maxlen=batc_chat.RECENT)
+        self.bubbles = []                    # [name, text, hhmm, until]
+        self.n = 0
+        GLib.timeout_add(500, self._tick)
+
+    def follow(self, room):
+        room = (room or "").strip().lower()
+        if room == self.room:
+            return False
+        if self.listener:
+            self.listener.stop()
+            self.listener = None
+        self.room, self.bubbles = room, []
+        self._draw()
+        if room:
+            try:
+                self.listener = self.c.Listener(room, self._heard, lambda t: log(t))
+                self.listener.start()
+            except ValueError:
+                log(f"chat: bad stream name {room!r}")
+                self.room = ""
+        log(f"chat: {'following ' + room if self.room else 'off'}")
+        return False
+
+    def _heard(self, name, text, hhmm):          # the listener's thread
+        GLib.idle_add(self._add, name, text, hhmm)
+
+    def _add(self, name, text, hhmm):
+        self.recent.append({"name": name, "text": text, "time": hhmm})
+        if not self.c.is_hidden(name, self.hidden):
+            import chat_bubbles
+            until = time.time() + self.c.show_for(chat_bubbles.lines_of(text, H))
+            self.bubbles = (self.bubbles + [[name, text, hhmm, until]])[-self.SLOTS:]
+            self._draw()
+        return False
+
+    def _tick(self):
+        keep = [b for b in self.bubbles if b[3] > time.time()]
+        if len(keep) != len(self.bubbles):
+            self.bubbles = keep
+            self._draw()
+        return True
+
+    def _draw(self):
+        if not self.bubbles:
+            chatov.set_property("location", CHAT_BLANK)
+            return
+        try:
+            import chat_bubbles
+            pic = chat_bubbles.render([(b[0], b[1], b[2]) for b in self.bubbles], H)
+            # A new name each time: the overlay loads the picture when its
+            # location changes.
+            self.n = (self.n + 1) % 2
+            path = f"/tmp/lynx-chat-{self.n}.png"
+            pic.save(path)
+            m = int(round(self.MARGIN * H / 1080))
+            chatov.set_property("offset-x", W - pic.width - m)
+            chatov.set_property("offset-y", m)
+            chatov.set_property("location", path)
+        except Exception as e:
+            log(f"chat: could not draw: {e}")
+
+    def hide(self, name, hidden=True):
+        names = [h for h in self.hidden if h.lower() != name.lower()]
+        if hidden:
+            names.append(name)
+        self.hidden = names
+        try:
+            self.c.save_hidden(names, a.chat_hidden)
+        except OSError as e:
+            log(f"chat: could not save hidden senders: {e}")
+        if hidden:
+            self.bubbles = [b for b in self.bubbles if b[0].lower() != name.lower()]
+            self._draw()
+        log(f"chat: hidden senders now {names}")
+        return False
+
+    def report(self):
+        held = {}
+        shown = []
+        for m in list(self.recent)[::-1]:             # newest first
+            if self.c.is_hidden(m["name"], self.hidden):
+                held[m["name"].lower()] = held.get(m["name"].lower(), 0) + 1
+            else:
+                shown.append(m)
+        return {"room": self.room, "recent": shown,
+                "hidden": [{"name": h, "held": held.get(h.lower(), 0)} for h in self.hidden]}
+
+
+try:
+    chat = ChatOnAir()
+except Exception as e:                               # Pillow or the reader missing
+    log(f"chat: not available: {e}")
+    chat = None
 
 # Anchored, never backwards: each buffer keeps the clock's own timestamp
 # unless that would step back past the previous one.
@@ -779,6 +911,9 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/status":
             self._send(200, json.dumps(state))
+        elif path == "/chat":
+            self._send(200, json.dumps(chat.report() if chat else {"room": "", "recent": [], "hidden": [],
+                                                                    "error": "chat not available"}))
         elif path == "/":
             self._send(200, PAGE, "text/html")
         else:
@@ -793,6 +928,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, '{"error":"src must be cam or med"}')
             GLib.idle_add(take, src)
             return self._send(200, json.dumps({"taking": src}))
+        if u.path in ("/chat", "/chat/hide", "/chat/show"):
+            if chat is None:
+                return self._send(503, '{"error":"chat not available"}')
+            if u.path == "/chat":
+                room = (q.get("room") or [""])[0]
+                GLib.idle_add(chat.follow, room)
+                return self._send(200, json.dumps({"room": room}))
+            name = (q.get("name") or [""])[0].strip()
+            if not name:
+                return self._send(400, '{"error":"name needed"}')
+            GLib.idle_add(chat.hide, name, u.path == "/chat/hide")
+            return self._send(200, json.dumps({"name": name, "hidden": u.path == "/chat/hide"}))
         if u.path == "/keyframe":
             GLib.idle_add(keyframe)
             return self._send(200, '{"keyframe": true}')
@@ -835,6 +982,8 @@ if prog.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
     log("could not start the encoder side")
     sys.exit(1)
 GLib.timeout_add(1000, lambda: take(a.start))
+if chat and a.chat_room:
+    GLib.timeout_add(5000, chat.follow, a.chat_room)    # the picture first
 if a.seconds:
     GLib.timeout_add(a.seconds * 1000, shutdown)
 log(f"running; control on port {a.port}")

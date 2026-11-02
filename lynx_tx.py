@@ -193,7 +193,12 @@ DEFAULT_CONFIG = {
         "audio_pid": 0x102,
         "polarization": "horizontal",
     },
+    # BATC chat on the programme, as bubbles (2 Nov 2026): the keeper's own
+    # repeater's chat. room "" = the stream named after the callsign (the
+    # first word of the service name, e.g. gb3oo). Off by default.
+    "chat": {"on": False, "room": ""},
 }
+CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
 
 
 def load_config() -> dict:
@@ -1618,9 +1623,14 @@ def build_pipeline() -> str:
                 f"--width {w} --height {h} "
                 f"--video-device {shlex.quote(config['video_device'])} "
                 f"--audio-device {shlex.quote(config['audio_device'])}")
+        # The chat room is not part of what the mixer is built with: it
+        # changes on the fly (POST /chat), never rebuilding the mixer.
+        room = chat_room()
         mixer_plan.update(core=core, start=core
                           + (f" --media {shlex.quote(clip)}" if clip else "")
-                          + f" --start {start}")
+                          + f" --start {start}"
+                          + f" --chat-hidden {shlex.quote(str(CHAT_HIDDEN))}"
+                          + (f" --chat-room {shlex.quote(room)}" if room else ""))
         parts = []
         # The reserve between mixer and chain: 2 s of stream at most (in
         # 188-byte packets), so a slow start can never build a backlog that
@@ -2534,6 +2544,80 @@ def switcher_call(method: str, path: str) -> Optional[dict]:
         return None
 
 
+def chat_room() -> str:
+    """The BATC stream whose chat goes on air, or "" with chat off."""
+    c = config.get("chat") or {}
+    if not c.get("on"):
+        return ""
+    room = (c.get("room") or "").strip().lower()
+    if not room:
+        words = (config.get("callsign") or "").split()
+        room = words[0].lower() if words else ""
+    return room if re.match(r"^[a-z0-9_.-]+$", room) else ""
+
+
+class ChatRequest(BaseModel):
+    on: bool
+    room: str = ""
+
+
+@app.get("/api/chat")
+def api_chat():
+    """Chat settings, and from the running mixer the last messages and the
+    keeper's hidden senders."""
+    live = switcher_call("GET", "/chat") if mixer_running() else None
+    hidden = live["hidden"] if live else [{"name": n, "held": 0}
+                                          for n in _load_chat_hidden()]
+    return {"on": bool((config.get("chat") or {}).get("on")),
+            "room": (config.get("chat") or {}).get("room", ""),
+            "following": live.get("room", "") if live else "",
+            "default_room": ((config.get("callsign") or "").split() or [""])[0].lower(),
+            "recent": live.get("recent", []) if live else [],
+            "hidden": hidden, "live": live is not None,
+            "error": live.get("error", "") if live else ""}
+
+
+def _load_chat_hidden() -> list:
+    try:
+        return json.loads(CHAT_HIDDEN.read_text())
+    except (OSError, ValueError):
+        return []
+
+
+@app.post("/api/chat")
+def api_chat_set(req: ChatRequest):
+    room = req.room.strip().lower()
+    if room and not re.match(r"^[a-z0-9_.-]+$", room):
+        raise HTTPException(400, "the stream name is the end of its BATC address, e.g. gb3oo")
+    config["chat"] = {"on": req.on, "room": room}
+    save_config(config)
+    from urllib.parse import quote
+    live = mixer_running() and switcher_call("POST", f"/chat?room={quote(chat_room())}") is not None
+    return {"success": True, "live": live, "room": chat_room()}
+
+
+class ChatHideRequest(BaseModel):
+    name: str
+    hide: bool = True
+
+
+@app.post("/api/chat/hide")
+def api_chat_hide(req: ChatHideRequest):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "name needed")
+    from urllib.parse import quote
+    if mixer_running() and switcher_call("POST", f"/chat/{'hide' if req.hide else 'show'}?name={quote(name)}"):
+        return {"success": True, "live": True}
+    # Mixer not running: change the list it reads when it starts.
+    names = [n for n in _load_chat_hidden() if n.lower() != name.lower()]
+    if req.hide:
+        names.append(name)
+    CHAT_HIDDEN.parent.mkdir(parents=True, exist_ok=True)
+    CHAT_HIDDEN.write_text(json.dumps(sorted(names, key=str.lower)))
+    return {"success": True, "live": False}
+
+
 class TakeRequest(BaseModel):
     src: str
 
@@ -3124,10 +3208,97 @@ PAGE = """<!DOCTYPE html>
       </div>
     </div>
   </div>
+
+  <div class="row g-3 mt-1">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">&#x1F4AC; BATC chat on air</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="c-on" onchange="saveChat()">
+                <label class="form-check-label" for="c-on">Show BATC chat on the programme</label>
+              </div>
+              <label class="small text-muted">BATC stream</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="c-room" maxlength="40" onchange="saveChat()">
+              <div class="text-muted small">Whose chat: the end of its BATC address
+                (batc.org.uk/live/<i>gb3oo</i>). Empty: the one named after your callsign.
+                New messages appear as blue bubbles top right, about 10 s each, on Camera
+                and Media alike. Changing this never interrupts the transmission.</div>
+              <div class="small mt-2" id="c-status">&mdash;</div>
+            </div>
+            <div class="col-md-5">
+              <label class="small text-muted">Last messages &mdash; Hide keeps a sender off air</label>
+              <div id="c-recent" class="small"></div>
+            </div>
+            <div class="col-md-3">
+              <label class="small text-muted">Hidden senders</label>
+              <div id="c-hidden" class="small"></div>
+              <div class="text-muted small mt-2">To report a message to BATC:
+                <a href="https://batc.org.uk/incident-report-form/" target="_blank" rel="noopener">incident
+                report form</a>, choose <i>BATC Streamer chat</i>.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
 let cfg = null;
+
+function esc(t) {
+  return String(t).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+
+let chatTyping = false;
+async function chatPoll() {
+  let j;
+  try { j = await (await fetch('/api/chat')).json(); } catch (e) { return; }
+  const on = document.getElementById('c-on'), room = document.getElementById('c-room');
+  if (document.activeElement !== room && !chatTyping) {
+    on.checked = !!j.on;
+    room.value = j.room || '';
+    room.placeholder = j.default_room || 'gb3oo';
+  }
+  const st = document.getElementById('c-status');
+  if (!j.on) st.innerHTML = '<span class="text-muted">Off</span>';
+  else if (!j.live) st.innerHTML = '<span style="color:#e8a33d">On; starts with the mixer</span>';
+  else if (j.error) st.innerHTML = '<span style="color:#f87171">' + esc(j.error) + '</span>';
+  else st.innerHTML = '<span style="color:#4ade80">Following ' + esc(j.following || '?') + '</span>';
+  const rec = document.getElementById('c-recent');
+  rec.innerHTML = (j.recent || []).length ? j.recent.map(m =>
+    '<div class="d-flex justify-content-between align-items-start border-bottom border-secondary py-1">' +
+    '<div><span class="text-muted">' + esc(m.time) + '</span> <b style="color:#d6e8ff">' + esc(m.name) +
+    '</b> ' + esc(m.text) + '</div>' +
+    '<button class="btn btn-outline-danger btn-sm py-0 ms-2" data-n="' + esc(m.name) +
+    '" onclick="hideChat(this.dataset.n, true)">Hide</button></div>').join('')
+    : '<span class="text-muted">Nothing heard yet.</span>';
+  const hid = document.getElementById('c-hidden');
+  hid.innerHTML = (j.hidden || []).length ? j.hidden.map(h =>
+    '<div class="d-flex justify-content-between align-items-center py-1"><span>' + esc(h.name) +
+    (h.held ? ' <span class="text-muted">(' + h.held + ')</span>' : '') + '</span>' +
+    '<button class="btn btn-outline-secondary btn-sm py-0 ms-2" data-n="' + esc(h.name) +
+    '" onclick="hideChat(this.dataset.n, false)">Show</button></div>').join('')
+    : '<span class="text-muted">None.</span>';
+}
+
+async function saveChat() {
+  await api('POST', '/api/chat', {on: document.getElementById('c-on').checked,
+                                  room: document.getElementById('c-room').value.trim()});
+  setTimeout(chatPoll, 800);
+}
+
+async function hideChat(name, hide) {
+  await api('POST', '/api/chat/hide', {name, hide});
+  setTimeout(chatPoll, 300);
+}
+
+chatPoll();
+setInterval(chatPoll, 4000);
 
 async function api(method, path, body) {
   const opts = {method, headers: {'Content-Type': 'application/json'}};
