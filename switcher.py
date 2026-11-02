@@ -290,14 +290,22 @@ chatov = prog.get_by_name("chatov")
 
 class ChatOnAir:
     """One BATC stream's chat as bubbles on the programme (the keeper's own
-    repeater): new messages only, each up 10 s (a second more for each line
+    repeater): new messages only, each up 15 s (a second more for each line
     past two), at most three, newest at the bottom; the keeper's hidden
     senders never reach the picture. The listener runs in its own threads;
     all drawing happens on the main loop."""
 
     SLOTS, MARGIN = 3, 40                    # MARGIN in pixels at 1080 lines
     RECENT = 50                              # kept for the keeper's page (12 on a receiver)
-    TOP = 1 / 3                              # the first bubble's top, as a share of the height
+    # The stack sits between these, as shares of the height. Its BOTTOM is
+    # pinned, as on a phone: a new message arrives at the bottom and pushes
+    # the older ones up, and the oldest leaves from the top. Pinned at the
+    # top instead, the others closed up when the oldest went and the gap
+    # opened at the bottom, so the newest seemed to go first (Justin, 2 Nov
+    # 2026). Its top never above a third of the way down, clear of a
+    # receiver's MER display; its bottom above a receiver's bottom bar.
+    TOP, BOTTOM = 1 / 3, 0.78
+    SHOW_S = 15                              # on air (Justin, 2 Nov 2026); 10 on a receiver
 
     def __init__(self):
         from collections import deque as _dq
@@ -336,7 +344,8 @@ class ChatOnAir:
         self.recent.append({"name": name, "text": text, "time": hhmm})
         if not self.c.is_hidden(name, self.hidden):
             import chat_bubbles
-            until = time.time() + self.c.show_for(chat_bubbles.lines_of(text, H))
+            lines = chat_bubbles.lines_of(text, H)
+            until = time.time() + self.SHOW_S + self.c.EXTRA_S_PER_LINE * max(0, lines - 2)
             self.bubbles = (self.bubbles + [[name, text, hhmm, until]])[-self.SLOTS:]
             self._draw()
         return False
@@ -354,7 +363,11 @@ class ChatOnAir:
             return
         try:
             import chat_bubbles
+            room = int(H * (self.BOTTOM - self.TOP))
             pic = chat_bubbles.render([(b[0], b[1], b[2]) for b in self.bubbles], H)
+            while pic.height > room and len(self.bubbles) > 1:
+                self.bubbles = self.bubbles[1:]          # no room: the oldest goes early
+                pic = chat_bubbles.render([(b[0], b[1], b[2]) for b in self.bubbles], H)
             # A new name each time: the overlay loads the picture when its
             # location changes.
             self.n = (self.n + 1) % 2
@@ -364,7 +377,7 @@ class ChatOnAir:
             chatov.set_property("offset-x", W - pic.width - m)
             # A third of the way down: clear of a receiver's own MER and
             # signal display at the top (Justin, 2 Nov 2026).
-            chatov.set_property("offset-y", int(H * self.TOP))
+            chatov.set_property("offset-y", max(int(H * self.TOP), int(H * self.BOTTOM) - pic.height))
             chatov.set_property("location", path)
         except Exception as e:
             log(f"chat: could not draw: {e}")
