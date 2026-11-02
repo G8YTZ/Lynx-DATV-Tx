@@ -116,12 +116,13 @@ FRAME = Gst.SECOND // 25
 W, H = a.width, a.height
 VCAPS = f"video/x-raw,format=NV16,width={W},height={H},framerate=25/1"
 # The sound bus. In 5.1 every source is converted to six channels on the
-# way in (FL FR FC LFE RL RR, mask 0x3f): stereo sources (the camera's HDMI
+# way in (FL FR FC LFE SL SR, mask 0xc0f: side surrounds, the 5.1 layout the
+# AC-3 encoder expects): stereo sources (the camera's HDMI
 # sound, a stereo clip) land on front left and right, a 5.1 clip keeps all
 # six. In stereo, a 5.1 clip is folded down as before.
 if a.audio_format == "5.1":
     ACAPS = ("audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=6,"
-             "channel-mask=(bitmask)0x3f")
+             "channel-mask=(bitmask)0xc0f")
     AENC = f"avenc_ac3 bitrate={a.audio_bitrate} ! ac3parse"
 else:
     ACAPS = "audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2"
