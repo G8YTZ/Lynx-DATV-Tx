@@ -197,6 +197,13 @@ DEFAULT_CONFIG = {
     # repeater's chat. room "" = the stream named after the callsign (the
     # first word of the service name, e.g. gb3oo). Off by default.
     "chat": {"on": False, "room": ""},
+    # EPG and time (3 Nov 2026). time: tsprio sends a TDT (UTC) and a TOT
+    # (the local offset and its next change: BST in the UK) for receivers'
+    # clocks. tz: an IANA zone; the offset and change dates come from the
+    # system's time zone database. country: the TOT's ISO 3166 code, ""
+    # for the zone's own (GBR for London). The programme guide (EIT, from
+    # Companion triggers named "EPG ...") is to come: guide stays False.
+    "epg": {"time": True, "tz": "Europe/London", "country": "", "guide": False},
 }
 CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
 
@@ -1727,9 +1734,17 @@ def build_pipeline() -> str:
         # refills them in about 2 s; the DAC's pull and the buffers' size
         # still stop it running more than a fraction of a second ahead.
         pace = " --pace 1.05" if iq else ""
+        # Time of day on PID 0x14 (TDT, TOT): see tsprio.py and the EPG and
+        # Time card. An empty --tz sends none.
+        epg = config.get("epg") or {}
+        tz_arg = (epg.get("tz") or "Europe/London") if epg.get("time", True) else ""
+        time_args = f" --tz {shlex.quote(tz_arg)}"
+        if epg.get("country"):
+            time_args += f" --tz-country {shlex.quote(epg['country'])}"
         parts.append(
             f" | python3 {shlex.quote(str(prio))} --rate {rate} --slack {slack} "
-            f"--video-pid {ident['video_pid']} --audio-pid {ident['audio_pid']}{pace}")
+            f"--video-pid {ident['video_pid']} --audio-pid {ident['audio_pid']}{pace}"
+            f"{time_args}")
 
     # -- pace it ---------------------------------------------------
     # Deliberately above the modulator's figure. It wants its buffer
@@ -2556,6 +2571,89 @@ def chat_room() -> str:
     return room if re.match(r"^[a-z0-9_.-]+$", room) else ""
 
 
+# ── EPG and time ─────────────────────────────────────────────────────
+EPG_ZONES = ["Europe/London", "Europe/Dublin", "Europe/Paris", "Europe/Brussels",
+             "Europe/Amsterdam", "Europe/Berlin", "Europe/Madrid", "Europe/Rome",
+             "UTC", "America/New_York", "America/Chicago", "America/Los_Angeles",
+             "Australia/Melbourne", "Australia/Sydney", "Pacific/Auckland"]
+
+
+def _epg_clock(tz_name: str) -> dict:
+    """What a receiver will be told: local time now, the offset, and when
+    and to what it next changes - asked of the time zone database day by
+    day, then to the second, as tsprio does."""
+    import datetime
+    import zoneinfo
+    zone = zoneinfo.ZoneInfo(tz_name)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    off = now.astimezone(zone).utcoffset()
+
+    def fmt(td):
+        m = int(td.total_seconds()) // 60
+        return f"UTC{'+' if m >= 0 else '-'}{abs(m) // 60}:{abs(m) % 60:02d}"
+
+    out = {"local": now.astimezone(zone).strftime("%H:%M %Z, %a %d %b %Y"),
+           "offset": fmt(off), "change": "", "next_offset": ""}
+    lo = now
+    for day in range(1, 400):
+        t = now + datetime.timedelta(days=day)
+        if t.astimezone(zone).utcoffset() != off:
+            hi = t
+            while (hi - lo).total_seconds() > 1:
+                mid = lo + (hi - lo) / 2
+                if mid.astimezone(zone).utcoffset() == off:
+                    lo = mid
+                else:
+                    hi = mid
+            hi = hi.replace(microsecond=0)
+            out["change"] = hi.strftime("%a %d %b %Y %H:%M UTC")
+            out["next_offset"] = fmt(hi.astimezone(zone).utcoffset())
+            break
+        lo = t
+    return out
+
+
+class EpgRequest(BaseModel):
+    time: bool = True
+    tz: str = "Europe/London"
+    country: str = ""
+
+
+@app.get("/api/epg")
+def api_epg():
+    e = {**DEFAULT_CONFIG["epg"], **(config.get("epg") or {})}
+    try:
+        clock = _epg_clock(e["tz"])
+    except Exception as ex:
+        clock = {"error": f"time zone {e['tz']!r}: {ex}"}
+    return {**e, "clock": clock, "zones": EPG_ZONES}
+
+
+@app.post("/api/epg")
+def api_epg_set(req: EpgRequest):
+    """Time settings. Applied by restarting the transmission if it is on
+    air, as the Identity card's are: tsprio is given them as it starts."""
+    import zoneinfo
+    tz = req.tz.strip() or "Europe/London"
+    try:
+        zoneinfo.ZoneInfo(tz)
+    except Exception:
+        raise HTTPException(400, f"unknown time zone {tz!r} (e.g. Europe/London)")
+    country = req.country.strip().upper()
+    if country and not re.match(r"^[A-Z]{3}$", country):
+        raise HTTPException(400, "country is a three-letter ISO code, e.g. GBR, or empty")
+    old = dict(config.get("epg") or {})
+    config["epg"] = {**DEFAULT_CONFIG["epg"], **old,
+                     "time": req.time, "tz": tz, "country": country}
+    save_config(config)
+    changed = any(old.get(k) != config["epg"][k] for k in ("time", "tz", "country"))
+    restarted = False
+    if changed and tx_running():
+        start_tx()
+        restarted = True
+    return {"success": True, "restarted": restarted, **api_epg()}
+
+
 class ChatRequest(BaseModel):
     on: bool
     room: str = ""
@@ -3245,6 +3343,52 @@ PAGE = """<!DOCTYPE html>
       </div>
     </div>
   </div>
+
+  <div class="row g-3 mt-1">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">&#x1F552; EPG and time</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="e-time" onchange="saveEpg()">
+                <label class="form-check-label" for="e-time">Send the time (TDT and TOT)</label>
+              </div>
+              <label class="small text-muted">Time zone</label>
+              <input type="text" list="e-zones" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="e-tz" maxlength="40" onchange="saveEpg()">
+              <datalist id="e-zones"></datalist>
+              <label class="small text-muted mt-2">Country code</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="e-country" maxlength="3" placeholder="from the zone" onchange="saveEpg()">
+              <div class="text-muted small mt-1">Receivers set their clocks from the time: UTC every
+                5 s, and every 10 s the local offset and when it next changes (BST in the UK), so
+                they switch by themselves. The ROCK's clock is the source; chrony keeps it true.
+                Changing these restarts the transmission (a few seconds off air).</div>
+              <div class="small mt-2" style="color:#f87171" id="e-error"></div>
+            </div>
+            <div class="col-md-4">
+              <label class="small text-muted">What receivers are told</label>
+              <div class="small text-light" id="e-clock">&mdash;</div>
+            </div>
+            <div class="col-md-4">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="e-guide" disabled>
+                <label class="form-check-label text-muted" for="e-guide">Programme guide (EIT)</label>
+              </div>
+              <label class="small text-muted">Source</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-muted border-secondary"
+                     id="e-source" disabled placeholder="Bitfocus Companion triggers named &quot;EPG ...&quot;">
+              <div class="text-muted small mt-1">Coming: now, next and the week ahead, from the
+                Companion triggers whose names start with EPG (for example "EPG Morse Course",
+                "EPG Film Night (2h)"). Not yet sent.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -3299,6 +3443,43 @@ async function hideChat(name, hide) {
 
 chatPoll();
 setInterval(chatPoll, 4000);
+
+let epgTyping = false;
+async function epgPoll() {
+  let j;
+  try { j = await (await fetch('/api/epg')).json(); } catch (e) { return; }
+  const tz = document.getElementById('e-tz'), co = document.getElementById('e-country');
+  const dl = document.getElementById('e-zones');
+  if (!dl.options.length) dl.innerHTML = (j.zones || []).map(z => '<option value="' + esc(z) + '">').join('');
+  if (document.activeElement !== tz && document.activeElement !== co && !epgTyping) {
+    document.getElementById('e-time').checked = !!j.time;
+    tz.value = j.tz || '';
+    co.value = j.country || '';
+  }
+  const c = j.clock || {}, el = document.getElementById('e-clock');
+  if (!j.time) el.innerHTML = '<span class="text-muted">No time sent.</span>';
+  else if (c.error) el.innerHTML = '<span style="color:#f87171">' + esc(c.error) + '</span>';
+  else el.innerHTML = 'Now ' + esc(c.local) + ' (' + esc(c.offset) + ')<br>' +
+    (c.change ? 'Changes to ' + esc(c.next_offset) + ' on ' + esc(c.change)
+              : 'No change in the coming year');
+}
+
+async function saveEpg() {
+  const err = document.getElementById('e-error');
+  err.textContent = '';
+  try {
+    const r = await fetch('/api/epg', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({time: document.getElementById('e-time').checked,
+                            tz: document.getElementById('e-tz').value.trim(),
+                            country: document.getElementById('e-country').value.trim()})});
+    const j = await r.json();
+    if (!r.ok) err.textContent = j.detail || 'Not saved';
+  } catch (e) { err.textContent = 'Not saved: ' + e; }
+  epgPoll();
+}
+
+epgPoll();
+setInterval(epgPoll, 30000);
 
 async function api(method, path, body) {
   const opts = {method, headers: {'Content-Type': 'application/json'}};
