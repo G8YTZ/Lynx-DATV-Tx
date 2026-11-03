@@ -109,7 +109,7 @@ stats = {"slots": 0, "null": 0, "audio": 0, "video": 0, "tables": 0,
          "audio_late": 0, "video_late": 0, "worst_video": 0.0, "resync": 0,
          "worst_audio": 0.0, "input_gap": 0.0}
 last_input = None
-last_report = time.time()
+last_report = time.monotonic()
 
 
 def ingest(chunk):
@@ -158,7 +158,7 @@ def read(timeout):
         eof = True
         return False
     global last_input
-    now = time.time()
+    now = time.monotonic()
     if last_input is not None:
         stats["input_gap"] = max(stats["input_gap"], now - last_input)
     last_input = now
@@ -196,11 +196,17 @@ def hold_to_real_time():
     """The stream clock may not run ahead of the real one. Downstream (tsp
     regulate) bursts to catch up when it falls behind its schedule; feeding
     such a burst from a backlog of pictures raced the clock seconds ahead
-    of real time and made everything - sound too - late."""
+    of real time and made everything - sound too - late.
+
+    Real time is the monotonic clock, not the time of day (3 Nov 2026):
+    after a power cut the ROCK boots with a stale clock and NTP then steps
+    it. A step back would have looked like the stream running ahead, and
+    this would have slept for the size of the step: dead air. Every timer
+    in this file is an interval, so all of them use time.monotonic()."""
     if wall["t"] is None:
-        wall["t"], wall["T"] = time.time(), T
+        wall["t"], wall["T"] = time.monotonic(), T
         return
-    now = time.time()
+    now = time.monotonic()
     ahead = (T - wall["T"]) / HZ / a.pace - (now - wall["t"])
     if ahead <= 0:
         # At or behind real time: move the reference here, so the
@@ -224,7 +230,7 @@ def emit(p):
 
 def report():
     global last_report
-    now = time.time()
+    now = time.monotonic()
     if now - last_report < 10:
         return
     last_report = now
