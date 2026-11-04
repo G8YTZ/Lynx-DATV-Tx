@@ -193,7 +193,26 @@ DEFAULT_CONFIG = {
         "audio_pid": 0x102,
         "polarization": "horizontal",
     },
+    # BATC chat on the programme, as bubbles (2 Nov 2026): the keeper's own
+    # repeater's chat. room "" = the stream named after the callsign (the
+    # first word of the service name, e.g. gb3oo). Off by default.
+    "chat": {"on": False, "room": ""},
+    # EPG and time (3 Nov 2026). time: tsprio sends a TDT (UTC) and a TOT
+    # (the local offset and its next change: BST in the UK) for receivers'
+    # clocks. tz: an IANA zone; the offset and change dates come from the
+    # system's time zone database. country: the TOT's ISO 3166 code, ""
+    # for the zone's own (GBR for London). guide: the programme guide (EIT,
+    # now/next and 8 days), from the Bitfocus Companion triggers named
+    # "EPG: ..." (see epg.py); companion: its address, host:port.
+    "epg": {"time": True, "tz": "Europe/London", "country": "", "guide": False,
+            "companion": ""},
 }
+CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
+# The guide: eitinject reads EPG_XML (rewritten when the schedule changes);
+# EPG_CACHE keeps the last programmes fetched, so a Companion that does not
+# answer leaves the guide as it was, never blank.
+EPG_XML = APP_DIR / "config" / "epg_events.xml"
+EPG_CACHE = APP_DIR / "config" / "epg_programmes.json"
 
 
 def load_config() -> dict:
@@ -1618,9 +1637,14 @@ def build_pipeline() -> str:
                 f"--width {w} --height {h} "
                 f"--video-device {shlex.quote(config['video_device'])} "
                 f"--audio-device {shlex.quote(config['audio_device'])}")
+        # The chat room is not part of what the mixer is built with: it
+        # changes on the fly (POST /chat), never rebuilding the mixer.
+        room = chat_room()
         mixer_plan.update(core=core, start=core
                           + (f" --media {shlex.quote(clip)}" if clip else "")
-                          + f" --start {start}")
+                          + f" --start {start}"
+                          + f" --chat-hidden {shlex.quote(str(CHAT_HIDDEN))}"
+                          + (f" --chat-room {shlex.quote(room)}" if room else ""))
         parts = []
         # The reserve between mixer and chain: 2 s of stream at most (in
         # 188-byte packets), so a slow start can never build a backlog that
@@ -1717,9 +1741,17 @@ def build_pipeline() -> str:
         # refills them in about 2 s; the DAC's pull and the buffers' size
         # still stop it running more than a fraction of a second ahead.
         pace = " --pace 1.05" if iq else ""
+        # Time of day on PID 0x14 (TDT, TOT): see tsprio.py and the EPG and
+        # Time card. An empty --tz sends none.
+        epg = config.get("epg") or {}
+        tz_arg = (epg.get("tz") or "Europe/London") if epg.get("time", True) else ""
+        time_args = f" --tz {shlex.quote(tz_arg)}"
+        if epg.get("country"):
+            time_args += f" --tz-country {shlex.quote(epg['country'])}"
         parts.append(
             f" | python3 {shlex.quote(str(prio))} --rate {rate} --slack {slack} "
-            f"--video-pid {ident['video_pid']} --audio-pid {ident['audio_pid']}{pace}")
+            f"--video-pid {ident['video_pid']} --audio-pid {ident['audio_pid']}{pace}"
+            f"{time_args}")
 
     # -- pace it ---------------------------------------------------
     # Deliberately above the modulator's figure. It wants its buffer
@@ -1755,6 +1787,15 @@ def build_pipeline() -> str:
         nit_stage = (f"-P pat --nit 0x10 "
                      f"-P inject {nit} --pid 0x10 --stuffing "
                      f"--inter-packet {every} ")
+    # The programme guide (the EPG and time card): the SDT says the service
+    # has EIT (ffmpeg writes both flags off, and strict receivers then never
+    # look), and eitinject sends p/f and 8 days of schedule from EPG_XML,
+    # in place of null packets. It takes "now" from tsprio's TDT, so no
+    # time, no guide. DVB only.
+    if not atsc3 and epg_guide_ready():
+        nit_stage += (f"-P sdt --service-id {ident['service_id']} --eit-pf 1 --eit-schedule 1 "
+                      f"-P eitinject --files {shlex.quote(str(EPG_XML))} --actual "
+                      f"--bitrate 20000 ")
     # The buffer monitor (tsbuffer.py, beside this file) gets a copy of the
     # stream and reports the live slack for the Transmit card.
     monitor = APP_DIR / "tsbuffer.py"
@@ -2534,6 +2575,283 @@ def switcher_call(method: str, path: str) -> Optional[dict]:
         return None
 
 
+def chat_room() -> str:
+    """The BATC stream whose chat goes on air, or "" with chat off."""
+    c = config.get("chat") or {}
+    if not c.get("on"):
+        return ""
+    room = (c.get("room") or "").strip().lower()
+    if not room:
+        words = (config.get("callsign") or "").split()
+        room = words[0].lower() if words else ""
+    return room if re.match(r"^[a-z0-9_.-]+$", room) else ""
+
+
+# ── EPG and time ─────────────────────────────────────────────────────
+EPG_ZONES = ["Europe/London", "Europe/Dublin", "Europe/Paris", "Europe/Brussels",
+             "Europe/Amsterdam", "Europe/Berlin", "Europe/Madrid", "Europe/Rome",
+             "UTC", "America/New_York", "America/Chicago", "America/Los_Angeles",
+             "Australia/Melbourne", "Australia/Sydney", "Pacific/Auckland"]
+
+
+def _epg_clock(tz_name: str) -> dict:
+    """What a receiver will be told: local time now, the offset, and when
+    and to what it next changes - asked of the time zone database day by
+    day, then to the second, as tsprio does."""
+    import datetime
+    import zoneinfo
+    zone = zoneinfo.ZoneInfo(tz_name)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    off = now.astimezone(zone).utcoffset()
+
+    def fmt(td):
+        m = int(td.total_seconds()) // 60
+        return f"UTC{'+' if m >= 0 else '-'}{abs(m) // 60}:{abs(m) % 60:02d}"
+
+    out = {"local": now.astimezone(zone).strftime("%H:%M %Z, %a %d %b %Y"),
+           "offset": fmt(off), "change": "", "next_offset": ""}
+    lo = now
+    for day in range(1, 400):
+        t = now + datetime.timedelta(days=day)
+        if t.astimezone(zone).utcoffset() != off:
+            hi = t
+            while (hi - lo).total_seconds() > 1:
+                mid = lo + (hi - lo) / 2
+                if mid.astimezone(zone).utcoffset() == off:
+                    lo = mid
+                else:
+                    hi = mid
+            hi = hi.replace(microsecond=0)
+            out["change"] = hi.strftime("%a %d %b %Y %H:%M UTC")
+            out["next_offset"] = fmt(hi.astimezone(zone).utcoffset())
+            break
+        lo = t
+    return out
+
+
+epg_status = {"ok": None, "when": 0.0, "detail": "", "via": "", "programmes": 0,
+              "events": 0}
+_epg_lock = threading.Lock()
+
+
+def epg_guide_ready() -> bool:
+    e = config.get("epg") or {}
+    return bool(e.get("guide") and e.get("time", True) and EPG_XML.exists())
+
+
+def _epg_write(progs: list):
+    """Rebuild the 8 days from the programmes and rewrite EPG_XML if it has
+    changed (eitinject reloads it when it does)."""
+    import datetime
+    import zoneinfo
+    import epg as epgmod
+    e = config.get("epg") or {}
+    zone = zoneinfo.ZoneInfo(e.get("tz") or "Europe/London")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    events = epgmod.schedule(progs, zone, now)
+    ident = config["identity"]
+    xml = epgmod.eit_xml(events, int(ident["service_id"]), int(ident["ts_id"]),
+                         int(ident["original_network_id"]))
+    old = EPG_XML.read_text() if EPG_XML.exists() else ""
+    if xml != old:
+        tmp = EPG_XML.with_suffix(".tmp")
+        tmp.write_text(xml)
+        tmp.replace(EPG_XML)
+    epg_status["events"] = len(events)
+    return events
+
+
+def epg_refresh() -> dict:
+    """Fetch Companion's triggers, keep the programmes, write the guide.
+    Companion not answering: the last programmes are used again, and the
+    card says so."""
+    import epg as epgmod
+    with _epg_lock:
+        e = config.get("epg") or {}
+        progs = None
+        if e.get("companion"):
+            try:
+                triggers, via = epgmod.fetch(e["companion"])
+                progs = epgmod.programmes(triggers)
+                EPG_CACHE.write_text(json.dumps(progs))
+                epg_status.update(ok=True, detail="", via=via)
+            except Exception as ex:
+                epg_status.update(ok=False, detail=str(ex), via="")
+        else:
+            epg_status.update(ok=False, detail="No Companion address set", via="")
+        if progs is None:
+            try:
+                progs = json.loads(EPG_CACHE.read_text())
+            except (OSError, ValueError):
+                progs = []
+        epg_status.update(when=time.time(), programmes=len(progs))
+        events = _epg_write(progs) if progs else []
+        if not progs and EPG_XML.exists():
+            EPG_XML.unlink()
+        return {"programmes": len(progs), "events": len(events)}
+
+
+def epg_watch():
+    """Every 30 minutes while the guide is on: Companion asked again, and the
+    8 days rolled on."""
+    while True:
+        try:
+            if (config.get("epg") or {}).get("guide"):
+                was_ready = epg_guide_ready()
+                epg_refresh()
+                if not was_ready and epg_guide_ready() and tx_running():
+                    start_tx()              # first schedule: put the guide on air
+        except Exception as ex:
+            print(f"[epg] {ex}")
+        time.sleep(1800)
+
+
+def _epg_preview(limit: int = 12) -> list:
+    """The next few events, as receivers will show them, in local time."""
+    import datetime
+    import zoneinfo
+    import epg as epgmod
+    try:
+        progs = json.loads(EPG_CACHE.read_text())
+    except (OSError, ValueError):
+        return []
+    e = config.get("epg") or {}
+    zone = zoneinfo.ZoneInfo(e.get("tz") or "Europe/London")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return [{"start": ev["start"].astimezone(zone).strftime("%a %H:%M"),
+             "minutes": ev["minutes"], "title": ev["title"]}
+            for ev in epgmod.schedule(progs, zone, now, days=2)[:limit]]
+
+
+class EpgRequest(BaseModel):
+    time: bool = True
+    tz: str = "Europe/London"
+    country: str = ""
+    guide: Optional[bool] = None
+    companion: Optional[str] = None
+
+
+@app.get("/api/epg")
+def api_epg():
+    e = {**DEFAULT_CONFIG["epg"], **(config.get("epg") or {})}
+    try:
+        clock = _epg_clock(e["tz"])
+    except Exception as ex:
+        clock = {"error": f"time zone {e['tz']!r}: {ex}"}
+    return {**e, "clock": clock, "zones": EPG_ZONES,
+            "guide_status": {**epg_status, "on_air": epg_guide_ready() and tx_running()},
+            "preview": _epg_preview() if e.get("guide") else []}
+
+
+@app.post("/api/epg")
+def api_epg_set(req: EpgRequest):
+    """Time settings. Applied by restarting the transmission if it is on
+    air, as the Identity card's are: tsprio is given them as it starts."""
+    import zoneinfo
+    tz = req.tz.strip() or "Europe/London"
+    try:
+        zoneinfo.ZoneInfo(tz)
+    except Exception:
+        raise HTTPException(400, f"unknown time zone {tz!r} (e.g. Europe/London)")
+    country = req.country.strip().upper()
+    if country and not re.match(r"^[A-Z]{3}$", country):
+        raise HTTPException(400, "country is a three-letter ISO code, e.g. GBR, or empty")
+    old = dict(config.get("epg") or {})
+    new = {**DEFAULT_CONFIG["epg"], **old, "time": req.time, "tz": tz, "country": country}
+    if req.guide is not None:
+        new["guide"] = req.guide
+    if req.companion is not None:
+        addr = req.companion.strip()
+        if addr and not re.match(r"^(https?://)?[A-Za-z0-9.-]+(:\d{1,5})?/?$", addr):
+            raise HTTPException(400, "the Companion address is host:port, e.g. 192.168.40.103:8000")
+        new["companion"] = addr
+    config["epg"] = new
+    save_config(config)
+    if new.get("guide") and (not old.get("guide") or old.get("companion") != new["companion"]
+                             or old.get("tz") != new["tz"]):
+        epg_refresh()
+    ready_was = bool(old.get("guide") and old.get("time", True)) and EPG_XML.exists()
+    changed = any(old.get(k) != new.get(k) for k in ("time", "tz", "country")) \
+        or ready_was != epg_guide_ready()
+    restarted = False
+    if changed and tx_running():
+        start_tx()
+        restarted = True
+    return {"success": True, "restarted": restarted, **api_epg()}
+
+
+@app.post("/api/epg/refresh")
+def api_epg_refresh():
+    """Ask Companion now (the card's Refresh button)."""
+    was_ready = epg_guide_ready()
+    r = epg_refresh()
+    if not was_ready and epg_guide_ready() and tx_running():
+        start_tx()
+    return {"success": True, **r, **api_epg()}
+
+
+class ChatRequest(BaseModel):
+    on: bool
+    room: str = ""
+
+
+@app.get("/api/chat")
+def api_chat():
+    """Chat settings, and from the running mixer the last messages and the
+    keeper's hidden senders."""
+    live = switcher_call("GET", "/chat") if mixer_running() else None
+    hidden = live["hidden"] if live else [{"name": n, "held": 0}
+                                          for n in _load_chat_hidden()]
+    return {"on": bool((config.get("chat") or {}).get("on")),
+            "room": (config.get("chat") or {}).get("room", ""),
+            "following": live.get("room", "") if live else "",
+            "default_room": ((config.get("callsign") or "").split() or [""])[0].lower(),
+            "recent": live.get("recent", []) if live else [],
+            "hidden": hidden, "live": live is not None,
+            "error": live.get("error", "") if live else ""}
+
+
+def _load_chat_hidden() -> list:
+    try:
+        return json.loads(CHAT_HIDDEN.read_text())
+    except (OSError, ValueError):
+        return []
+
+
+@app.post("/api/chat")
+def api_chat_set(req: ChatRequest):
+    room = req.room.strip().lower()
+    if room and not re.match(r"^[a-z0-9_.-]+$", room):
+        raise HTTPException(400, "the stream name is the end of its BATC address, e.g. gb3oo")
+    config["chat"] = {"on": req.on, "room": room}
+    save_config(config)
+    from urllib.parse import quote
+    live = mixer_running() and switcher_call("POST", f"/chat?room={quote(chat_room())}") is not None
+    return {"success": True, "live": live, "room": chat_room()}
+
+
+class ChatHideRequest(BaseModel):
+    name: str
+    hide: bool = True
+
+
+@app.post("/api/chat/hide")
+def api_chat_hide(req: ChatHideRequest):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "name needed")
+    from urllib.parse import quote
+    if mixer_running() and switcher_call("POST", f"/chat/{'hide' if req.hide else 'show'}?name={quote(name)}"):
+        return {"success": True, "live": True}
+    # Mixer not running: change the list it reads when it starts.
+    names = [n for n in _load_chat_hidden() if n.lower() != name.lower()]
+    if req.hide:
+        names.append(name)
+    CHAT_HIDDEN.parent.mkdir(parents=True, exist_ok=True)
+    CHAT_HIDDEN.write_text(json.dumps(sorted(names, key=str.lower)))
+    return {"success": True, "live": False}
+
+
 class TakeRequest(BaseModel):
     src: str
 
@@ -3124,10 +3442,236 @@ PAGE = """<!DOCTYPE html>
       </div>
     </div>
   </div>
+
+  <div class="row g-3 mt-1">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">&#x1F4AC; BATC chat on air</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="c-on" onchange="saveChat()">
+                <label class="form-check-label" for="c-on">Show BATC chat on the programme</label>
+              </div>
+              <label class="small text-muted">BATC stream</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="c-room" maxlength="40" onchange="saveChat()">
+              <div class="text-muted small">Whose chat: the end of its BATC address
+                (batc.org.uk/live/<i>gb3oo</i>). Empty: the one named after your callsign.
+                New messages appear as blue bubbles on the right, between a third and three quarters of the way down (clear of a receiver's MER display), newest at the bottom, 15 s each, on Camera
+                and Media alike. Changing this never interrupts the transmission.</div>
+              <div class="small mt-2" id="c-status">&mdash;</div>
+            </div>
+            <div class="col-md-5">
+              <label class="small text-muted">Last 50 messages, newest first &mdash; Hide keeps a sender off air</label>
+              <div id="c-recent" class="small" style="max-height:22rem;overflow-y:auto"></div>
+            </div>
+            <div class="col-md-3">
+              <label class="small text-muted">Hidden senders</label>
+              <div id="c-hidden" class="small"></div>
+              <div class="text-muted small mt-2">To report a message to BATC:
+                <a href="https://batc.org.uk/incident-report-form/" target="_blank" rel="noopener">incident
+                report form</a>, choose <i>BATC Streamer chat</i>.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mt-1">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">&#x1F552; EPG and time</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="e-time" onchange="saveEpg()">
+                <label class="form-check-label" for="e-time">Send the time (TDT and TOT)</label>
+              </div>
+              <label class="small text-muted">Time zone</label>
+              <input type="text" list="e-zones" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="e-tz" maxlength="40" onchange="saveEpg()">
+              <datalist id="e-zones"></datalist>
+              <label class="small text-muted mt-2">Country</label>
+              <select class="form-select form-select-sm bg-dark text-light border-secondary"
+                      id="e-country" onchange="saveEpg()">
+                <option value="">Automatic (from the time zone)</option>
+                <option value="GBR">United Kingdom (GBR)</option>
+                <option value="IRL">Ireland (IRL)</option>
+                <option value="FRA">France (FRA)</option>
+                <option value="BEL">Belgium (BEL)</option>
+                <option value="NLD">Netherlands (NLD)</option>
+                <option value="DEU">Germany (DEU)</option>
+                <option value="ESP">Spain (ESP)</option>
+                <option value="ITA">Italy (ITA)</option>
+                <option value="USA">United States (USA)</option>
+                <option value="AUS">Australia (AUS)</option>
+                <option value="NZL">New Zealand (NZL)</option>
+              </select>
+              <div class="text-muted small mt-1">Sent with the local time so receivers know which
+                country's clock it is. The three letters are the ISO country code, as printed on a
+                passport (GBR for the UK); not the telephone code. Leave on Automatic unless the
+                time zone and the country differ.</div>
+              <div class="text-muted small mt-1">Receivers set their clocks from the time: UTC every
+                5 s, and every 10 s the local offset and when it next changes (BST in the UK), so
+                they switch by themselves. The ROCK's clock is the source; chrony keeps it true.
+                Changing these restarts the transmission (a few seconds off air).</div>
+              <div class="small mt-2" style="color:#f87171" id="e-error"></div>
+            </div>
+            <div class="col-md-4">
+              <label class="small text-muted">What receivers are told</label>
+              <div class="small text-light" id="e-clock">&mdash;</div>
+            </div>
+            <div class="col-md-4">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="e-guide" onchange="saveEpg()">
+                <label class="form-check-label" for="e-guide">Programme guide (EIT)</label>
+              </div>
+              <label class="small text-muted">Bitfocus Companion</label>
+              <div class="input-group input-group-sm">
+                <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                       id="e-companion" maxlength="80" placeholder="192.168.40.103:8000" onchange="saveEpg()">
+                <button class="btn btn-outline-secondary" type="button" onclick="refreshEpg()">Refresh</button>
+              </div>
+              <div class="text-muted small mt-1">Now, next and 8 days ahead, from the Companion
+                triggers whose names start with "EPG:" (for example "EPG: Morse Course",
+                "EPG: Film Night (2h)"; an hour unless the name says otherwise). Asked again every
+                30 minutes; if Companion does not answer, the last guide stays on air. Needs the
+                time switched on.</div>
+              <div class="small mt-2" id="e-guide-status">&mdash;</div>
+              <div class="small mt-2" id="e-preview" style="max-height:14rem;overflow-y:auto"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
 let cfg = null;
+
+function esc(t) {
+  return String(t).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+
+let chatTyping = false;
+async function chatPoll() {
+  let j;
+  try { j = await (await fetch('/api/chat')).json(); } catch (e) { return; }
+  const on = document.getElementById('c-on'), room = document.getElementById('c-room');
+  if (document.activeElement !== room && !chatTyping) {
+    on.checked = !!j.on;
+    room.value = j.room || '';
+    room.placeholder = j.default_room || 'gb3oo';
+  }
+  const st = document.getElementById('c-status');
+  if (!j.on) st.innerHTML = '<span class="text-muted">Off</span>';
+  else if (!j.live) st.innerHTML = '<span style="color:#e8a33d">On; starts with the mixer</span>';
+  else if (j.error) st.innerHTML = '<span style="color:#f87171">' + esc(j.error) + '</span>';
+  else st.innerHTML = '<span style="color:#4ade80">Following ' + esc(j.following || '?') + '</span>';
+  const rec = document.getElementById('c-recent');
+  rec.innerHTML = (j.recent || []).length ? j.recent.map(m =>
+    '<div class="d-flex justify-content-between align-items-start border-bottom border-secondary py-1">' +
+    '<div><span class="text-muted">' + esc(m.time) + '</span> <b style="color:#d6e8ff">' + esc(m.name) +
+    '</b> <span class="text-light">' + esc(m.text) + '</span></div>' +
+    '<button class="btn btn-outline-danger btn-sm py-0 ms-2" data-n="' + esc(m.name) +
+    '" onclick="hideChat(this.dataset.n, true)">Hide</button></div>').join('')
+    : '<span class="text-light">Nothing heard yet.</span>';
+  const hid = document.getElementById('c-hidden');
+  hid.innerHTML = (j.hidden || []).length ? j.hidden.map(h =>
+    '<div class="d-flex justify-content-between align-items-center py-1"><span style="color:#d6e8ff"><b>' + esc(h.name) + '</b>' +
+    (h.held ? ' <span class="text-muted">(' + h.held + (h.held === 1 ? ' message' : ' messages') + ' held back)</span>' : '') + '</span>' +
+    '<button class="btn btn-outline-secondary btn-sm py-0 ms-2" data-n="' + esc(h.name) +
+    '" onclick="hideChat(this.dataset.n, false)">Show</button></div>').join('')
+    : '<span class="text-light">None.</span>';
+}
+
+async function saveChat() {
+  await api('POST', '/api/chat', {on: document.getElementById('c-on').checked,
+                                  room: document.getElementById('c-room').value.trim()});
+  setTimeout(chatPoll, 800);
+}
+
+async function hideChat(name, hide) {
+  await api('POST', '/api/chat/hide', {name, hide});
+  setTimeout(chatPoll, 300);
+}
+
+chatPoll();
+setInterval(chatPoll, 4000);
+
+let epgTyping = false;
+async function epgPoll() {
+  let j;
+  try { j = await (await fetch('/api/epg')).json(); } catch (e) { return; }
+  const tz = document.getElementById('e-tz'), co = document.getElementById('e-country');
+  const dl = document.getElementById('e-zones');
+  if (!dl.options.length) dl.innerHTML = (j.zones || []).map(z => '<option value="' + esc(z) + '">').join('');
+  const cp = document.getElementById('e-companion');
+  if (document.activeElement !== tz && document.activeElement !== co &&
+      document.activeElement !== cp && !epgTyping) {
+    document.getElementById('e-time').checked = !!j.time;
+    tz.value = j.tz || '';
+    if (j.country && ![...co.options].some(o => o.value === j.country))
+      co.add(new Option(j.country, j.country));
+    co.value = j.country || '';
+    document.getElementById('e-guide').checked = !!j.guide;
+    cp.value = j.companion || '';
+  }
+  const gs = j.guide_status || {}, gel = document.getElementById('e-guide-status');
+  if (!j.guide) gel.innerHTML = '<span class="text-muted">Off</span>';
+  else if (!j.time) gel.innerHTML = '<span style="color:#e8a33d">Needs the time switched on</span>';
+  else {
+    const age = gs.when ? Math.round((Date.now() / 1000 - gs.when) / 60) : null;
+    const asked = age === null ? '' : ' (asked ' + (age < 1 ? 'just now' : age + ' min ago') + ')';
+    const air = gs.on_air ? 'On air' : 'Not on air yet';
+    if (gs.ok) gel.innerHTML = '<span style="color:#4ade80">' + air + ': ' + gs.programmes +
+      ' programme slots, ' + gs.events + ' events' + asked + '</span>';
+    else if (gs.programmes) gel.innerHTML = '<span style="color:#e8a33d">' + air + ' with the last guide (' +
+      gs.programmes + ' slots); Companion: ' + esc(gs.detail || '?') + asked + '</span>';
+    else gel.innerHTML = '<span style="color:#f87171">' + esc(gs.detail || 'No programmes yet') + asked + '</span>';
+  }
+  const pv = document.getElementById('e-preview');
+  pv.innerHTML = (j.preview || []).map((e, i) =>
+    '<div class="' + (i === 0 ? 'text-light' : 'text-muted') + '">' + esc(e.start) + ' &nbsp;' +
+    esc(e.title) + (e.minutes !== 60 ? ' <span class="text-muted">(' + e.minutes + ' min)</span>' : '') +
+    (i === 0 ? ' <span style="color:#4ade80">now</span>' : '') + '</div>').join('');
+  const c = j.clock || {}, el = document.getElementById('e-clock');
+  if (!j.time) el.innerHTML = '<span class="text-muted">No time sent.</span>';
+  else if (c.error) el.innerHTML = '<span style="color:#f87171">' + esc(c.error) + '</span>';
+  else el.innerHTML = 'Now ' + esc(c.local) + ' (' + esc(c.offset) + ')<br>' +
+    (c.change ? 'Changes to ' + esc(c.next_offset) + ' on ' + esc(c.change)
+              : 'No change in the coming year');
+}
+
+async function saveEpg() {
+  const err = document.getElementById('e-error');
+  err.textContent = '';
+  try {
+    const r = await fetch('/api/epg', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({time: document.getElementById('e-time').checked,
+                            tz: document.getElementById('e-tz').value.trim(),
+                            country: document.getElementById('e-country').value.trim(),
+                            guide: document.getElementById('e-guide').checked,
+                            companion: document.getElementById('e-companion').value.trim()})});
+    const j = await r.json();
+    if (!r.ok) err.textContent = j.detail || 'Not saved';
+  } catch (e) { err.textContent = 'Not saved: ' + e; }
+  epgPoll();
+}
+
+async function refreshEpg() {
+  document.getElementById('e-guide-status').innerHTML = '<span class="text-muted">Asking Companion...</span>';
+  try { await fetch('/api/epg/refresh', {method: 'POST'}); } catch (e) {}
+  epgPoll();
+}
+
+epgPoll();
+setInterval(epgPoll, 30000);
 
 async function api(method, path, body) {
   const opts = {method, headers: {'Content-Type': 'application/json'}};
@@ -4105,4 +4649,5 @@ if __name__ == "__main__":
     threading.Thread(target=sdr_ref_watch, daemon=True).start()
     threading.Thread(target=mixer_watch, daemon=True).start()
     threading.Thread(target=tx_alarm_watch, daemon=True).start()
+    threading.Thread(target=epg_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
