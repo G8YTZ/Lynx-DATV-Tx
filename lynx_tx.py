@@ -3495,9 +3495,26 @@ PAGE = """<!DOCTYPE html>
               <input type="text" list="e-zones" class="form-control form-control-sm bg-dark text-light border-secondary"
                      id="e-tz" maxlength="40" onchange="saveEpg()">
               <datalist id="e-zones"></datalist>
-              <label class="small text-muted mt-2">Country code</label>
-              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
-                     id="e-country" maxlength="3" placeholder="from the zone" onchange="saveEpg()">
+              <label class="small text-muted mt-2">Country</label>
+              <select class="form-select form-select-sm bg-dark text-light border-secondary"
+                      id="e-country" onchange="saveEpg()">
+                <option value="">Automatic (from the time zone)</option>
+                <option value="GBR">United Kingdom (GBR)</option>
+                <option value="IRL">Ireland (IRL)</option>
+                <option value="FRA">France (FRA)</option>
+                <option value="BEL">Belgium (BEL)</option>
+                <option value="NLD">Netherlands (NLD)</option>
+                <option value="DEU">Germany (DEU)</option>
+                <option value="ESP">Spain (ESP)</option>
+                <option value="ITA">Italy (ITA)</option>
+                <option value="USA">United States (USA)</option>
+                <option value="AUS">Australia (AUS)</option>
+                <option value="NZL">New Zealand (NZL)</option>
+              </select>
+              <div class="text-muted small mt-1">Sent with the local time so receivers know which
+                country's clock it is. The three letters are the ISO country code, as printed on a
+                passport (GBR for the UK); not the telephone code. Leave on Automatic unless the
+                time zone and the country differ.</div>
               <div class="text-muted small mt-1">Receivers set their clocks from the time: UTC every
                 5 s, and every 10 s the local offset and when it next changes (BST in the UK), so
                 they switch by themselves. The ROCK's clock is the source; chrony keeps it true.
@@ -3599,6 +3616,8 @@ async function epgPoll() {
       document.activeElement !== cp && !epgTyping) {
     document.getElementById('e-time').checked = !!j.time;
     tz.value = j.tz || '';
+    if (j.country && ![...co.options].some(o => o.value === j.country))
+      co.add(new Option(j.country, j.country));
     co.value = j.country || '';
     document.getElementById('e-guide').checked = !!j.guide;
     cp.value = j.companion || '';

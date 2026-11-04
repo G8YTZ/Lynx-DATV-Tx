@@ -183,7 +183,9 @@ def read(timeout):
 TIME_PID = 0x0014
 COUNTRIES = {"Europe/London": "GBR", "Europe/Dublin": "IRL", "Europe/Belfast": "GBR",
              "Europe/Paris": "FRA", "Europe/Brussels": "BEL", "Europe/Amsterdam": "NLD",
-             "Europe/Berlin": "DEU", "Europe/Madrid": "ESP", "Australia/Melbourne": "AUS"}
+             "Europe/Berlin": "DEU", "Europe/Madrid": "ESP", "Europe/Rome": "ITA",
+             "America/New_York": "USA", "America/Chicago": "USA", "America/Los_Angeles": "USA",
+             "Australia/Melbourne": "AUS", "Australia/Sydney": "AUS", "Pacific/Auckland": "NZL"}
 time_cc = 0
 tz = None
 if a.tz:
