@@ -61,13 +61,24 @@ sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   git curl jq ca-certificates \
   python3 python3-fastapi python3-uvicorn python3-pydantic python3-yaml python3-numpy python3-gi \
+  python3-pil fonts-dejavu-core \
   ffmpeg v4l-utils \
   gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
   gstreamer1.0-plugins-bad gstreamer1.0-libav gir1.2-gstreamer-1.0 \
   gnuradio gnuradio-dev libiio-utils mosquitto-clients sshpass \
   cmake build-essential pkg-config pybind11-dev python3-pybind11 \
   libspdlog-dev libgmp-dev liborc-0.4-dev \
-  network-manager dnsmasq-base
+  network-manager dnsmasq-base chrony
+
+# chrony, not systemd-timesyncd (installing it removes timesyncd). The
+# pictures and sound are stamped from the ROCK's own clock, while the
+# PlutoSky's GNSS-locked DAC paces the stream and its PCR, so the ROCK's
+# clock must agree with GNSS over the long run or the stream's slack slowly
+# drains (about 72 ms an hour at 20 ppm). chrony disciplines the clock's
+# rate as well as its time, settles quickly after a power cut, and keeps the
+# crystal's measured error in its drift file, so the clock stays close even
+# while NTP is out of reach.
+sudo systemctl enable --now chrony >/dev/null 2>&1 || true
 
 if ! gst-inspect-1.0 mpph265enc >/dev/null 2>&1; then
   echo "The Rockchip hardware encoder (mpph265enc) is missing."
