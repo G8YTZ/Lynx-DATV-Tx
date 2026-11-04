@@ -201,11 +201,18 @@ DEFAULT_CONFIG = {
     # (the local offset and its next change: BST in the UK) for receivers'
     # clocks. tz: an IANA zone; the offset and change dates come from the
     # system's time zone database. country: the TOT's ISO 3166 code, ""
-    # for the zone's own (GBR for London). The programme guide (EIT, from
-    # Companion triggers named "EPG ...") is to come: guide stays False.
-    "epg": {"time": True, "tz": "Europe/London", "country": "", "guide": False},
+    # for the zone's own (GBR for London). guide: the programme guide (EIT,
+    # now/next and 8 days), from the Bitfocus Companion triggers named
+    # "EPG: ..." (see epg.py); companion: its address, host:port.
+    "epg": {"time": True, "tz": "Europe/London", "country": "", "guide": False,
+            "companion": ""},
 }
 CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
+# The guide: eitinject reads EPG_XML (rewritten when the schedule changes);
+# EPG_CACHE keeps the last programmes fetched, so a Companion that does not
+# answer leaves the guide as it was, never blank.
+EPG_XML = APP_DIR / "config" / "epg_events.xml"
+EPG_CACHE = APP_DIR / "config" / "epg_programmes.json"
 
 
 def load_config() -> dict:
@@ -1780,6 +1787,15 @@ def build_pipeline() -> str:
         nit_stage = (f"-P pat --nit 0x10 "
                      f"-P inject {nit} --pid 0x10 --stuffing "
                      f"--inter-packet {every} ")
+    # The programme guide (the EPG and time card): the SDT says the service
+    # has EIT (ffmpeg writes both flags off, and strict receivers then never
+    # look), and eitinject sends p/f and 8 days of schedule from EPG_XML,
+    # in place of null packets. It takes "now" from tsprio's TDT, so no
+    # time, no guide. DVB only.
+    if not atsc3 and epg_guide_ready():
+        nit_stage += (f"-P sdt --service-id {ident['service_id']} --eit-pf 1 --eit-schedule 1 "
+                      f"-P eitinject --files {shlex.quote(str(EPG_XML))} --actual "
+                      f"--bitrate 20000 ")
     # The buffer monitor (tsbuffer.py, beside this file) gets a copy of the
     # stream and reports the live slack for the Transmit card.
     monitor = APP_DIR / "tsbuffer.py"
@@ -2613,10 +2629,106 @@ def _epg_clock(tz_name: str) -> dict:
     return out
 
 
+epg_status = {"ok": None, "when": 0.0, "detail": "", "via": "", "programmes": 0,
+              "events": 0}
+_epg_lock = threading.Lock()
+
+
+def epg_guide_ready() -> bool:
+    e = config.get("epg") or {}
+    return bool(e.get("guide") and e.get("time", True) and EPG_XML.exists())
+
+
+def _epg_write(progs: list):
+    """Rebuild the 8 days from the programmes and rewrite EPG_XML if it has
+    changed (eitinject reloads it when it does)."""
+    import datetime
+    import zoneinfo
+    import epg as epgmod
+    e = config.get("epg") or {}
+    zone = zoneinfo.ZoneInfo(e.get("tz") or "Europe/London")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    events = epgmod.schedule(progs, zone, now)
+    ident = config["identity"]
+    xml = epgmod.eit_xml(events, int(ident["service_id"]), int(ident["ts_id"]),
+                         int(ident["original_network_id"]))
+    old = EPG_XML.read_text() if EPG_XML.exists() else ""
+    if xml != old:
+        tmp = EPG_XML.with_suffix(".tmp")
+        tmp.write_text(xml)
+        tmp.replace(EPG_XML)
+    epg_status["events"] = len(events)
+    return events
+
+
+def epg_refresh() -> dict:
+    """Fetch Companion's triggers, keep the programmes, write the guide.
+    Companion not answering: the last programmes are used again, and the
+    card says so."""
+    import epg as epgmod
+    with _epg_lock:
+        e = config.get("epg") or {}
+        progs = None
+        if e.get("companion"):
+            try:
+                triggers, via = epgmod.fetch(e["companion"])
+                progs = epgmod.programmes(triggers)
+                EPG_CACHE.write_text(json.dumps(progs))
+                epg_status.update(ok=True, detail="", via=via)
+            except Exception as ex:
+                epg_status.update(ok=False, detail=str(ex), via="")
+        else:
+            epg_status.update(ok=False, detail="No Companion address set", via="")
+        if progs is None:
+            try:
+                progs = json.loads(EPG_CACHE.read_text())
+            except (OSError, ValueError):
+                progs = []
+        epg_status.update(when=time.time(), programmes=len(progs))
+        events = _epg_write(progs) if progs else []
+        if not progs and EPG_XML.exists():
+            EPG_XML.unlink()
+        return {"programmes": len(progs), "events": len(events)}
+
+
+def epg_watch():
+    """Every 30 minutes while the guide is on: Companion asked again, and the
+    8 days rolled on."""
+    while True:
+        try:
+            if (config.get("epg") or {}).get("guide"):
+                was_ready = epg_guide_ready()
+                epg_refresh()
+                if not was_ready and epg_guide_ready() and tx_running():
+                    start_tx()              # first schedule: put the guide on air
+        except Exception as ex:
+            print(f"[epg] {ex}")
+        time.sleep(1800)
+
+
+def _epg_preview(limit: int = 12) -> list:
+    """The next few events, as receivers will show them, in local time."""
+    import datetime
+    import zoneinfo
+    import epg as epgmod
+    try:
+        progs = json.loads(EPG_CACHE.read_text())
+    except (OSError, ValueError):
+        return []
+    e = config.get("epg") or {}
+    zone = zoneinfo.ZoneInfo(e.get("tz") or "Europe/London")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return [{"start": ev["start"].astimezone(zone).strftime("%a %H:%M"),
+             "minutes": ev["minutes"], "title": ev["title"]}
+            for ev in epgmod.schedule(progs, zone, now, days=2)[:limit]]
+
+
 class EpgRequest(BaseModel):
     time: bool = True
     tz: str = "Europe/London"
     country: str = ""
+    guide: Optional[bool] = None
+    companion: Optional[str] = None
 
 
 @app.get("/api/epg")
@@ -2626,7 +2738,9 @@ def api_epg():
         clock = _epg_clock(e["tz"])
     except Exception as ex:
         clock = {"error": f"time zone {e['tz']!r}: {ex}"}
-    return {**e, "clock": clock, "zones": EPG_ZONES}
+    return {**e, "clock": clock, "zones": EPG_ZONES,
+            "guide_status": {**epg_status, "on_air": epg_guide_ready() and tx_running()},
+            "preview": _epg_preview() if e.get("guide") else []}
 
 
 @app.post("/api/epg")
@@ -2643,15 +2757,37 @@ def api_epg_set(req: EpgRequest):
     if country and not re.match(r"^[A-Z]{3}$", country):
         raise HTTPException(400, "country is a three-letter ISO code, e.g. GBR, or empty")
     old = dict(config.get("epg") or {})
-    config["epg"] = {**DEFAULT_CONFIG["epg"], **old,
-                     "time": req.time, "tz": tz, "country": country}
+    new = {**DEFAULT_CONFIG["epg"], **old, "time": req.time, "tz": tz, "country": country}
+    if req.guide is not None:
+        new["guide"] = req.guide
+    if req.companion is not None:
+        addr = req.companion.strip()
+        if addr and not re.match(r"^(https?://)?[A-Za-z0-9.-]+(:\d{1,5})?/?$", addr):
+            raise HTTPException(400, "the Companion address is host:port, e.g. 192.168.40.103:8000")
+        new["companion"] = addr
+    config["epg"] = new
     save_config(config)
-    changed = any(old.get(k) != config["epg"][k] for k in ("time", "tz", "country"))
+    if new.get("guide") and (not old.get("guide") or old.get("companion") != new["companion"]
+                             or old.get("tz") != new["tz"]):
+        epg_refresh()
+    ready_was = bool(old.get("guide") and old.get("time", True)) and EPG_XML.exists()
+    changed = any(old.get(k) != new.get(k) for k in ("time", "tz", "country")) \
+        or ready_was != epg_guide_ready()
     restarted = False
     if changed and tx_running():
         start_tx()
         restarted = True
     return {"success": True, "restarted": restarted, **api_epg()}
+
+
+@app.post("/api/epg/refresh")
+def api_epg_refresh():
+    """Ask Companion now (the card's Refresh button)."""
+    was_ready = epg_guide_ready()
+    r = epg_refresh()
+    if not was_ready and epg_guide_ready() and tx_running():
+        start_tx()
+    return {"success": True, **r, **api_epg()}
 
 
 class ChatRequest(BaseModel):
@@ -3374,15 +3510,22 @@ PAGE = """<!DOCTYPE html>
             </div>
             <div class="col-md-4">
               <div class="form-check form-switch mb-2">
-                <input class="form-check-input" type="checkbox" id="e-guide" disabled>
-                <label class="form-check-label text-muted" for="e-guide">Programme guide (EIT)</label>
+                <input class="form-check-input" type="checkbox" id="e-guide" onchange="saveEpg()">
+                <label class="form-check-label" for="e-guide">Programme guide (EIT)</label>
               </div>
-              <label class="small text-muted">Source</label>
-              <input type="text" class="form-control form-control-sm bg-dark text-muted border-secondary"
-                     id="e-source" disabled placeholder="Bitfocus Companion triggers named &quot;EPG ...&quot;">
-              <div class="text-muted small mt-1">Coming: now, next and the week ahead, from the
-                Companion triggers whose names start with EPG (for example "EPG Morse Course",
-                "EPG Film Night (2h)"). Not yet sent.</div>
+              <label class="small text-muted">Bitfocus Companion</label>
+              <div class="input-group input-group-sm">
+                <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
+                       id="e-companion" maxlength="80" placeholder="192.168.40.103:8000" onchange="saveEpg()">
+                <button class="btn btn-outline-secondary" type="button" onclick="refreshEpg()">Refresh</button>
+              </div>
+              <div class="text-muted small mt-1">Now, next and 8 days ahead, from the Companion
+                triggers whose names start with "EPG:" (for example "EPG: Morse Course",
+                "EPG: Film Night (2h)"; an hour unless the name says otherwise). Asked again every
+                30 minutes; if Companion does not answer, the last guide stays on air. Needs the
+                time switched on.</div>
+              <div class="small mt-2" id="e-guide-status">&mdash;</div>
+              <div class="small mt-2" id="e-preview" style="max-height:14rem;overflow-y:auto"></div>
             </div>
           </div>
         </div>
@@ -3451,11 +3594,33 @@ async function epgPoll() {
   const tz = document.getElementById('e-tz'), co = document.getElementById('e-country');
   const dl = document.getElementById('e-zones');
   if (!dl.options.length) dl.innerHTML = (j.zones || []).map(z => '<option value="' + esc(z) + '">').join('');
-  if (document.activeElement !== tz && document.activeElement !== co && !epgTyping) {
+  const cp = document.getElementById('e-companion');
+  if (document.activeElement !== tz && document.activeElement !== co &&
+      document.activeElement !== cp && !epgTyping) {
     document.getElementById('e-time').checked = !!j.time;
     tz.value = j.tz || '';
     co.value = j.country || '';
+    document.getElementById('e-guide').checked = !!j.guide;
+    cp.value = j.companion || '';
   }
+  const gs = j.guide_status || {}, gel = document.getElementById('e-guide-status');
+  if (!j.guide) gel.innerHTML = '<span class="text-muted">Off</span>';
+  else if (!j.time) gel.innerHTML = '<span style="color:#e8a33d">Needs the time switched on</span>';
+  else {
+    const age = gs.when ? Math.round((Date.now() / 1000 - gs.when) / 60) : null;
+    const asked = age === null ? '' : ' (asked ' + (age < 1 ? 'just now' : age + ' min ago') + ')';
+    const air = gs.on_air ? 'On air' : 'Not on air yet';
+    if (gs.ok) gel.innerHTML = '<span style="color:#4ade80">' + air + ': ' + gs.programmes +
+      ' programme slots, ' + gs.events + ' events' + asked + '</span>';
+    else if (gs.programmes) gel.innerHTML = '<span style="color:#e8a33d">' + air + ' with the last guide (' +
+      gs.programmes + ' slots); Companion: ' + esc(gs.detail || '?') + asked + '</span>';
+    else gel.innerHTML = '<span style="color:#f87171">' + esc(gs.detail || 'No programmes yet') + asked + '</span>';
+  }
+  const pv = document.getElementById('e-preview');
+  pv.innerHTML = (j.preview || []).map((e, i) =>
+    '<div class="' + (i === 0 ? 'text-light' : 'text-muted') + '">' + esc(e.start) + ' &nbsp;' +
+    esc(e.title) + (e.minutes !== 60 ? ' <span class="text-muted">(' + e.minutes + ' min)</span>' : '') +
+    (i === 0 ? ' <span style="color:#4ade80">now</span>' : '') + '</div>').join('');
   const c = j.clock || {}, el = document.getElementById('e-clock');
   if (!j.time) el.innerHTML = '<span class="text-muted">No time sent.</span>';
   else if (c.error) el.innerHTML = '<span style="color:#f87171">' + esc(c.error) + '</span>';
@@ -3471,10 +3636,18 @@ async function saveEpg() {
     const r = await fetch('/api/epg', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({time: document.getElementById('e-time').checked,
                             tz: document.getElementById('e-tz').value.trim(),
-                            country: document.getElementById('e-country').value.trim()})});
+                            country: document.getElementById('e-country').value.trim(),
+                            guide: document.getElementById('e-guide').checked,
+                            companion: document.getElementById('e-companion').value.trim()})});
     const j = await r.json();
     if (!r.ok) err.textContent = j.detail || 'Not saved';
   } catch (e) { err.textContent = 'Not saved: ' + e; }
+  epgPoll();
+}
+
+async function refreshEpg() {
+  document.getElementById('e-guide-status').innerHTML = '<span class="text-muted">Asking Companion...</span>';
+  try { await fetch('/api/epg/refresh', {method: 'POST'}); } catch (e) {}
   epgPoll();
 }
 
@@ -4457,4 +4630,5 @@ if __name__ == "__main__":
     threading.Thread(target=sdr_ref_watch, daemon=True).start()
     threading.Thread(target=mixer_watch, daemon=True).start()
     threading.Thread(target=tx_alarm_watch, daemon=True).start()
+    threading.Thread(target=epg_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
