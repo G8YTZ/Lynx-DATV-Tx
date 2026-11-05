@@ -50,6 +50,9 @@ ap.add_argument("--delay", type=float, default=4.0,
                      "travels in the main stream's spare packets, which takes seconds")
 ap.add_argument("--pad", type=float, default=0,
                 help="no longer used: kept so older command lines still run")
+ap.add_argument("--epg", default="",
+                help="write programme 2's now and next here (TSDuck XML for eitinject): "
+                     "the still showing and the one after, by file name")
 ap.add_argument("--sim", action="store_true", help="software encoder (testing off the ROCK)")
 a = ap.parse_args()
 
@@ -64,6 +67,53 @@ def log(*x):
 
 
 Gst.init(None)
+
+
+def title(path):
+    """The guide's name for a still: its file name without the extension."""
+    return os.path.splitext(os.path.basename(path))[0] if path else "Colour bars"
+
+
+def xml_escape(t):
+    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def write_epg(slot, begin, names):
+    """Now and next for programme 2, as eitinject reads it: one event per
+    still, from begin (UTC epoch, as viewers see it), --seconds each. A
+    third is included so the guide never runs dry between writes. Event ids
+    count the stills shown (slot), so each write replaces the guesses the
+    last one made for the same stills (eitinject swaps an event whose id
+    it already holds) and the events never overlap."""
+    if not a.epg:
+        return
+    secs = max(1, int(round(a.seconds)))
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<tsduck>",
+             '  <EIT type="0" version="0" current="true" actual="true" '
+             'service_id="%d" transport_stream_id="%d" original_network_id="%d" '
+             'last_table_id="0x50">' % (a.service_id, a.tsid, a.onid)]
+    for i, name in enumerate(names):
+        start = int(begin) + i * secs
+        h, rest = divmod(secs, 3600)
+        m, sec = divmod(rest, 60)
+        lines += ['    <event event_id="%d" start_time="%s" duration="%02d:%02d:%02d" '
+                  'running_status="undefined" CA_mode="false">'
+                  % ((slot + i) % 0xFFFF + 1, time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(start)), h, m, sec),
+                  '      <short_event_descriptor language_code="eng">',
+                  "        <event_name>%s</event_name>" % xml_escape(name),
+                  "        <text></text>",
+                  "      </short_event_descriptor>",
+                  "    </event>"]
+    lines += ["  </EIT>", "</tsduck>", ""]
+    # Written aside and renamed: eitinject polls epg_*.xml and must never
+    # read half a file (the temporary name does not match).
+    tmp = os.path.join(os.path.dirname(a.epg) or ".", ".carousel-epg.tmp")
+    try:
+        with open(tmp, "w") as f:
+            f.write("\n".join(lines))
+        os.replace(tmp, a.epg)
+    except OSError as e:
+        log(f"guide not written: {e}")
 
 
 def stills():
@@ -139,6 +189,7 @@ def feeder():
     frame = Gst.SECOND // FPS
     n = 0
     t0 = time.monotonic()
+    wall0 = time.time()            # the same instant, for the guide's times
     idx = 0
     still = None
     shown_until = 0
@@ -155,6 +206,11 @@ def feeder():
                 new = still or load(None)
             still = new
             shown_until = now_n + int(a.seconds * FPS)
+            # The guide: this still from when viewers see it (its frames'
+            # place on the clock, plus the lead the pictures travel with),
+            # then the next two in the order they will come.
+            ahead = [files[(idx + k) % len(files)] for k in range(2)] if files else [None, None]
+            write_epg(idx - 1, wall0 + now_n / FPS + a.delay, [title(path)] + [title(p) for p in ahead])
             log(f"showing {os.path.basename(path) if path else 'colour bars (no stills in ' + a.dir + ')'}")
             # A new picture: a keyframe at once, not at the next in the GOP.
             src.send_event(GstVideo.video_event_new_downstream_force_key_unit(

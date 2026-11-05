@@ -227,6 +227,10 @@ CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
 # EPG_CACHE keeps the last programmes fetched, so a Companion that does not
 # answer leaves the guide as it was, never blank.
 EPG_XML = APP_DIR / "config" / "epg_events.xml"
+# Programme 2's now and next: the carousel writes it at each new still
+# (carousel.py --epg). eitinject reads every config/epg_*.xml.
+EPG_CAROUSEL_XML = APP_DIR / "config" / "epg_carousel.xml"
+EPG_FILES = APP_DIR / "config" / "epg_*.xml"
 EPG_CACHE = APP_DIR / "config" / "epg_programmes.json"
 
 
@@ -1090,8 +1094,22 @@ def carousel_merge() -> str:
            f"--service-id {int(car['service_id'])} --name {shlex.quote(name)} "
            f"--provider {shlex.quote(config.get('provider') or '')} "
            f"--tsid {ident['ts_id']} --onid {ident['original_network_id']} "
-           f"2>>/tmp/lynx-carousel.log")
-    return f"-P merge {shlex.quote(cmd)} --max-queue 4000 --no-smoothing --restart "
+           + (f"--epg {shlex.quote(str(EPG_CAROUSEL_XML))} " if carousel_guide() else "")
+           + "2>>/tmp/lynx-carousel.log")
+    stage = f"-P merge {shlex.quote(cmd)} --max-queue 4000 --no-smoothing --restart "
+    if carousel_guide():
+        # After the merge, where programme 2's SDT entry first exists: say it
+        # has now and next (ffmpeg writes the flag off, as for programme 1).
+        stage += f"-P sdt --service-id {int(car['service_id'])} --eit-pf 1 "
+    return stage
+
+
+def carousel_guide() -> bool:
+    """Programme 2's now and next (the still showing, the one after) goes
+    out whenever the carousel does and the stream carries the time, which
+    eitinject needs. DVB only, like the guide."""
+    return bool(carousel_on() and (config.get("epg") or {}).get("time", True)
+                and not is_atsc3())
 
 
 def build_nit() -> Optional[Path]:
@@ -1868,9 +1886,17 @@ def build_pipeline() -> str:
     # look), and eitinject sends p/f and 8 days of schedule from EPG_XML,
     # in place of null packets. It takes "now" from tsprio's TDT, so no
     # time, no guide. DVB only.
-    if not atsc3 and epg_guide_ready():
-        nit_stage += (f"-P sdt --service-id {ident['service_id']} --eit-pf 1 --eit-schedule 1 "
-                      f"-P eitinject --files {shlex.quote(str(EPG_XML))} --actual "
+    # Programme 2's now and next comes from its own file beside it, so the
+    # injector runs when either is on.
+    guide1 = not atsc3 and epg_guide_ready()
+    if guide1:
+        nit_stage += f"-P sdt --service-id {ident['service_id']} --eit-pf 1 --eit-schedule 1 "
+    if guide1 or carousel_guide():
+        EPG_CAROUSEL_XML.unlink(missing_ok=True)  # the carousel writes a fresh one
+        # Both files when both are on; with the guide off, only programme
+        # 2's, so a guide file left from before stays off air.
+        files = EPG_FILES if guide1 and carousel_guide() else (EPG_XML if guide1 else EPG_CAROUSEL_XML)
+        nit_stage += (f"-P eitinject --files {shlex.quote(str(files))} --actual "
                       f"--bitrate 20000 ")
     # The buffer monitor (tsbuffer.py, beside this file) gets a copy of the
     # stream and reports the live slack for the Transmit card.
