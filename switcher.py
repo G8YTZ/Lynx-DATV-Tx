@@ -152,6 +152,11 @@ def silence():
 # between them renegotiated the encoder mid-stream: a still that never
 # appeared, a stall of several seconds, then a picture (8 GB ROCK, 7 Nov
 # 2026). videoconvert turns each still into BT.709 once, as it loads.
+#
+# And the sink does not sync: imagefreeze paces itself (is-live). On the
+# 8 GB ROCK it pushed only 8 frames a second, each late, and a syncing
+# sink drops late frames before they reach the programme: the still on
+# screen stayed whichever one last got through.
 STILL_CAPS = (f"video/x-raw,format=NV16,width={W},height={H},pixel-aspect-ratio=1/1,"
               f"colorimetry=bt709")
 
@@ -169,7 +174,7 @@ def camera_desc(bars):
             still = "videotestsrc num-buffers=1 pattern=smpte100"
         return (f"{still} ! videoconvert ! videoscale ! "
                 f"{STILL_CAPS} ! "
-                f"imagefreeze is-live=true ! {VCAPS} ! intervideosink channel=cam "
+                f"imagefreeze is-live=true ! {VCAPS} ! intervideosink channel=cam sync=false "
                 f"audiotestsrc is-live=true wave=silence ! {ACAPS} ! {Q} ! interaudiosink channel=cam_a")
     if a.sim:
         return (f"videotestsrc is-live=true pattern=ball ! videoconvert ! videoscale ! {VCAPS} ! "
@@ -210,7 +215,7 @@ def media_desc(name):
     if path.suffix.lower() in STILL_EXT:
         return (f'filesrc location="{quoted}" ! decodebin ! videoconvert ! videoscale ! '
                 f"{STILL_CAPS} ! "
-                f"imagefreeze is-live=true ! {VCAPS} ! intervideosink channel=med "
+                f"imagefreeze is-live=true ! {VCAPS} ! intervideosink channel=med sync=false "
                 + silence()), "still"
     vcodec, acodec, ten_bit = probe_file(path)
     parser = {"hevc": "h265parse", "h264": "h264parse"}.get(vcodec)
