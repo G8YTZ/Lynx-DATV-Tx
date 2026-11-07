@@ -1341,6 +1341,54 @@ def media_files() -> list:
     return out
 
 
+# ---- stills at a sensible size ---------------------------------------------
+# A still is decoded and scaled by the processor when it is clicked. Phone
+# photos of 4032 to 5712 pixels across took long enough that a click seemed
+# to do nothing (8 GB ROCK, 7 Nov 2026). So each still is brought within
+# 3840 x 2160 once, on upload (and the library once at start-up), turned the
+# right way up from its EXIF, and the original kept in .originals/.
+STILL_MAX = (3840, 2160)
+ORIGINALS = ".originals"
+
+
+def fit_still(path: Path) -> str:
+    """Shrink one still to STILL_MAX if bigger, upright. Returns what was done."""
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return "no Pillow"
+    try:
+        with Image.open(path) as im:
+            rotated = (im.getexif() or {}).get(0x0112, 1) not in (1, None)
+            if im.width <= STILL_MAX[0] and im.height <= STILL_MAX[1] and not rotated:
+                return ""
+            fmt = im.format
+            out = ImageOps.exif_transpose(im)
+            out.thumbnail(STILL_MAX, Image.LANCZOS)
+            keep = path.parent / ORIGINALS
+            keep.mkdir(exist_ok=True)
+            if not (keep / path.name).exists():
+                shutil.copy2(path, keep / path.name)
+            tmp = path.with_name(f".{path.name}.fit")
+            if fmt == "JPEG":
+                out.convert("RGB").save(tmp, "JPEG", quality=92)
+            else:
+                out.save(tmp, fmt or "PNG")
+            os.replace(tmp, path)
+            return f"{im.width}x{im.height} -> {out.width}x{out.height}"
+    except Exception as e:
+        return f"left as it is ({e})"
+
+
+def fit_library():
+    """Once at start-up: every still in the library within STILL_MAX."""
+    for f in media_files():
+        if f["kind"] == "still" and f["name"] != _on_air_file():
+            done = fit_still(MEDIA_DIR / f["name"])
+            if done:
+                print(f"[media] {f['name']}: {done}")
+
+
 _probe_cache: dict = {}
 
 
@@ -5040,6 +5088,11 @@ async def api_media_upload(request: Request, name: str):
         if part.exists():
             part.unlink()
     print(f"[media] uploaded {n} ({written} bytes)")
+    if Path(n).suffix.lower() in STILL_EXT:
+        from starlette.concurrency import run_in_threadpool
+        done = await run_in_threadpool(fit_still, MEDIA_DIR / n)
+        if done:
+            print(f"[media] {n}: {done}")
     return {"success": True, "name": n, "size": written}
 
 
@@ -5090,4 +5143,5 @@ if __name__ == "__main__":
     threading.Thread(target=mixer_watch, daemon=True).start()
     threading.Thread(target=tx_alarm_watch, daemon=True).start()
     threading.Thread(target=epg_watch, daemon=True).start()
+    threading.Thread(target=fit_library, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
