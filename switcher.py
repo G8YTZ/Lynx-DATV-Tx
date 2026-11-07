@@ -216,8 +216,11 @@ def media_desc(name):
         # longer matched VCAPS and the clip never started (bench, 23 Oct
         # 2026), so videorate and videoscale sit between: passthrough, and
         # free, when the decoder already gives the programme format.
+        # One caps filter, not two in a row: gst_parse_launch reads
+        # "caps ! caps" as an element called "video", and every clip failed
+        # with 'no element "video"' (8 GB ROCK, 7 Nov 2026).
         dec = (f"mppvideodec format=NV16 width={W} height={H} ! videorate ! videoscale ! "
-               f"video/x-raw,format=NV16,width={W},height={H},pixel-aspect-ratio=1/1 ! {VCAPS}")
+               f"{VCAPS},pixel-aspect-ratio=1/1")
     desc = (f'filesrc location="{quoted}" ! qtdemux name=d '
             f"d.video_0 ! {Q} ! {parser} ! {dec} ! intervideosink channel=med ")
     if acodec in AUDIO_DEC:
