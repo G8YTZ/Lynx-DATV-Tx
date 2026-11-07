@@ -87,6 +87,9 @@ ap.add_argument("--height", type=int, default=2160)
 ap.add_argument("--video-device", default="/dev/video0")
 ap.add_argument("--audio-device", default="hw:CARD=rockchiphdmiin,DEV=0")
 ap.add_argument("--port", type=int, default=8090)
+ap.add_argument("--cam-scale", choices=("cpu", "vpu"), default="cpu",
+                help="a camera of another size than the programme: scaled by the processor, "
+                     "or through the video engine (H.264 there and back, its decoder scaling)")
 ap.add_argument("--sim", action="store_true", help="software stand-ins, any machine")
 ap.add_argument("--fallback-image", default="",
                 help="shown on the Camera input with no HDMI signal (name in --media-dir); bars if missing")
@@ -164,6 +167,26 @@ def camera_desc(bars):
     if a.sim:
         return (f"videotestsrc is-live=true pattern=ball ! videoconvert ! videoscale ! {VCAPS} ! "
                 f"{Q} ! intervideosink channel=cam audiotestsrc is-live=true freq=440 ! {ACAPS} ! "
+                f"{Q} ! interaudiosink channel=cam_a")
+    cw, ch = hdmi_size()
+    if cw and (cw, ch) != (W, H):
+        # The programme size is fixed (Programme size: Always 1080 or 4K) and
+        # the camera sends another: scale it, as clips are.
+        cam = f"video/x-raw,format=NV16,width={cw},height={ch},framerate=25/1"
+        if a.cam_scale == "vpu":
+            # No GStreamer element reaches the RGA scaler, but the video
+            # decoder's own converter does: H.264 at a high fixed quality
+            # into the encoder and straight back out of the decoder at
+            # programme size. No processor time; about two frames later.
+            scale = (f"mpph264enc rc-mode=fixqp qp-init=16 qp-min=16 qp-max=16 gop=25 ! "
+                     f"h264parse ! mppvideodec format=NV16 width={W} height={H} ! videorate ! videoscale")
+        else:
+            scale = "videoscale n-threads=4 ! videorate"
+        log(f"camera {cw}x{ch} scaled to {W}x{H} ({a.cam_scale})")
+        return (f"v4l2src device={a.video_device} ! {cam} ! {Q} ! {scale} ! "
+                f"{VCAPS},pixel-aspect-ratio=1/1 ! {Q} ! intervideosink channel=cam "
+                f"alsasrc device={a.audio_device} buffer-time=200000 latency-time=10000 ! "
+                f"audio/x-raw,rate=48000,channels=2 ! audioconvert ! audioresample ! {ACAPS} ! "
                 f"{Q} ! interaudiosink channel=cam_a")
     return (f"v4l2src device={a.video_device} ! {VCAPS} ! {Q} ! intervideosink channel=cam "
             f"alsasrc device={a.audio_device} buffer-time=200000 latency-time=10000 ! "
@@ -619,6 +642,22 @@ def watch(p, name):
     b = p.get_bus()
     b.add_signal_watch()
     b.connect("message", on_msg, name, p)
+
+
+def hdmi_size():
+    """The HDMI input's picture size now, (0, 0) without a signal."""
+    try:
+        r = subprocess.run(["v4l2-ctl", "-d", a.video_device, "--query-dv-timings"],
+                           capture_output=True, text=True, timeout=3)
+        w = h = 0
+        for line in r.stdout.splitlines():
+            if "Active width" in line:
+                w = int(line.split(":")[1].strip() or 0)
+            elif "Active height" in line:
+                h = int(line.split(":")[1].strip() or 0)
+        return (w, h) if w and h else (0, 0)
+    except Exception:
+        return 0, 0
 
 
 def hdmi_signal():

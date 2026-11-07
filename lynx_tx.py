@@ -146,6 +146,10 @@ DEFAULT_CONFIG = {
         # "stereo": AAC (as proven on air). "5.1": AC-3, six channels from a
         # 5.1 clip; the camera and stereo clips go out on front left/right.
         "audio_format": "stereo",
+        # Programme size (switcher): "auto" follows the HDMI input at key-up
+        # (4K with none); "1080" or "2160" fixes it, and the camera is
+        # scaled to fit. Clips and stills are always scaled to it.
+        "programme_size": "auto",
         # The tweaks (Source and Encoder tweak cards): the values proven on
         # air on 6 Oct 2026 - QPSK 3/4 2000 kS/s, 16 minutes of Save Tonight,
         # nothing late. TESTED_TWEAKS below is the same set, for the page's
@@ -1708,10 +1712,18 @@ def build_pipeline() -> str:
         # pacing, the LibreSDR. "use_switcher: false" in the config falls
         # back to the single-source modes below.
         #
-        # Programme size follows the HDMI input, or UHD with no signal
-        # (the Camera input shows colour bars until one arrives).
-        fmt = _hdmi_format()          # fresh at key-up, never the page's cache
-        w, h = (fmt["width"], fmt["height"]) if fmt.get("width") else (3840, 2160)
+        # Programme size: the setting, or ("auto") the HDMI input, UHD with
+        # no signal (the Camera input shows colour bars until one arrives).
+        # Fixed at 1080 or 2160, a camera of another size is scaled to it
+        # by the switcher, as clips are.
+        size = config["encoder"].get("programme_size", "auto")
+        if size == "1080":
+            w, h = 1920, 1080
+        elif size == "2160":
+            w, h = 3840, 2160
+        else:
+            fmt = _hdmi_format()      # fresh at key-up, never the page's cache
+            w, h = (fmt["width"], fmt["height"]) if fmt.get("width") else (3840, 2160)
         clip = src.get("file") or ""
         if clip and not (MEDIA_DIR / clip).is_file():
             clip = ""
@@ -2087,6 +2099,7 @@ class EncoderUpdate(BaseModel):
     audio: Optional[bool] = None
     audio_bitrate: Optional[int] = None
     audio_format: Optional[str] = None
+    programme_size: Optional[str] = None
 
 
 class TweaksUpdate(BaseModel):
@@ -2748,6 +2761,8 @@ def api_encoder(req: EncoderUpdate):
     e = config["encoder"]
     if e.get("audio_format") not in ("stereo", "5.1"):
         e["audio_format"] = "stereo"
+    if e.get("programme_size") not in ("auto", "1080", "2160"):
+        e["programme_size"] = "auto"
     # Each format at a sensible rate: AC-3 5.1 wants 384k (256k at least);
     # AAC stereo never needs more than 192k.
     if e["audio_format"] == "5.1" and e["audio_bitrate"] < 256000:
@@ -3353,6 +3368,16 @@ PAGE = """<!DOCTYPE html>
       <div class="card">
         <div class="card-header">&#x1F3A5; Source</div>
         <div class="card-body">
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <label class="small text-muted mb-0 text-nowrap" for="e-psize">Programme size</label>
+            <select class="form-select form-select-sm bg-dark text-light border-secondary"
+                    id="e-psize" onchange="savePsize()"
+                    title="Follow HDMI: the size the camera sends at TX On (4K with none). Always 4K: clips and stills at full 4K, a 1080 camera scaled up. Changing it on air restarts the transmission.">
+              <option value="auto">Follow HDMI</option>
+              <option value="1080">Always 1080</option>
+              <option value="2160">Always 4K</option>
+            </select>
+          </div>
           <div class="small text-muted mb-1">Programme</div>
           <div class="d-flex gap-2 mb-1">
             <button class="btn btn-lg btn-outline-light flex-fill" id="pgm-cam"
@@ -4356,6 +4381,16 @@ async function saveEnc() {
   poll();
 }
 
+async function savePsize() {
+  const v = document.getElementById('e-psize').value;
+  if (cfg && cfg.transmitting && !confirm('Change the programme size now? The transmission restarts (a few seconds off air).')) {
+    document.getElementById('e-psize').value = (cfg.config.encoder.programme_size || 'auto');
+    return;
+  }
+  await api('POST', '/api/encoder', {programme_size: v});
+  poll();
+}
+
 let firstLoad = true;
 
 // ---- Tweaks ---------------------------------------------------------------
@@ -4716,6 +4751,7 @@ async function poll() {
     document.getElementById('e-audio').checked = e.audio;
     document.getElementById('e-abr').value = e.audio_bitrate;
     document.getElementById('e-afmt').value = e.audio_format || 'stereo';
+    document.getElementById('e-psize').value = e.programme_size || 'auto';
     PRESETS = cfg.tweaks.presets; TESTED = cfg.tweaks.tested;
     showTested();
     fillTweaks(e);
