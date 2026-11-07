@@ -146,6 +146,16 @@ def silence():
     return f"audiotestsrc is-live=true wave=silence ! {ACAPS} ! interaudiosink channel=med_a"
 
 
+# A still's caps: decoded JPEGs come out as full-range JPEG colour
+# (colorimetry 1:4:0:0), PNGs as 2:4:0:0, the camera and clips as BT.709.
+# intervideosrc passes any change of caps on, so every cut or new still
+# between them renegotiated the encoder mid-stream: a still that never
+# appeared, a stall of several seconds, then a picture (8 GB ROCK, 7 Nov
+# 2026). videoconvert turns each still into BT.709 once, as it loads.
+STILL_CAPS = (f"video/x-raw,format=NV16,width={W},height={H},pixel-aspect-ratio=1/1,"
+              f"colorimetry=bt709")
+
+
 def camera_desc(bars):
     if bars:
         # The fallback with no HDMI signal: the station test card if it is in
@@ -158,7 +168,7 @@ def camera_desc(bars):
         else:
             still = "videotestsrc num-buffers=1 pattern=smpte100"
         return (f"{still} ! videoconvert ! videoscale ! "
-                f"video/x-raw,format=NV16,width={W},height={H},pixel-aspect-ratio=1/1 ! "
+                f"{STILL_CAPS} ! "
                 f"imagefreeze is-live=true ! {VCAPS} ! intervideosink channel=cam "
                 f"audiotestsrc is-live=true wave=silence ! {ACAPS} ! {Q} ! interaudiosink channel=cam_a")
     if a.sim:
@@ -199,7 +209,7 @@ def media_desc(name):
     quoted = str(path).replace('"', '\\"')
     if path.suffix.lower() in STILL_EXT:
         return (f'filesrc location="{quoted}" ! decodebin ! videoconvert ! videoscale ! '
-                f"video/x-raw,format=NV16,width={W},height={H},pixel-aspect-ratio=1/1 ! "
+                f"{STILL_CAPS} ! "
                 f"imagefreeze is-live=true ! {VCAPS} ! intervideosink channel=med "
                 + silence()), "still"
     vcodec, acodec, ten_bit = probe_file(path)
@@ -293,6 +303,21 @@ prog = Gst.parse_launch(
     f"interaudiosrc name=asrc_cam channel=cam_a ! {ACAPS} ! amix.sink_0 "
     f"interaudiosrc name=asrc_med channel=med_a ! {ACAPS} ! amix.sink_1")
 vsel, amix, enc = (prog.get_by_name(n) for n in ("vsel", "amix", "enc"))
+
+
+def _caps_seen(pad, info):
+    """Log every change of caps reaching the encoder: each one renegotiates
+    it mid-stream, which should never happen once running."""
+    ev = info.get_event()
+    if ev.type == Gst.EventType.CAPS:
+        st = ev.parse_caps().get_structure(0)
+        log(f"encoder caps: {st.get_value('width')}x{st.get_value('height')} "
+            f"colorimetry {st.get_string('colorimetry') or '-'} "
+            f"interlace {st.get_string('interlace-mode') or '-'} (on {state.get('on', '?')})")
+    return Gst.PadProbeReturn.OK
+
+
+enc.get_static_pad("sink").add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, _caps_seen)
 chatov = prog.get_by_name("chatov")
 
 
