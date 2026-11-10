@@ -1104,22 +1104,26 @@ def carousel_merge(rate: int = 0) -> str:
            f"--tsid {ident['ts_id']} --onid {ident['original_network_id']} "
            + (f"--epg {shlex.quote(str(EPG_CAROUSEL_XML))} " if carousel_guide() else "")
            + "2>>/tmp/lynx-carousel.log")
-    stage = f"-P merge {shlex.quote(cmd)} --max-queue 4000 --no-smoothing --restart "
     # Programme 2's PMT, sent steadily by Lynx-Tx rather than by the
     # carousel. The carousel's own copies queue behind each new still in the
     # merge (a 4K keyframe squeezed into the main stream's spare packets) and
     # came out in bursts: 14 in 15 s, all within one second (10 Nov 2026,
     # tools/ts_tables.py on a ROCK 5C), where TR 101 290 allows 0.5 s between
     # them. A receiver joining between bursts did not know programme 2
-    # existed: mpv on Lynx Rx offered it only by luck. Its copies are
-    # nulled, and a fixed PMT goes out ten times a second in spare packets.
-    # --inter-packet, not --bitrate: at that point tsp does not know the
-    # stream's bit rate yet, and inject refused to start without it, taking
-    # the whole transmission down (10 Nov 2026). Ten a second at this rate.
+    # existed: mpv on Lynx Rx offered it only by luck.
+    #
+    # So a fixed PMT is injected ten times a second BEFORE the merge, which
+    # then never sends the carousel's own (--drop). Injected after the merge
+    # it came every 0.07 s but with a 2.6 s gap: a new still had taken every
+    # spare packet. Before it, the PMT has its packets first and the still
+    # gets the rest. --inter-packet, not --bitrate: tsp does not know the
+    # rate yet at that point, and inject refused to start without it, which
+    # stopped the whole transmission (10 Nov 2026).
     every = max(10, int((rate or 4_000_000) / (188 * 8) / 10))
-    stage += (f"-P filter --negate --pid {CAROUSEL_PMT_PID} --stuffing "
-              f"-P inject {shlex.quote(str(write_carousel_pmt(car)))} "
-              f"--pid {CAROUSEL_PMT_PID} --inter-packet {every} ")
+    stage = (f"-P inject {shlex.quote(str(write_carousel_pmt(car)))} "
+             f"--pid {CAROUSEL_PMT_PID} --inter-packet {every} "
+             f"-P merge {shlex.quote(cmd)} --max-queue 4000 --no-smoothing --restart "
+             f"--drop {CAROUSEL_PMT_PID} ")
     if carousel_guide():
         # After the merge, where programme 2's SDT entry first exists: say it
         # has now and next (ffmpeg writes the flag off, as for programme 1).
