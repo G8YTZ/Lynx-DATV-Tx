@@ -2699,6 +2699,7 @@ class CarouselUpdate(BaseModel):
     seconds: Optional[float] = None
     reserve_kbps: Optional[int] = None
     keyframe_s: Optional[float] = None
+    qp: Optional[int] = None
 
 
 @app.get("/api/carousel")
@@ -2725,6 +2726,7 @@ def api_carousel_set(req: CarouselUpdate):
     car["seconds"] = max(5.0, min(3600.0, float(car.get("seconds", 60))))
     car["reserve_kbps"] = max(0, min(5000, int(car.get("reserve_kbps", 300))))
     car["keyframe_s"] = max(1.0, min(60.0, float(car.get("keyframe_s", 10))))
+    car["qp"] = max(20, min(51, int(car.get("qp", 34))))
     config["carousel"] = car
     save_config(config)
     return {"success": True, "carousel": car}
@@ -3856,6 +3858,11 @@ PAGE = """<!DOCTYPE html>
               <input type="number" min="1" max="60" step="1" class="form-control form-control-sm bg-dark text-light border-secondary"
                      id="p2-key" onchange="carSave()">
             </div>
+            <div class="col-md-3">
+              <label class="small text-muted">Picture quality (QP)</label>
+              <input type="number" min="20" max="51" step="1" class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="p2-qp" onchange="carSave()">
+            </div>
           </div>
           <div class="small mt-2" id="p2-status">&mdash;</div>
           <div class="text-muted small mt-1">A second programme in the same carrier: the stills in
@@ -3863,6 +3870,11 @@ PAGE = """<!DOCTYPE html>
             travels in the packets the channel would otherwise fill with stuffing. Room reserved
             takes that much off the live picture while programme 2 is on, so its stills always
             find space: raise it if programme 2's picture drops out on detailed stills, 0 for none.
+            Picture quality: lower is sharper and bigger. Each still has to reach the receiver
+            within about 4 s through the spare packets, so a 4K keyframe should stay well under
+            half a megabyte: QP 40 suits photographs (34 gave 1 to 1.4 MB, and stills arrived with
+            their bottoms missing or not at all, 10 Nov 2026). The carousel log
+            (/tmp/lynx-carousel.log) gives its rate each minute.
             Keyframe every: how long a viewer switching over may wait for a picture. Halving it
             about doubles programme 2's rate, so give it more room reserved to match.
             Takes effect at the next TX On.</div>
@@ -4039,6 +4051,7 @@ async function carLoad() {
   document.getElementById('p2-secs').value = c.seconds;
   document.getElementById('p2-res').value = c.reserve_kbps ?? 300;
   document.getElementById('p2-key').value = c.keyframe_s ?? 10;
+  document.getElementById('p2-qp').value = c.qp ?? 34;
   const n = j.stills.length;
   let st = n ? `${n} still${n > 1 ? 's' : ''}: ${j.stills.slice(0, 6).join(', ')}${n > 6 ? ' ...' : ''}`
              : 'No stills in the media library yet: colour bars until there are.';
@@ -4053,7 +4066,8 @@ async function carSave() {
                 lcn: parseInt(document.getElementById('p2-lcn').value || '0', 10),
                 seconds: parseFloat(document.getElementById('p2-secs').value),
                 reserve_kbps: parseInt(document.getElementById('p2-res').value || '0', 10),
-                keyframe_s: parseFloat(document.getElementById('p2-key').value || '10')};
+                keyframe_s: parseFloat(document.getElementById('p2-key').value || '10'),
+                qp: parseInt(document.getElementById('p2-qp').value || '34', 10)};
   const r = await fetch('/api/carousel', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                           body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({}));
