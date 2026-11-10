@@ -1085,10 +1085,11 @@ def carousel_stills() -> list:
         return []
 
 
-def carousel_merge() -> str:
+def carousel_merge(rate: int = 0) -> str:
     """The tsp stage that puts programme 2 into the main stream's null
     packets (TSDuck merge), or "" when it is off. The live programme loses
-    nothing: merge only ever takes a packet that would have been stuffing."""
+    nothing: merge only ever takes a packet that would have been stuffing.
+    rate is the multiplex's bit rate, for spacing programme 2's PMT."""
     car = carousel_on()
     if not car:
         return ""
@@ -1112,9 +1113,13 @@ def carousel_merge() -> str:
     # them. A receiver joining between bursts did not know programme 2
     # existed: mpv on Lynx Rx offered it only by luck. Its copies are
     # nulled, and a fixed PMT goes out ten times a second in spare packets.
+    # --inter-packet, not --bitrate: at that point tsp does not know the
+    # stream's bit rate yet, and inject refused to start without it, taking
+    # the whole transmission down (10 Nov 2026). Ten a second at this rate.
+    every = max(10, int((rate or 4_000_000) / (188 * 8) / 10))
     stage += (f"-P filter --negate --pid {CAROUSEL_PMT_PID} --stuffing "
               f"-P inject {shlex.quote(str(write_carousel_pmt(car)))} "
-              f"--pid {CAROUSEL_PMT_PID} --bitrate 15040 ")
+              f"--pid {CAROUSEL_PMT_PID} --inter-packet {every} ")
     if carousel_guide():
         # After the merge, where programme 2's SDT entry first exists: say it
         # has now and next (ffmpeg writes the flag off, as for programme 1).
@@ -1997,19 +2002,19 @@ def build_pipeline() -> str:
         # Programme 2 rides in tsprio's nulls here too (merge takes nothing else).
         parts.append(
             f" | tsp --buffer-size-mb 0.05 -I file - "
-            f"{carousel_merge()}{tap}-O file {atsc3mod.TS_FIFO}")
+            f"{carousel_merge(rate)}{tap}-O file {atsc3mod.TS_FIFO}")
         return atsc3mod.modulator_shell(sdr_uri(), flowgraph) + "".join(parts)
     if iq:
         # DVB-S2 from the ROCK: as ATSC 3.0 (the DAC's pull is the pace),
         # but the NIT still rides along - it is a DVB table.
         parts.append(
             f" | tsp --buffer-size-mb 0.05 -I file - "
-            f"{nit_stage}{carousel_merge()}{tap}-O file {dvbs2mod.TS_FIFO}")
+            f"{nit_stage}{carousel_merge(rate)}{tap}-O file {dvbs2mod.TS_FIFO}")
         return dvbs2mod.modulator_shell(sdr_uri(), APP_DIR, m) + "".join(parts)
 
     parts.append(
         f" | tsp --realtime --buffer-size-mb 0.05 -I file - "
-        f"{nit_stage}{carousel_merge()}{tap}-P regulate --bitrate {paced} "
+        f"{nit_stage}{carousel_merge(rate)}{tap}-P regulate --bitrate {paced} "
         f"-O ip {libre_host()}:8282")
 
     return "".join(parts)
