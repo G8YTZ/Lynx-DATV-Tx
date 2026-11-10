@@ -234,6 +234,9 @@ EPG_XML = APP_DIR / "config" / "epg_events.xml"
 # Programme 2's now and next: the carousel writes it at each new still
 # (carousel.py --epg). eitinject reads every config/epg_*.xml.
 EPG_CAROUSEL_XML = APP_DIR / "config" / "epg_carousel.xml"
+CAROUSEL_PMT_XML = APP_DIR / "config" / "carousel_pmt.xml"
+CAROUSEL_PMT_PID = 0x200      # carousel.py's --pmt-pid and --video-pid defaults
+CAROUSEL_VIDEO_PID = 0x201
 EPG_FILES = APP_DIR / "config" / "epg_*.xml"
 EPG_CACHE = APP_DIR / "config" / "epg_programmes.json"
 
@@ -1101,11 +1104,35 @@ def carousel_merge() -> str:
            + (f"--epg {shlex.quote(str(EPG_CAROUSEL_XML))} " if carousel_guide() else "")
            + "2>>/tmp/lynx-carousel.log")
     stage = f"-P merge {shlex.quote(cmd)} --max-queue 4000 --no-smoothing --restart "
+    # Programme 2's PMT, sent steadily by Lynx-Tx rather than by the
+    # carousel. The carousel's own copies queue behind each new still in the
+    # merge (a 4K keyframe squeezed into the main stream's spare packets) and
+    # came out in bursts: 14 in 15 s, all within one second (10 Nov 2026,
+    # tools/ts_tables.py on a ROCK 5C), where TR 101 290 allows 0.5 s between
+    # them. A receiver joining between bursts did not know programme 2
+    # existed: mpv on Lynx Rx offered it only by luck. Its copies are
+    # nulled, and a fixed PMT goes out ten times a second in spare packets.
+    stage += (f"-P filter --negate --pid {CAROUSEL_PMT_PID} --stuffing "
+              f"-P inject {shlex.quote(str(write_carousel_pmt(car)))} "
+              f"--pid {CAROUSEL_PMT_PID} --bitrate 15040 ")
     if carousel_guide():
         # After the merge, where programme 2's SDT entry first exists: say it
         # has now and next (ffmpeg writes the flag off, as for programme 1).
         stage += f"-P sdt --service-id {int(car['service_id'])} --eit-pf 1 "
     return stage
+
+
+def write_carousel_pmt(car) -> Path:
+    """Programme 2's PMT as TSDuck XML: one HEVC picture, which also
+    carries the PCR, exactly what carousel.py's FFmpeg writes."""
+    CAROUSEL_PMT_XML.parent.mkdir(parents=True, exist_ok=True)
+    CAROUSEL_PMT_XML.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<tsduck>\n'
+        f'  <PMT version="0" current="true" service_id="{int(car["service_id"])}" '
+        f'PCR_PID="0x{CAROUSEL_VIDEO_PID:X}">\n'
+        f'    <component elementary_PID="0x{CAROUSEL_VIDEO_PID:X}" stream_type="0x24"/>\n'
+        '  </PMT>\n</tsduck>\n')
+    return CAROUSEL_PMT_XML
 
 
 def carousel_guide() -> bool:
