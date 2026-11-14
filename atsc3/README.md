@@ -25,6 +25,8 @@ The modulator pulls the stream at exactly the PLP rate, paced by the LibreSDR's 
 
 Rates come from Ron's `atsc3rate` (dtv-utils) for that structure: QPSK 13/15 is 7,720,144 b/s.
 
+**Sound:** Both settings on the Encoder card play on the HDHomeRun in ATSC 3.0 mode: Stereo (AAC) and 5.1 (AC-3), the latter still signalled the DVB way (G8YTZ, 14 Nov 2026). ATSC 3.0's own formats, AC-4 and MPEG-H, have no free encoder, and MPEG-H is licensed per unit through Via LA, so Lynx-Tx does not use them.
+
 **Identity:** Names, IDs and PIDs all apply. The NIT, network ID and LCN are DVB tables, so they are not sent in ATSC 3.0 mode.
 
 **Changing mode** takes the transmitter off air. Going back to DVB-S2 reboots the LibreSDR (about a minute) to restart DL1JM's modulator. Nothing on the board is changed in ATSC 3.0 mode; its scripts are only stopped.
