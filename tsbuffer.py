@@ -23,6 +23,13 @@ from collections import deque
 
 OUT = os.environ.get("LYNX_BUFFER_JSON", "/tmp/lynx-buffer.json")
 VIDEO_PID = int(sys.argv[1], 0) if len(sys.argv) > 1 else 0x101
+# A recording of what goes on air, on request: touch CAPTURE_REQ (its
+# contents, if a number, are the seconds wanted; 30 if empty) and the next
+# that many seconds of the outgoing stream land in CAPTURE_TS, with
+# CAPTURE_TS + ".done" when finished. For finding faults a receiver shows
+# (Ryde swapping programmes, 14 Nov 2026) without any change to the chain.
+CAPTURE_REQ = "/tmp/lynx-capture"
+CAPTURE_TS = "/tmp/lynx-capture.ts"
 WRAP = 1 << 33                      # 90 kHz timestamps are 33 bits
 
 
@@ -40,10 +47,37 @@ def main():
     slack = None
     buf = b""
     stdin = sys.stdin.buffer
+    cap = None                      # open capture file, or None
+    cap_until = 0.0
+    last_check = 0.0
     while True:
         chunk = stdin.read(188 * 512)
         if not chunk:
             break
+        now = time.time()
+        if cap is None and now - last_check >= 1:
+            last_check = now
+            if os.path.exists(CAPTURE_REQ):
+                try:
+                    with open(CAPTURE_REQ) as f:
+                        secs = float(f.read().strip() or 30)
+                    os.remove(CAPTURE_REQ)
+                    for old in (CAPTURE_TS, CAPTURE_TS + ".done"):
+                        if os.path.exists(old):
+                            os.remove(old)
+                    cap = open(CAPTURE_TS, "wb")
+                    cap_until = now + max(1.0, min(secs, 300.0))
+                except (OSError, ValueError):
+                    cap = None
+        if cap is not None:
+            try:
+                cap.write(chunk)
+            except OSError:
+                now = cap_until
+            if now >= cap_until:
+                cap.close()
+                cap = None
+                open(CAPTURE_TS + ".done", "w").close()
         buf += chunk
         n = len(buf) // 188
         for i in range(n):
