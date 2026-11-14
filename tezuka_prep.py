@@ -84,6 +84,22 @@ def _ensure_key(host: str) -> bool:
     return _ssh(host, "true").returncode == 0
 
 
+MIN_TEZUKA = (0, 3, 24)
+
+
+def tezuka_new_enough(version: str):
+    """True or False for a Tezuka version such as "v0.3.24"; None if it
+    cannot be read."""
+    v = version.strip().lstrip("vV").split("-")[0]
+    try:
+        parts = tuple(int(x) for x in v.split("."))
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    return parts + (0,) * (3 - len(parts)) >= MIN_TEZUKA
+
+
 def prepare(host: str, on_air) -> str:
     """Bring one board (PlutoSky R2 or LibreSDR, on Tezuka) up to date.
     on_air() is checked before anything is written; nothing is ever done to
@@ -97,14 +113,29 @@ def prepare(host: str, on_air) -> str:
         try:
             if on_air() or not _ensure_key(host):
                 return state.get(host, {}).get("state", "busy")
-            # v0.3.24 or later: the PlutoSky's reference control (S22refclk)
-            # or the LibreSDR's (SV1EIA's gpsdo_boot.sh).
-            r = _ssh(host, "{ [ -x /etc/init.d/S22refclk ] || [ -x /usr/sbin/gpsdo_boot.sh ]; } "
-                           "&& echo ok; sha256sum /mnt/jffs2/autorun.sh 2>/dev/null")
-            out = r.stdout.decode(errors="replace").split()
-            if not out or out[0] != "ok":
-                _set(host, "error", "Tezuka is too old for Lynx-Tx: v0.3.24 or later needed")
+            # v0.3.24 or later, read from the board's own release file. The
+            # reference controls (the PlutoSky R2's S22refclk, the LibreSDR's
+            # gpsdo_boot.sh) used to stand in for the version, but not every
+            # board has one: Ian G8XZD's FISHBall PlutoSky on v0.3.24 has no
+            # 10 MHz reference hardware and was refused as "too old" (14 Nov
+            # 2026). Such a board runs on its own crystal (autorun.sh: board
+            # "none"). The old test stays as a fallback for a release file
+            # with no version in it.
+            r = _ssh(host, "sed -n 's/^VERSION=//p' /etc/os-release 2>/dev/null | tr -d '\"' | head -1; "
+                           "{ [ -x /etc/init.d/S22refclk ] || [ -x /usr/sbin/gpsdo_boot.sh ]; } "
+                           "&& echo ok || echo -; sha256sum /mnt/jffs2/autorun.sh 2>/dev/null")
+            lines = r.stdout.decode(errors="replace").splitlines()
+            version = lines[0].strip() if lines else ""
+            refclk = len(lines) > 1 and lines[1].strip() == "ok"
+            sums = lines[2].split() if len(lines) > 2 else []
+            ok = tezuka_new_enough(version)
+            if ok is None:
+                ok = refclk
+            if not ok:
+                _set(host, "error", f"Tezuka is too old for Lynx-Tx ({version or 'version unknown'}): "
+                                    "v0.3.24 or later needed")
                 return "old"
+            out = ["ok"] + sums[:1]
             want = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
             if len(out) > 1 and out[1] == want:
                 if not cur or cur["state"] != "ready":
