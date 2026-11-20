@@ -5,7 +5,12 @@
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-"""epg.py - the programme guide, from Bitfocus Companion's triggers.
+"""epg.py - the programme guide, from Lynx Deck's schedule or Bitfocus
+Companion's triggers.
+
+A Lynx Deck at the address (1.7 and later) serves its guide entries at
+/schedule/programmes, already in the form programmes() builds below, and is
+asked first. Otherwise the address is Companion's:
 
 The repeater's playout is run by Companion triggers, so the schedule
 already exists there. A trigger whose name starts with "EPG:" (or "EPG "
@@ -71,6 +76,25 @@ def fetch(address: str, timeout: float = 10.0):
     raise RuntimeError(f"Companion at {address} did not answer: {last}")
 
 
+def fetch_programmes(address: str, timeout: float = 10.0):
+    """The programme slots and where they came from. A Lynx Deck (its
+    Schedule page, /schedule/programmes) is asked first; anything else is
+    taken to be Companion and its "EPG:" triggers are read as before."""
+    base = address.strip().rstrip("/")
+    if not base.startswith("http"):
+        base = "http://" + base
+    try:
+        with urllib.request.urlopen(base + "/schedule/programmes", timeout=timeout) as r:
+            data = json.loads(r.read())
+        progs = data.get("programmes") if isinstance(data, dict) else None
+        if isinstance(progs, list):
+            return progs, "Lynx Deck"
+    except Exception:
+        pass                                       # not a Deck: try Companion
+    triggers, via = fetch(address, timeout)
+    return programmes(triggers), via
+
+
 def load_file(path: str) -> dict:
     data = open(path, "rb").read()
     if data[:2] == b"\x1f\x8b":
@@ -106,8 +130,12 @@ def programmes(triggers: dict) -> list:
             if ev.get("type") != "timeofday" or not ev.get("enabled", True):
                 continue
             o = ev.get("options") or {}
+            t = o.get("time", "")
             try:
-                hh, mm = (int(x) for x in str(o.get("time", "")).split(":")[:2])
+                if isinstance(t, (int, float)):        # Companion also stores seconds
+                    hh, mm = int(t) // 3600 % 24, int(t) // 60 % 60   # since midnight
+                else:
+                    hh, mm = (int(x) for x in str(t).split(":")[:2])
             except ValueError:
                 continue
             days = sorted({int(d) for d in (o.get("days") or []) if 0 <= int(d) <= 6})
