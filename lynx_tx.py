@@ -2989,7 +2989,8 @@ def epg_refresh() -> dict:
         progs = None
         if e.get("companion"):
             try:
-                progs, via = epgmod.fetch_programmes(e["companion"])
+                triggers, via = epgmod.fetch(e["companion"])
+                progs = epgmod.programmes(triggers)
                 EPG_CACHE.write_text(json.dumps(progs))
                 epg_status.update(ok=True, detail="", via=via)
             except Exception as ex:
@@ -3970,15 +3971,14 @@ PAGE = """<!DOCTYPE html>
                 <input class="form-check-input" type="checkbox" id="e-guide" onchange="saveEpg()">
                 <label class="form-check-label" for="e-guide">Programme guide (EIT)</label>
               </div>
-              <label class="small text-muted">Lynx Deck or Bitfocus Companion</label>
+              <label class="small text-muted">Bitfocus Companion</label>
               <div class="input-group input-group-sm">
                 <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
                        id="e-companion" maxlength="80" placeholder="192.168.40.103:8000" onchange="saveEpg()">
                 <button class="btn btn-outline-secondary" type="button" onclick="refreshEpg()">Refresh</button>
               </div>
-              <div class="text-muted small mt-1">Now, next and 8 days ahead. A Lynx Deck's address
-                (for example 192.168.40.117:8080) takes the programmes from its Schedule page;
-                Companion's takes them from the triggers whose names start with "EPG:" (for example "EPG: Morse Course",
+              <div class="text-muted small mt-1">Now, next and 8 days ahead, from the Companion
+                triggers whose names start with "EPG:" (for example "EPG: Morse Course",
                 "EPG: Film Night (2h)"; an hour unless the name says otherwise). Asked again every
                 30 minutes; if Companion does not answer, the last guide stays on air. Needs the
                 time switched on.</div>
