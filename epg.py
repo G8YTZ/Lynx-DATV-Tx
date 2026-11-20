@@ -106,8 +106,12 @@ def programmes(triggers: dict) -> list:
             if ev.get("type") != "timeofday" or not ev.get("enabled", True):
                 continue
             o = ev.get("options") or {}
+            t = o.get("time", "")
             try:
-                hh, mm = (int(x) for x in str(o.get("time", "")).split(":")[:2])
+                if isinstance(t, (int, float)):        # Companion also stores seconds
+                    hh, mm = int(t) // 3600 % 24, int(t) // 60 % 60   # since midnight
+                else:
+                    hh, mm = (int(x) for x in str(t).split(":")[:2])
             except ValueError:
                 continue
             days = sorted({int(d) for d in (o.get("days") or []) if 0 <= int(d) <= 6})
