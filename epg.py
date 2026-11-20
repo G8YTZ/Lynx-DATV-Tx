@@ -5,7 +5,12 @@
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-"""epg.py - the programme guide, from Bitfocus Companion's triggers.
+"""epg.py - the programme guide, from Bitfocus Companion's triggers or a
+Lynx Deck's schedule. The EPG card chooses one; there is no falling back from
+one to the other, so two schedules never mix.
+
+A Lynx Deck (1.7 and later) serves its guide entries at /schedule/programmes,
+already in the form programmes() builds below (fetch_deck). From Companion:
 
 The repeater's playout is run by Companion triggers, so the schedule
 already exists there. A trigger whose name starts with "EPG:" (or "EPG "
@@ -69,6 +74,24 @@ def fetch(address: str, timeout: float = 10.0):
         except Exception as e:                     # try the next way in
             last = e
     raise RuntimeError(f"Companion at {address} did not answer: {last}")
+
+
+def fetch_deck(address: str, timeout: float = 10.0):
+    """The programme slots from a Lynx Deck's Schedule page
+    (/schedule/programmes, Lynx Deck 1.7 and later), already in the form
+    programmes() builds from Companion's triggers."""
+    base = address.strip().rstrip("/")
+    if not base.startswith("http"):
+        base = "http://" + base
+    try:
+        with urllib.request.urlopen(base + "/schedule/programmes", timeout=timeout) as r:
+            data = json.loads(r.read())
+    except Exception as e:
+        raise RuntimeError(f"Lynx Deck at {address} did not answer: {e}")
+    progs = data.get("programmes") if isinstance(data, dict) else None
+    if not isinstance(progs, list):
+        raise RuntimeError(f"{address} is not a Lynx Deck 1.7 or later (no schedule)")
+    return progs, "Lynx Deck"
 
 
 def load_file(path: str) -> dict:

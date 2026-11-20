@@ -205,7 +205,7 @@ DEFAULT_CONFIG = {
     # now/next and 8 days), from the Bitfocus Companion triggers named
     # "EPG: ..." (see epg.py); companion: its address, host:port.
     "epg": {"time": True, "tz": "Europe/London", "country": "", "guide": False,
-            "companion": ""},
+            "companion": "", "source": "companion"},
 }
 CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
 # The guide: eitinject reads EPG_XML (rewritten when the schedule changes);
@@ -2662,23 +2662,29 @@ def _epg_write(progs: list):
 
 
 def epg_refresh() -> dict:
-    """Fetch Companion's triggers, keep the programmes, write the guide.
-    Companion not answering: the last programmes are used again, and the
-    card says so."""
+    """Fetch the programmes from the chosen source (Companion's triggers, or
+    a Lynx Deck's schedule), keep them, write the guide. The source not
+    answering: the last programmes are used again, and the card says so.
+    Never falls back from one source to the other."""
     import epg as epgmod
     with _epg_lock:
         e = config.get("epg") or {}
+        deck = e.get("source") == "deck"
+        name = "Lynx Deck" if deck else "Companion"
         progs = None
         if e.get("companion"):
             try:
-                triggers, via = epgmod.fetch(e["companion"])
-                progs = epgmod.programmes(triggers)
+                if deck:
+                    progs, via = epgmod.fetch_deck(e["companion"])
+                else:
+                    triggers, via = epgmod.fetch(e["companion"])
+                    progs = epgmod.programmes(triggers)
                 EPG_CACHE.write_text(json.dumps(progs))
-                epg_status.update(ok=True, detail="", via=via)
+                epg_status.update(ok=True, detail="", via=via, source=name)
             except Exception as ex:
-                epg_status.update(ok=False, detail=str(ex), via="")
+                epg_status.update(ok=False, detail=str(ex), via="", source=name)
         else:
-            epg_status.update(ok=False, detail="No Companion address set", via="")
+            epg_status.update(ok=False, detail=f"No {name} address set", via="", source=name)
         if progs is None:
             try:
                 progs = json.loads(EPG_CACHE.read_text())
@@ -2729,6 +2735,7 @@ class EpgRequest(BaseModel):
     country: str = ""
     guide: Optional[bool] = None
     companion: Optional[str] = None
+    source: Optional[str] = None        # "companion" or "deck"
 
 
 @app.get("/api/epg")
@@ -2763,11 +2770,16 @@ def api_epg_set(req: EpgRequest):
     if req.companion is not None:
         addr = req.companion.strip()
         if addr and not re.match(r"^(https?://)?[A-Za-z0-9.-]+(:\d{1,5})?/?$", addr):
-            raise HTTPException(400, "the Companion address is host:port, e.g. 192.168.40.103:8000")
+            raise HTTPException(400, "the address is host:port, e.g. 192.168.40.103:8000")
         new["companion"] = addr
+    if req.source is not None:
+        if req.source not in ("companion", "deck"):
+            raise HTTPException(400, "the guide comes from companion or deck")
+        new["source"] = req.source
     config["epg"] = new
     save_config(config)
     if new.get("guide") and (not old.get("guide") or old.get("companion") != new["companion"]
+                             or old.get("source", "companion") != new.get("source", "companion")
                              or old.get("tz") != new["tz"]):
         epg_refresh()
     ready_was = bool(old.get("guide") and old.get("time", True)) and EPG_XML.exists()
@@ -2782,7 +2794,7 @@ def api_epg_set(req: EpgRequest):
 
 @app.post("/api/epg/refresh")
 def api_epg_refresh():
-    """Ask Companion now (the card's Refresh button)."""
+    """Ask the guide's source now (the card's Refresh button)."""
     was_ready = epg_guide_ready()
     r = epg_refresh()
     if not was_ready and epg_guide_ready() and tx_running():
@@ -3530,17 +3542,24 @@ PAGE = """<!DOCTYPE html>
                 <input class="form-check-input" type="checkbox" id="e-guide" onchange="saveEpg()">
                 <label class="form-check-label" for="e-guide">Programme guide (EIT)</label>
               </div>
-              <label class="small text-muted">Bitfocus Companion</label>
+              <label class="small text-muted">Guide from</label>
+              <select class="form-select form-select-sm bg-dark text-light border-secondary mb-1"
+                      id="e-source" onchange="saveEpg()">
+                <option value="companion">Bitfocus Companion ("EPG:" triggers)</option>
+                <option value="deck">Lynx Deck (its Schedule page)</option>
+              </select>
               <div class="input-group input-group-sm">
                 <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
                        id="e-companion" maxlength="80" placeholder="192.168.40.103:8000" onchange="saveEpg()">
                 <button class="btn btn-outline-secondary" type="button" onclick="refreshEpg()">Refresh</button>
               </div>
-              <div class="text-muted small mt-1">Now, next and 8 days ahead, from the Companion
-                triggers whose names start with "EPG:" (for example "EPG: Morse Course",
-                "EPG: Film Night (2h)"; an hour unless the name says otherwise). Asked again every
-                30 minutes; if Companion does not answer, the last guide stays on air. Needs the
-                time switched on.</div>
+              <div class="text-muted small mt-1">Now, next and 8 days ahead, from one source. From
+                Companion: the triggers whose names start with "EPG:" (for example "EPG: Morse Course",
+                "EPG: Film Night (2h)"; an hour unless the name says otherwise), at Companion's
+                address (e.g. 192.168.40.103:8000). From a Lynx Deck: the entries ticked "In the
+                guide" on its Schedule page, at the Deck's address (e.g. 192.168.40.117:8080).
+                Asked again every 30 minutes; if the source does not answer, the last guide stays
+                on air. Needs the time switched on.</div>
               <div class="small mt-2" id="e-guide-status">&mdash;</div>
               <div class="small mt-2" id="e-preview" style="max-height:14rem;overflow-y:auto"></div>
             </div>
@@ -3621,6 +3640,8 @@ async function epgPoll() {
     co.value = j.country || '';
     document.getElementById('e-guide').checked = !!j.guide;
     cp.value = j.companion || '';
+    document.getElementById('e-source').value = j.source || 'companion';
+    cp.placeholder = (j.source === 'deck') ? '192.168.40.117:8080' : '192.168.40.103:8000';
   }
   const gs = j.guide_status || {}, gel = document.getElementById('e-guide-status');
   if (!j.guide) gel.innerHTML = '<span class="text-muted">Off</span>';
@@ -3632,7 +3653,7 @@ async function epgPoll() {
     if (gs.ok) gel.innerHTML = '<span style="color:#4ade80">' + air + ': ' + gs.programmes +
       ' programme slots, ' + gs.events + ' events' + asked + '</span>';
     else if (gs.programmes) gel.innerHTML = '<span style="color:#e8a33d">' + air + ' with the last guide (' +
-      gs.programmes + ' slots); Companion: ' + esc(gs.detail || '?') + asked + '</span>';
+      gs.programmes + ' slots); ' + esc(gs.source || 'Companion') + ': ' + esc(gs.detail || '?') + asked + '</span>';
     else gel.innerHTML = '<span style="color:#f87171">' + esc(gs.detail || 'No programmes yet') + asked + '</span>';
   }
   const pv = document.getElementById('e-preview');
@@ -3657,7 +3678,8 @@ async function saveEpg() {
                             tz: document.getElementById('e-tz').value.trim(),
                             country: document.getElementById('e-country').value.trim(),
                             guide: document.getElementById('e-guide').checked,
-                            companion: document.getElementById('e-companion').value.trim()})});
+                            companion: document.getElementById('e-companion').value.trim(),
+                            source: document.getElementById('e-source').value})});
     const j = await r.json();
     if (!r.ok) err.textContent = j.detail || 'Not saved';
   } catch (e) { err.textContent = 'Not saved: ' + e; }
@@ -3665,7 +3687,7 @@ async function saveEpg() {
 }
 
 async function refreshEpg() {
-  document.getElementById('e-guide-status').innerHTML = '<span class="text-muted">Asking Companion...</span>';
+  document.getElementById('e-guide-status').innerHTML = '<span class="text-muted">Asking...</span>';
   try { await fetch('/api/epg/refresh', {method: 'POST'}); } catch (e) {}
   epgPoll();
 }
