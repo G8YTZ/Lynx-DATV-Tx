@@ -221,15 +221,14 @@ DEFAULT_CONFIG = {
     # clocks. tz: an IANA zone; the offset and change dates come from the
     # system's time zone database. country: the TOT's ISO 3166 code, ""
     # for the zone's own (GBR for London). guide: the programme guide (EIT,
-    # now/next and 8 days), from the Lynx Deck's schedule (see epg.py);
-    # companion: the Deck's address, host:port (the key keeps its old name,
-    # from when the guide came from Companion, so existing settings carry on).
+    # now/next and 8 days), from the Bitfocus Companion triggers named
+    # "EPG: ..." (see epg.py); companion: its address, host:port.
     "epg": {"time": True, "tz": "Europe/London", "country": "", "guide": False,
             "companion": ""},
 }
 CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
 # The guide: eitinject reads EPG_XML (rewritten when the schedule changes);
-# EPG_CACHE keeps the last programmes fetched, so a Deck that does not
+# EPG_CACHE keeps the last programmes fetched, so a Companion that does not
 # answer leaves the guide as it was, never blank.
 EPG_XML = APP_DIR / "config" / "epg_events.xml"
 # Programme 2's now and next: the carousel writes it at each new still
@@ -2981,8 +2980,8 @@ def _epg_write(progs: list):
 
 
 def epg_refresh() -> dict:
-    """Fetch the Lynx Deck's guide entries, keep them, write the guide.
-    The Deck not answering: the last programmes are used again, and the
+    """Fetch Companion's triggers, keep the programmes, write the guide.
+    Companion not answering: the last programmes are used again, and the
     card says so."""
     import epg as epgmod
     with _epg_lock:
@@ -2996,7 +2995,7 @@ def epg_refresh() -> dict:
             except Exception as ex:
                 epg_status.update(ok=False, detail=str(ex), via="")
         else:
-            epg_status.update(ok=False, detail="No Lynx Deck address set", via="")
+            epg_status.update(ok=False, detail="No Companion address set", via="")
         if progs is None:
             try:
                 progs = json.loads(EPG_CACHE.read_text())
@@ -3010,7 +3009,7 @@ def epg_refresh() -> dict:
 
 
 def epg_watch():
-    """Every 30 minutes while the guide is on: the Deck asked again, and the
+    """Every 30 minutes while the guide is on: Companion asked again, and the
     8 days rolled on."""
     while True:
         try:
@@ -3081,7 +3080,7 @@ def api_epg_set(req: EpgRequest):
     if req.companion is not None:
         addr = req.companion.strip()
         if addr and not re.match(r"^(https?://)?[A-Za-z0-9.-]+(:\d{1,5})?/?$", addr):
-            raise HTTPException(400, "the Lynx Deck address is host:port, e.g. 192.168.40.117:8080")
+            raise HTTPException(400, "the Companion address is host:port, e.g. 192.168.40.103:8000")
         new["companion"] = addr
     config["epg"] = new
     save_config(config)
@@ -3100,7 +3099,7 @@ def api_epg_set(req: EpgRequest):
 
 @app.post("/api/epg/refresh")
 def api_epg_refresh():
-    """Ask the Deck now (the card's Refresh button)."""
+    """Ask Companion now (the card's Refresh button)."""
     was_ready = epg_guide_ready()
     r = epg_refresh()
     if not was_ready and epg_guide_ready() and tx_running():
@@ -3971,15 +3970,18 @@ PAGE = """<!DOCTYPE html>
                 <input class="form-check-input" type="checkbox" id="e-guide" onchange="saveEpg()">
                 <label class="form-check-label" for="e-guide">Programme guide (EIT)</label>
               </div>
-              <label class="small text-muted">Lynx Deck</label>
+              <label class="small text-muted">Lynx Deck or Bitfocus Companion</label>
               <div class="input-group input-group-sm">
                 <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
-                       id="e-companion" maxlength="80" placeholder="192.168.40.117:8080" onchange="saveEpg()">
+                       id="e-companion" maxlength="80" placeholder="192.168.40.103:8000" onchange="saveEpg()">
                 <button class="btn btn-outline-secondary" type="button" onclick="refreshEpg()">Refresh</button>
               </div>
-              <div class="text-muted small mt-1">Now, next and 8 days ahead, from the Lynx Deck's
-                Schedule page: the entries with a guide title. Asked again every 30 minutes; if the
-                Deck does not answer, the last guide stays on air. Needs the time switched on.</div>
+              <div class="text-muted small mt-1">Now, next and 8 days ahead. A Lynx Deck's address
+                (for example 192.168.40.117:8080) takes the programmes from its Schedule page;
+                Companion's takes them from the triggers whose names start with "EPG:" (for example "EPG: Morse Course",
+                "EPG: Film Night (2h)"; an hour unless the name says otherwise). Asked again every
+                30 minutes; if Companion does not answer, the last guide stays on air. Needs the
+                time switched on.</div>
               <div class="small mt-2" id="e-guide-status">&mdash;</div>
               <div class="small mt-2" id="e-preview" style="max-height:14rem;overflow-y:auto"></div>
             </div>
@@ -4153,7 +4155,7 @@ async function epgPoll() {
     if (gs.ok) gel.innerHTML = '<span style="color:#4ade80">' + air + ': ' + gs.programmes +
       ' programme slots, ' + gs.events + ' events' + asked + '</span>';
     else if (gs.programmes) gel.innerHTML = '<span style="color:#e8a33d">' + air + ' with the last guide (' +
-      gs.programmes + ' slots); Lynx Deck: ' + esc(gs.detail || '?') + asked + '</span>';
+      gs.programmes + ' slots); Companion: ' + esc(gs.detail || '?') + asked + '</span>';
     else gel.innerHTML = '<span style="color:#f87171">' + esc(gs.detail || 'No programmes yet') + asked + '</span>';
   }
   const pv = document.getElementById('e-preview');
@@ -4186,7 +4188,7 @@ async function saveEpg() {
 }
 
 async function refreshEpg() {
-  document.getElementById('e-guide-status').innerHTML = '<span class="text-muted">Asking the Lynx Deck...</span>';
+  document.getElementById('e-guide-status').innerHTML = '<span class="text-muted">Asking Companion...</span>';
   try { await fetch('/api/epg/refresh', {method: 'POST'}); } catch (e) {}
   epgPoll();
 }
