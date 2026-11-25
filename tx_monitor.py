@@ -224,7 +224,7 @@ def _run(get_config):
             src = _CliSource(uri, own)
     except Exception as e:
         with _lock:
-            _state.update(error=f"cannot reach the LibreSDR receiver: {e}", running=False)
+            _state.update(error=f"cannot reach the receiver at {uri}: {e}", running=False)
         return
     gain = 10.0
     src.set_gain(gain)
@@ -391,7 +391,7 @@ PAGE = r"""<!DOCTYPE html>
  <span id="warn">&#x26A0;&#xFE0F; Receiver overloaded &mdash; reducing gain</span>
 </div>
 <div id="offmsg" style="display:none;background:#16213e;border:1px solid #0f3460;border-radius:6px;padding:10px;margin-bottom:8px">
-Monitor is <b>off</b>: The LibreSDR's receiver is not being used at all. Press <b>Turn on</b> to start it.</div>
+Monitor is <b>off</b>: The SDR's receiver is not being used at all. Press <b>Turn on</b> to start it.</div>
 <canvas id="spec" height="1142"></canvas>
 <canvas id="fall" height="260" style="margin-top:8px"></canvas>
 <div class="note" id="note">A monitor, not a measurement: Watch the shape and changes. The span is the
