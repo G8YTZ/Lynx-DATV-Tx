@@ -22,10 +22,13 @@ IMPORTS
         FROM NET-SNMP-MIB;
 
 lynx MODULE-IDENTITY
-    LAST-UPDATED "202611201600Z"
+    LAST-UPDATED "202611251300Z"
     ORGANIZATION "Lynx DATV"
     CONTACT-INFO "Justin Cockett, G8YTZ"
     DESCRIPTION  "Status of the Lynx DATV transmitter, media player and receiver."
+    REVISION     "202611251300Z"
+    DESCRIPTION  "PA control and Automatic Drive Control: PA relays, forward
+                  power, drive state, drive, power lock, PA fault (19 to 24)."
     REVISION     "202611201600Z"
     DESCRIPTION  "Lynx Deck, the media player and scheduler (lynxDeck, 1 to 20);
                   lynx placed under netSnmpExperimental, where the agents
@@ -195,6 +198,69 @@ lynxDiskFreeMB OBJECT-TYPE
         "Free space on the ROCK's system drive, where media and logs live.
         A full drive stops everything."
     ::= { lynxTx 18 }
+
+lynxPaRelays OBJECT-TYPE
+    SYNTAX      INTEGER { on(1), off(2), notAnswering(3), notConfigured(4), partlyOn(5) }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The PA's DC relays on the Modbus relay board, as Lynx-Tx last read
+        them (every 10 s). on: every relay on. notAnswering: the Modbus
+        gateway did not answer. partlyOn: some on, some off, which should
+        only last a moment while Lynx-Tx sequences them."
+    ::= { lynxTx 19 }
+
+lynxFwdPower OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "tenths of a watt"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The PA's forward power (405 = 40.5 W), read every 2 s from the
+        Modbus board. 0 when not configured or not read in the last 10 s."
+    ::= { lynxTx 20 }
+
+lynxDriveState OBJECT-TYPE
+    SYNTAX      INTEGER { off(1), standby(2), settling(3), tracking(4), onTarget(5),
+                          atMaximum(6), atMinimum(7), held(8) }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Automatic Drive Control. standby: enabled, not on air. atMaximum:
+        the PA cannot reach the target at the maximum drive (it is getting
+        tired, or the slider is too low). atMinimum: over target even at
+        the least drive. held: the loop has stopped trimming because of a
+        sudden fall in power, a lost reading or poor return loss, and needs
+        a person (Resume on the page, or the next key-up)."
+    ::= { lynxTx 21 }
+
+lynxDrive OBJECT-TYPE
+    SYNTAX      Integer32
+    UNITS       "hundredths of a dB"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "The SDR's drive now (-1250 = -12.50 dB): where Automatic Drive
+        Control has it on air, otherwise the power setting. A slow rise
+        over months, at the same forward power, is the PA losing gain."
+    ::= { lynxTx 22 }
+
+lynxPowerLock OBJECT-TYPE
+    SYNTAX      INTEGER { locked(1), unlocked(2) }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "The padlock on the power slider."
+    ::= { lynxTx 23 }
+
+lynxPaFault OBJECT-TYPE
+    SYNTAX      INTEGER { none(1), fault(2) }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "fault: Lynx-Tx refused TX On or shut the PA down: the relays did not
+        confirm, or the forward power after key-up was under the minimum or
+        could not be read. Cleared by the next successful key-up."
+    ::= { lynxTx 24 }
 
 lynxDeckState OBJECT-TYPE
     SYNTAX      INTEGER { playing(1), stopped(2), playerFault(3), notAnswering(4) }
@@ -372,7 +438,9 @@ lynxTxGroup OBJECT-GROUP
               lynxHdmiSignal, lynxTxFrequency, lynxTxPower, lynxMode,
               lynxSdrMutes, lynxMemAnonMB, lynxCmaFreeMB, lynxCpuTemp,
               lynxCameraState, lynxAutoRecoveries, lynxFanPercent,
-              lynxUptime, lynxCpuLoad, lynxDiskFreeMB }
+              lynxUptime, lynxCpuLoad, lynxDiskFreeMB,
+              lynxPaRelays, lynxFwdPower, lynxDriveState, lynxDrive,
+              lynxPowerLock, lynxPaFault }
     STATUS      current
     DESCRIPTION "Lynx-Tx status."
     ::= { lynxConformance 1 }

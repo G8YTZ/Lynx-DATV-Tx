@@ -23,8 +23,18 @@ From a Pi 4-based receiver at the repeater site, so Lynx-Tx becomes a repeater: 
 - First as an off-air quality monitor: is it good on air?
 - Later, pre-correction. Suggested route: sample the PA output through a coupler into the SDR's own receive side (PlutoSky and LibreSDR both have one), so Lynx-Tx compares the real transmitted constellation with what it meant to send, on the same box and clock. A DVB receiver's MER says that something is wrong but not what, so it suits the monitor rather than the correction.
 
+## 5. Transmitter quality (Lynx-Tx)
+
+Done (25 November 2026): PA sequencing over Modbus, the forward power check at key-up, Automatic Drive Control (slow temperature compensation, holds on a fault), return loss hold (needs the next PA's reflected probe), power lock. Next, in order:
+
+- **Output quality monitoring:** Sample the PA output through a coupler into the SDR's receive side (and later an Ethernet spectrum analyser): shoulder level and MER, continuously, on air.
+- **Linearity-limited drive:** The shoulder level as a second limit in Automatic Drive Control: hold the target power unless the shoulders rise past a threshold.
+- **In-service power window:** Act (not only alarm, which Home Assistant already does) when the forward power leaves a window while on air.
+- **Return loss fold-back and trip** on the next PA, with real reflected readings.
+- **Adaptive pre-correction:** See step 4. Automatic Drive Control gives it a stable operating point.
+
 ## Also open
 
-- Lynx-Tx chat on air: merge `chat-on-air` into main once Justin is happy with it.
+- ~~Lynx-Tx chat on air: merge `chat-on-air` into main~~ Done: on main, with the programme guide and time.
 - Lynx for Enigma2: pin the chat bubbles to the bottom, as on Lynx-Tx.
 - Lynx for Apple TV: under way in its own repository. Android TV later.

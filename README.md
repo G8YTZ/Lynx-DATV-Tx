@@ -15,6 +15,10 @@ Companion to the [Lynx DATV Receiver](https://github.com/G8YTZ/lynx-datv-receive
 - **DVB-S2 and ATSC 3.0** made on the ROCK by Ron Economos W6RZ's gr-dtv and gr-atsc3; DVB-T2 coming soon
 - **Any Pluto-class SDR with Ethernet,** found automatically on its own cable; a PlutoSky or LibreSDR on Tezuka is prepared by itself, its 10 MHz reference held through a failure
 - **Broadcast habits:** The SDR mutes itself if the ROCK stops, auto-recover with lockout, alarm lamps on the page, and SNMP alarms to Home Assistant
+- **PA control:** Driver and PA supplies sequenced over a Modbus relay board, read back before any drive, and the forward power checked at key-up
+- **Automatic Drive Control:** Holds the forward power at a target as the PA warms and cools, never above the power slider, and holds still rather than chase a fault; return loss protection with a reflected power probe
+- **Programme guide and time:** Now and next and 8 days ahead, from a Lynx Deck's schedule or Bitfocus Companion, with network time and automatic BST changeover; BATC chat on air
+- **Power cut resilient:** A fixed LAN address set from the page, and a power slider padlock
 - **One page** for source, encoder, identity, frequency, power, TX on and off, restart and shut down
 
 ## Getting started
@@ -30,7 +34,9 @@ The [Installation Guide](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lyn
 ## Documentation
 
 - [`lynx_tx_install_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_install_guide.docx): Blank SD card to working transmitter, the SDR, troubleshooting, NVMe, PlutoSky from flash, bill of materials
+- [`lynx_tx_drive_control_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_drive_control_guide.docx): PA sequencing, forward power, Automatic Drive Control and return loss protection
 - [`lynx_tx_monitoring_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_monitoring_guide.docx): Alarms, auto-recover and lockout, SNMP and Home Assistant
+- [`home-assistant/lynx_tx.yaml`](docs/home-assistant/lynx_tx.yaml): A ready-made Home Assistant package: every sensor and alarm
 - [`lynx_tx_media_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_media_guide.docx): Preparing clips to play out, with a DaVinci Resolve walkthrough
 - [`LYNX-MIB.txt`](mibs/LYNX-MIB.txt): The SNMP MIB
 
@@ -39,6 +45,7 @@ The [Installation Guide](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lyn
 - Radxa ROCK 5T (8 GB or more), running Radxa's own Debian 12 image
 - A PlutoSky R2 or LibreSDR on [Tezuka firmware](https://github.com/F5OEO/tezuka_fw/releases) v0.3.24 or later, on its own Cat 6 lead to the ROCK's second Ethernet port
 - Ideally a GNSS 10 MHz reference
+- For PA control and Automatic Drive Control: a Modbus TCP relay board with a forward power detector
 - A receiver: a [BATC PicoTuner](https://wiki.batc.org.uk/PicoTuner_Ethernet_Interface) for DVB-S2, an [HDHomeRun FLEX 4K](https://shop.silicondust.com/shop/product/hdfx-4k/) for ATSC 3.0
 
 ## Credits
