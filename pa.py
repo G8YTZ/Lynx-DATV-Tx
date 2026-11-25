@@ -46,6 +46,7 @@ DEFAULTS = {
     "settle_s": 1.0,
     "off_delay_s": 0.3,
     "ramp_s": 1.0,                # SDR power ramp at key-up (any SDR in IQ mode)
+    "require_confirm": True,      # no drive unless the relays read back as on
     "timeout_s": 2.0,
     "retries": 3,
 }
@@ -160,7 +161,12 @@ def power_up(config: dict) -> str:
                     time.sleep(float(c["on_gap_s"]))
             time.sleep(float(c["settle_s"]))
             state["last"] = "on"
-            refresh(config)
+            # Read the relays back: the drive only comes up once the gateway
+            # confirms every one of them is on.
+            if not all_on(config):
+                off = [k for k, v in state["coils"].items() if not v]
+                return ("the relays did not confirm: " + ", ".join(off) + " still off"
+                        if state["ok"] else f"no read-back: {state['error']}")
             return ""
         except Exception as e:
             state.update(ok=False, error=str(e))

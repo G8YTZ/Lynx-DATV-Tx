@@ -2094,7 +2094,7 @@ def start_tx() -> dict:
                 raise HTTPException(500, f"{'ATSC 3.0' if is_atsc3() else 'DVB-S2'} modulator: {e}")
         else:
             # Relays on before the settings carry the power to the board.
-            pa_power_up()
+            pa_power_up(board=True)
             write_libre_settings()
             # The board's watcher restarts the modulator on the settings
             # change; give it a moment to be listening before the stream
@@ -2143,15 +2143,21 @@ def stop_tx_locked():
         subprocess.run(["pkill", "-f", pattern], capture_output=True)
 
 
-def pa_power_up():
-    """The PA relays on, in order, before any drive. A gateway that does not
-    answer is reported (page and log) but does not stop the key-up: the
-    relays may already be on, and a repeater off air is worse."""
+def pa_power_up(board: bool = False):
+    """The PA relays on, in order, before any drive, then read back. Unless
+    every relay confirms it is on, the key-up stops here with the SDR still
+    muted (pa.require_confirm, the default), so the drive never comes up
+    into a PA whose supply may be missing. With require_confirm off, the
+    fault is reported but the key-up carries on."""
     err = pa.power_up(config)
-    if err:
-        tx_alarm["pa_error"] = f"PA relays did not answer: {err}"
-    else:
-        tx_alarm["pa_error"] = ""
+    tx_alarm["pa_error"] = f"PA relays: {err}" if err else ""
+    if err and pa.cfg(config).get("require_confirm", True):
+        if board:
+            # Keep the board's PTT down: below -40 dB it drops out.
+            libre_ssh("sed -i 's/^power .*/power -41/' /www/settings.txt")
+        print(f"[pa] not keying up: {err}")
+        raise HTTPException(503, f"Not keyed up: the PA relays did not confirm ({err}). "
+                                 "The drive was kept off.")
 
 
 def stop_tx() -> dict:
@@ -2888,6 +2894,7 @@ class PaUpdate(BaseModel):
     drive_coil: Optional[int] = None
     pa_coil: Optional[int] = None
     settle_s: Optional[float] = None
+    require_confirm: Optional[bool] = None
 
 
 @app.post("/api/pa")
@@ -2896,7 +2903,7 @@ def api_pa(req: PaUpdate):
     switched on driver first, PA second; off the other way round."""
     c = pa.cfg(config)
     d = dump(req)
-    for k in ("enabled", "host", "port", "unit", "settle_s"):
+    for k in ("enabled", "host", "port", "unit", "settle_s", "require_confirm"):
         if d.get(k) is not None:
             c[k] = d[k]
     c["host"] = str(c["host"]).strip()
@@ -3512,6 +3519,11 @@ PAGE = """<!DOCTYPE html>
               <label class="small text-muted">Settle (s)</label>
               <input type="number" step="0.1" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-settle">
             </div>
+          </div>
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="pa-confirm">
+            <label class="form-check-label small" for="pa-confirm" style="color:#e8eef9">No drive unless the
+              relays confirm they are on (refuse TX On otherwise)</label>
           </div>
           <div class="d-flex">
             <button class="btn btn-sm btn-warning flex-fill" onclick="savePa()">Save and check the gateway</button>
@@ -4414,6 +4426,7 @@ function fillPa(c) {
   document.getElementById('pa-drive').value = coils.Drive ?? 0;
   document.getElementById('pa-pa').value = coils.PA ?? 1;
   document.getElementById('pa-settle').value = p.settle_s ?? 1;
+  document.getElementById('pa-confirm').checked = p.require_confirm !== false;
 }
 async function savePa() {
   const n = id => parseFloat(document.getElementById(id).value);
@@ -4425,7 +4438,8 @@ async function savePa() {
     r = await fetch('/api/pa', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({enabled: document.getElementById('pa-en').checked,
         host: document.getElementById('pa-host').value.trim(), port: n('pa-port'), unit: n('pa-unit'),
-        drive_coil: n('pa-drive'), pa_coil: n('pa-pa'), settle_s: n('pa-settle')})});
+        drive_coil: n('pa-drive'), pa_coil: n('pa-pa'), settle_s: n('pa-settle'),
+        require_confirm: document.getElementById('pa-confirm').checked})});
     j = await r.json();
   } catch (e) { say('Not saved: ' + e, '#f87171'); return; }
   const s = j.state || {};
