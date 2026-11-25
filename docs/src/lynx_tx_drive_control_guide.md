@@ -1,7 +1,7 @@
 title: Lynx
 subtitle: DATV Transmitter (Lynx-Tx)
 tagline: Automatic Drive Control Guide: PA Sequencing, Forward Power and Constant Output
-version: Version 1.0  ·  G8YTZ / EI3IOB  ·  November 2026
+version: Version 1.1  ·  G8YTZ / EI3IOB  ·  November 2026
 
 # 1. Overview
 
@@ -30,7 +30,7 @@ Broadcast transmitters solve this with an **automatic level control** (ALC) loop
 |---|---|
 | Lynx-Tx | Main or Beta, November 2026 or later |
 | IQ mode | DVB-S2 made on the ROCK (gr-dtv), or ATSC 3.0. Not the LibreSDR's own DL1JM modulator |
-| A Modbus TCP relay board | On the LAN. GB3OO uses a ComWinTop board, the same one Home Assistant reads |
+| A Modbus TCP relay board | On the LAN, for example a ComWinTop board. Home Assistant can read the same board |
 | Relays | Switching the driver's and the PA's DC supplies (coils 0 and 1 by default) |
 | A forward power detector | Into one of the board's 0 to 10 V analogue inputs (input register 4 by default) |
 | A reflected power detector | Optional, for return loss protection (Section 7) |
@@ -47,7 +47,7 @@ The relays and detectors share one board, reached over the LAN by Modbus TCP. Ly
 
 2. The driver relay switches on, a short pause (0.3 s), then the PA relay.
 
-3. A settle time for the PA's supply and bias to steady (Settle, 2 s at GB3OO).
+3. A settle time for the PA's supply and bias to steady (Settle, for example 2 s).
 
 4. Lynx-Tx **reads the relays back**. With "No drive unless the relays confirm" on, TX On stops here, drive still muted, unless every relay says it is on, and the page says why.
 
@@ -76,15 +76,15 @@ volts = raw × 10 / 65535 − zero
 watts = volts² × W per V²
 ```
 
-GB3OO's detector: zero 0.0375 V, 200 W per V² (the same calibration Home Assistant uses, so the two agree). Calibrate yours against a power meter.
+For example, a detector with zero 0.0375 V and 200 W per V². Use the same calibration as Home Assistant, so the two agree. Calibrate yours against a power meter.
 
-Five seconds after key-up, Lynx-Tx checks the forward power three times. Under the **Minimum** (10 W at GB3OO) means something is wrong: a contactor that did not pull in, a failed device, a fuse. Lynx-Tx mutes the drive, switches the PA off and reports **PA fault**. It does not auto-recover from this one: it needs a person to look. If the reading simply cannot be had, it reports that and leaves the transmitter on air.
+Five seconds after key-up, Lynx-Tx checks the forward power three times. Under the **Minimum** (for example 10 W) means something is wrong: a contactor that did not pull in, a failed device, a fuse. Lynx-Tx mutes the drive, switches the PA off and reports **PA fault**. It does not auto-recover from this one: it needs a person to look. If the reading simply cannot be had, it reports that and leaves the transmitter on air.
 
 ## 4.4 PA Settings
 
-| Setting | GB3OO | Meaning |
+| Setting | Example | Meaning |
 |---|---|---|
-| Modbus gateway address, Port, Unit | 192.168.60.75, 502, 1 | The relay board |
+| Modbus gateway address, Port, Unit | 192.168.1.75, 502, 1 | The relay board |
 | Drive coil, PA coil | 0, 1 | On in that order, off in reverse |
 | Settle (s) | 2 | After the PA relay, before any drive |
 | Register | 4 | Forward power input register |
@@ -99,8 +99,8 @@ Five seconds after key-up, Lynx-Tx checks the forward power three times. Under t
 
 ## 5.1 How It Works
 
-- You set a **target forward power** (40 W at GB3OO).
-- The power slider becomes the **maximum drive**. The loop only ever trims below it, never above, down to the slider minus the **Range** (4 dB at GB3OO).
+- You set a **target forward power** (for example 40 W).
+- The power slider becomes the **maximum drive**. The loop only ever trims below it, never above, down to the slider minus the **Range** (for example 4 dB).
 - It is **slow on purpose:** a first-order loop with a time constant of 60 to 300 s (120 s by default). A 1 dB error moves the drive about 1 dB per time constant. Temperature drift takes minutes, so a fast loop gains nothing and could hunt.
 - Changes go in the AD9361's own **0.25 dB steps**, one step at a time, with a **±0.2 dB dead band** around the target.
 - Each key-up starts from the **last settled drive** (saved after a minute on target, and at TX Off), not the maximum, so a cold PA does not get a burst of full drive. The very first key-up starts at the maximum.
@@ -137,7 +137,7 @@ The Transmit card shows **Forward power** and **Drive** (the drive now against i
 
 ## 5.4 Drive Control Settings
 
-| Setting | Default | GB3OO | Meaning |
+| Setting | Default | Example | Meaning |
 |---|---|---|---|
 | Target (W) | none | 40 | Forward power to hold |
 | Time constant (s) | 120 | 60 | 60 to 300 |
@@ -150,7 +150,7 @@ The Transmit card shows **Forward power** and **Drive** (the drive now against i
 
 1. **Set up PA control first** (Section 4.4), and check the forward power on the Transmit card agrees with a power meter and with Home Assistant.
 
-2. **Find the maximum drive on a hot PA.** Run the PA to its working temperature, then raise the drive while watching the shoulders on a spectrum analyser. Stop where they are still clean (GB3OO aims for shoulders well over 30 dB down). That drive is your slider setting.
+2. **Find the maximum drive on a hot PA.** Run the PA to its working temperature, then raise the drive while watching the shoulders on a spectrum analyser. Stop where they are still clean (for example, shoulders well over 30 dB down). That drive is your slider setting.
 
 3. **Lock the slider** with the padlock, so the ceiling cannot be moved by accident.
 
@@ -178,7 +178,7 @@ The lost power is minor. The damage is to the radiated quality: a PA into the wr
 
 With a reflected power detector on the board, set **Reflected register** to its input register. It uses the forward power's calibration. Lynx-Tx then works out the return loss, and if it is worse than **Min return loss** the loop holds the drive, so the drive is never raised into a bad feeder.
 
-GB3OO's current PA has no reflected detector, so this is off (−1). A proper fold-back and trip, broadcast style, will follow once there are real reflected readings to work with.
+Without a reflected detector, leave it off (−1). A proper fold-back and trip, broadcast style, will follow once there are real reflected readings to work with.
 
 # 8. Monitoring
 
@@ -202,7 +202,7 @@ The card writes these to `config/lynx_tx.yaml`; you need not edit them by hand.
 ```
 pa:
   enabled: true
-  host: 192.168.60.75
+  host: 192.168.1.75
   port: 502
   unit: 1
   coils:
@@ -263,3 +263,4 @@ It works only in IQ mode (Section 3), with PA control on, the forward power regi
 | Version | Date | Changes |
 |---|---|---|
 | 1.0 | 25 November 2026 | First edition: PA sequencing, forward power and the key-up check, Automatic Drive Control, return loss protection, monitoring, troubleshooting |
+| 1.1 | 25 November 2026 | Example values given as examples rather than one repeater's settings |
