@@ -2552,7 +2552,52 @@ def api_health():
         "uptimeS": host["uptime_s"],
         "cpuLoadPct": host["load_pct"],
         "diskFreeMB": host["disk_free_mb"],
+        # PA control and Automatic Drive Control (objects 19 to 24)
+        "paRelays": pa_relay_state(),
+        "fwdPowerDeciW": _safe(lambda: fwd_deci_w(), 0),
+        "driveState": adc_state_num(),
+        "driveCentiDb": int(round((adc_loop.applied if adc_loop.running and on
+                                   and adc_loop.applied is not None else iq_power_db()) * 100)),
+        "powerLock": 1 if power_lock().get("locked") else 2,
+        "paFault": 2 if (tx_alarm.get("pa_error") or "") and not
+                   (tx_alarm.get("pa_error") or "").startswith("Automatic Drive Control") else 1,
     }
+
+
+def pa_relay_state() -> int:
+    """lynxPaRelays: 1 all on, 2 off, 3 gateway not answering,
+    4 not configured, 5 partly on."""
+    if not pa.enabled(config):
+        return 4
+    if pa.state.get("ok") is False:
+        return 3
+    coils = pa.state.get("coils") or {}
+    if coils and all(coils.values()):
+        return 1
+    return 5 if any(coils.values()) else 2
+
+
+def fwd_deci_w() -> int:
+    """lynxFwdPower: tenths of a watt, 0 when not read in the last 10 s."""
+    w, at = pa.state.get("fwd_w"), float(pa.state.get("fwd_at") or 0)
+    return int(round(w * 10)) if w is not None and time.time() - at < 10 else 0
+
+
+def adc_state_num() -> int:
+    """lynxDriveState: 1 off, 2 standby (enabled, not on air), 3 settling,
+    4 tracking, 5 on target, 6 at maximum drive, 7 at minimum drive, 8 held."""
+    if not adc.cfg(config)["enabled"]:
+        return 1
+    if not (adc_loop.running and tx_running()):
+        return 2
+    st = adc_loop.status or ""
+    if adc_loop.held:
+        return 8
+    for prefix, n in (("settling", 3), ("on target", 5), ("at maximum", 6),
+                      ("at minimum", 7), ("tracking", 4)):
+        if st.startswith(prefix):
+            return n
+    return 2
 
 
 @app.get("/api/status")

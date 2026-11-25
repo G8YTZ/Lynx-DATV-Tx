@@ -42,6 +42,12 @@ OBJECTS = {
     16: ("uptimeS", "gauge", 0),
     17: ("cpuLoadPct", "gauge", 0),
     18: ("diskFreeMB", "gauge", 0),
+    19: ("paRelays", "integer", 3),
+    20: ("fwdPowerDeciW", "gauge", 0),
+    21: ("driveState", "integer", 1),
+    22: ("driveCentiDb", "integer", 0),
+    23: ("powerLock", "integer", 2),
+    24: ("paFault", "integer", 1),
 }
 OIDS = [f"{BASE}.{n}.0" for n in sorted(OBJECTS)]
 

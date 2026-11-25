@@ -1,7 +1,7 @@
 title: Lynx
 subtitle: DATV Transmitter (Lynx-Tx)
 tagline: Installation Guide: From Blank SD Card to Working Transmitter
-version: Version 1.1  ·  G8YTZ / EI3IOB  ·  October 2026
+version: Version 1.2  ·  G8YTZ / EI3IOB  ·  November 2026
 
 # 1. Before You Start
 
@@ -264,7 +264,16 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload && sudo systemctl enable --now lynx-tx
 ```
 
-**Updating:** Run the installer's one command again. For the code alone: `cd ~/lynx-tx && git pull && sudo systemctl restart lynx-tx`.
+**Updating:** Run the installer's one command again. For the code alone: `cd ~/lynx-tx && git pull && sudo systemctl restart lynx-tx`. Re-run the installer when the release notes say so: it also puts the network helper (below) and the SNMP agent in place.
+
+## 7.1 A Fixed LAN Address
+
+After a power cut the ROCK can start before the router, find no DHCP server and end up unreachable. The **Network** card on the page gives the ROCK a fixed address on its LAN port:
+
+- Choose **Fixed**, press **Use current** to fill in what DHCP gave it, and check it matches the router's reservation (or pick an address outside the router's DHCP range).
+- Press **Apply** and confirm. If the gateway does not answer within 30 seconds, the old setting comes back by itself, so a typing slip cannot lock you out.
+
+The card changes the address through a small root helper, `/usr/local/sbin/lynx-net`, which the installer puts in place. Nothing changes the address until you press Apply.
 
 # 8. Modes
 
@@ -278,6 +287,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now lynx-tx
 # 9. Safety
 
 - **Test on a cable first:** A 30 to 40 dB attenuator into a receiver.
+- **PA sequencing:** With a Modbus relay board, Lynx-Tx switches the driver and PA supplies itself, in the right order, and checks the forward power at key-up. See the Automatic Drive Control Guide.
 - **PTT:** Tezuka keys its own PTT line whenever IQ is flowing. DL1JM's firmware keys from the power setting. A LibreSDR on DL1JM's firmware used as an IQ transmitter does **not** key PTT: check before putting a PA behind it.
 - **TX Off** sets the SDR's most attenuation (−89.75 dB) before the stream stops, and powers its transmitter down.
 - **If the ROCK stops,** a prepared PlutoSky mutes itself within 2 seconds.
@@ -353,7 +363,7 @@ Leave it running while you reproduce the problem.
 # 12. What's Not Yet Covered By This Guide
 
 - DVB-T2 mode (coming soon).
-- PTT keyed by Lynx-Tx itself.
+- PA sequencing, forward power and Automatic Drive Control: see the Automatic Drive Control Guide.
 - Exact part numbers for filters, amplifiers and antennas (Appendix C, marked TBC).
 
 # 13. Document Version History
@@ -361,6 +371,8 @@ Leave it running while you reproduce the problem.
 | Version | Date | Changes |
 |---|---|---|
 | 1.0 | October 2026 | First edition, replacing the Markdown pages: OS install, quick and manual install, the SDR, first transmission, troubleshooting, NVMe, PlutoSky from flash, bill of materials |
+| 1.1 | October 2026 | The LibreSDR on Tezuka fully supported, with its 10 MHz disciplining |
+| 1.2 | 25 November 2026 | A fixed LAN address (7.1); PA sequencing in Safety; wiring diagram with the Modbus relay board and the drive control loop |
 
 # Appendix A. Moving from a microSD Card to NVMe
 
