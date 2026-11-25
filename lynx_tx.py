@@ -3128,12 +3128,15 @@ PAGE = """<!DOCTYPE html>
           </div>
           <div class="small mb-2" id="pa-line" style="display:none">PA relays: &mdash;</div>
           <details class="mb-2">
-            <summary class="small text-muted">PA relays (Modbus)</summary>
+            <summary class="fw-semibold" style="color:#e8eef9">PA relays (Modbus)</summary>
             <div class="small text-muted my-1">TX On: drive relay, then PA relay, then
               the drive is brought up. TX Off: drive muted, then PA relay, then drive relay.</div>
             <div class="form-check form-switch mb-1">
               <input class="form-check-input" type="checkbox" id="pa-en">
               <label class="form-check-label small" for="pa-en">Switch the PA relays with TX On/Off</label>
+            </div>
+            <div class="row g-1 small text-muted">
+              <div class="col-8">Modbus gateway address</div><div class="col-4">Port</div>
             </div>
             <div class="row g-1 mb-1">
               <div class="col-8"><input class="form-control form-control-sm bg-dark text-light border-secondary"
@@ -3152,7 +3155,7 @@ PAGE = """<!DOCTYPE html>
               <div class="col-3"><input type="number" step="0.1" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-settle"></div>
             </div>
             <button class="btn btn-sm btn-outline-light" onclick="savePa()">Save</button>
-            <span class="small ms-2" id="pa-msg"></span>
+            <span class="small ms-2 fw-semibold" id="pa-msg"></span>
           </details>
           <table class="table table-sm table-borderless mb-0">
             <tr><td class="text-muted">Transport stream</td>
@@ -3876,15 +3879,23 @@ function fillPa(c) {
 }
 async function savePa() {
   const n = id => parseFloat(document.getElementById(id).value);
-  const r = await fetch('/api/pa', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({enabled: document.getElementById('pa-en').checked,
-      host: document.getElementById('pa-host').value.trim(), port: n('pa-port'), unit: n('pa-unit'),
-      drive_coil: n('pa-drive'), pa_coil: n('pa-pa'), settle_s: n('pa-settle')})});
-  const j = await r.json();
+  const msg = document.getElementById('pa-msg');
+  const say = (t, c) => { msg.textContent = t; msg.style.color = c; };
+  say('Saving and asking the gateway\u2026', '#fbbf24');
+  let r, j;
+  try {
+    r = await fetch('/api/pa', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: document.getElementById('pa-en').checked,
+        host: document.getElementById('pa-host').value.trim(), port: n('pa-port'), unit: n('pa-unit'),
+        drive_coil: n('pa-drive'), pa_coil: n('pa-pa'), settle_s: n('pa-settle')})});
+    j = await r.json();
+  } catch (e) { say('Not saved: ' + e, '#f87171'); return; }
   const s = j.state || {};
-  document.getElementById('pa-msg').textContent = !r.ok ? (j.detail || 'Not saved')
-    : s.ok === false ? 'Saved, but the gateway did not answer: ' + s.error
-    : s.ok ? 'Saved \u2014 the gateway answered' : 'Saved';
+  if (!r.ok) say('Not saved: ' + (typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)), '#f87171');
+  else if (s.ok === false) say('Saved, but the gateway did not answer: ' + (s.error || 'no reply'), '#f87171');
+  else if (s.ok) say('Saved. The gateway answered: ' +
+      Object.entries(s.coils || {}).map(([k, v]) => k + ' ' + (v ? 'on' : 'off')).join(', '), '#4ade80');
+  else say('Saved. PA switching is off, so the gateway was not asked.', '#9fb3d1');
   poll();
 }
 async function togglePowerLock() {
