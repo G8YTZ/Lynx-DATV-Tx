@@ -3444,37 +3444,6 @@ PAGE = """<!DOCTYPE html>
             <button class="btn btn-secondary big-btn" id="btn-txon" onclick="startTx()">TX On</button>
             <button class="btn btn-secondary big-btn" id="btn-txoff" onclick="stopTx()">TX Off</button>
           </div>
-          <div class="small mb-2" id="pa-line" style="display:none">PA relays: &mdash;</div>
-          <details class="mb-2">
-            <summary class="fw-semibold" style="color:#e8eef9">PA relays (Modbus)</summary>
-            <div class="small text-muted my-1">TX On: drive relay, then PA relay, then
-              the drive is brought up. TX Off: drive muted, then PA relay, then drive relay.</div>
-            <div class="form-check form-switch mb-1">
-              <input class="form-check-input" type="checkbox" id="pa-en">
-              <label class="form-check-label small" for="pa-en">Switch the PA relays with TX On/Off</label>
-            </div>
-            <div class="row g-1 small text-muted">
-              <div class="col-8">Modbus gateway address</div><div class="col-4">Port</div>
-            </div>
-            <div class="row g-1 mb-1">
-              <div class="col-8"><input class="form-control form-control-sm bg-dark text-light border-secondary"
-                   id="pa-host" placeholder="Gateway, e.g. 192.168.60.75"></div>
-              <div class="col-4"><input type="number" class="form-control form-control-sm bg-dark text-light border-secondary"
-                   id="pa-port" title="Port"></div>
-            </div>
-            <div class="row g-1 mb-1 small text-muted">
-              <div class="col-3">Unit</div><div class="col-3">Drive coil</div>
-              <div class="col-3">PA coil</div><div class="col-3">Settle (s)</div>
-            </div>
-            <div class="row g-1 mb-1">
-              <div class="col-3"><input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-unit"></div>
-              <div class="col-3"><input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-drive"></div>
-              <div class="col-3"><input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-pa"></div>
-              <div class="col-3"><input type="number" step="0.1" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-settle"></div>
-            </div>
-            <button class="btn btn-sm btn-outline-light" onclick="savePa()">Save</button>
-            <span class="small ms-2 fw-semibold" id="pa-msg"></span>
-          </details>
           <table class="table table-sm table-borderless mb-0">
             <tr><td class="text-muted">Transport stream</td>
                 <td class="status-value text-end" id="s-ts">—</td></tr>
@@ -3502,6 +3471,52 @@ PAGE = """<!DOCTYPE html>
             <button class="btn btn-sm btn-outline-warning flex-fill" onclick="system('restart')">&#x1F504; Restart ROCK</button>
             <button class="btn btn-sm btn-outline-danger flex-fill" onclick="system('shutdown')">&#x23FB; Shut down ROCK</button>
           </div>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-header">&#x1F50C; PA control</div>
+        <div class="card-body">
+          <div class="mb-2" id="pa-line">PA relays: not switched by Lynx-Tx</div>
+          <div class="small text-muted mb-2">TX On: drive relay on, then the PA relay, a pause to settle,
+            then the drive is brought up. TX Off: drive muted first, then the PA relay off, then the drive relay.</div>
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="pa-en">
+            <label class="form-check-label" for="pa-en" style="color:#e8eef9">Switch the PA relays with TX On/Off</label>
+          </div>
+          <div class="row g-2 mb-2">
+            <div class="col-8">
+              <label class="small text-muted">Modbus gateway address</label>
+              <input class="form-control form-control-sm bg-dark text-light border-secondary"
+                     id="pa-host" placeholder="e.g. 192.168.60.75">
+            </div>
+            <div class="col-4">
+              <label class="small text-muted">Port</label>
+              <input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-port">
+            </div>
+          </div>
+          <div class="row g-2 mb-3">
+            <div class="col-3">
+              <label class="small text-muted">Unit</label>
+              <input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-unit">
+            </div>
+            <div class="col-3">
+              <label class="small text-muted">Drive coil</label>
+              <input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-drive">
+            </div>
+            <div class="col-3">
+              <label class="small text-muted">PA coil</label>
+              <input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-pa">
+            </div>
+            <div class="col-3">
+              <label class="small text-muted">Settle (s)</label>
+              <input type="number" step="0.1" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-settle">
+            </div>
+          </div>
+          <div class="d-flex">
+            <button class="btn btn-sm btn-warning flex-fill" onclick="savePa()">Save and check the gateway</button>
+          </div>
+          <div class="small mt-2 fw-semibold" id="pa-msg"></div>
         </div>
       </div>
 
@@ -4917,8 +4932,10 @@ async function poll() {
     if (sl.disabled !== !!LK.locked) sl.disabled = !!LK.locked;
     const mx = String(LK.max_db ?? 0); if (sl.max !== mx) sl.max = mx; }
   const PA = cfg.pa || {};
-  setStyle('pa-line', 'display', PA.enabled ? '' : 'none');
-  if (PA.enabled) {
+  if (!PA.enabled) {
+    setText('pa-line', 'PA relays: not switched by Lynx-Tx');
+    setStyle('pa-line', 'color', '#9fb3d1');
+  } else {
     const names = Object.keys(PA.coils || {});
     setText('pa-line', PA.ok === false || PA.error
       ? 'PA relays: not answering — ' + (PA.error || '')
