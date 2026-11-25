@@ -49,3 +49,23 @@ identity:
   polarization: horizontal
 monitor:
   enabled: false
+# PA power sequencing (pa.py): Lynx-Tx switches the PA's DC relays over
+# Modbus TCP. TX On: relays on (in this order), settle, then the drive is
+# ramped up. TX Off: drive muted first, then relays off in reverse order.
+pa:
+  enabled: false
+  host: 192.168.40.75
+  port: 502
+  unit: 1
+  coils:
+    - {name: Drive, coil: 0}
+    - {name: PA, coil: 1}
+  on_gap_s: 0.3
+  settle_s: 1.0
+  off_delay_s: 0.3
+  ramp_s: 1.0
+# The power slider's lock (also set from the page) and a ceiling the power
+# can never exceed, whoever asks.
+power_lock:
+  locked: false
+  max_db: 0.0

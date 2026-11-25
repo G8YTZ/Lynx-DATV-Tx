@@ -90,6 +90,7 @@ import uvicorn
 
 import atsc3mod
 import dvbs2mod
+import pa
 import sdrs
 import tezuka_prep
 
@@ -206,6 +207,12 @@ DEFAULT_CONFIG = {
     # "EPG: ..." (see epg.py); companion: its address, host:port.
     "epg": {"time": True, "tz": "Europe/London", "country": "", "guide": False,
             "companion": "", "source": "companion"},
+    # PA power sequencing over Modbus TCP (25 Nov 2026): relays on before
+    # any drive, drive gone before relays off. Off until configured; see pa.py.
+    "pa": dict(pa.DEFAULTS),
+    # The power slider's lock, and a ceiling it can never exceed, whether
+    # the change comes from the page, Companion or anything else.
+    "power_lock": {"locked": False, "max_db": 0.0},
 }
 CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
 # The guide: eitinject reads EPG_XML (rewritten when the schedule changes);
@@ -974,7 +981,7 @@ def iq_guard(proc: subprocess.Popen):
     if not tx_alarm["fault"] and proc.poll() is None and tx_proc is proc:
         try:
             _iio(tx_lo_command(sdr_uri(), True))
-            _iio(atsc3mod.mute_command(sdr_uri())[:-1] + [f"{iq_power_db():g}"])
+            ramp_power(iq_power_db(), proc)
             print(f"[iq] on air at {iq_power_db():g} dB")
         except Exception as e:
             print(f"[iq] power up: {e}")
@@ -985,6 +992,34 @@ def iq_guard(proc: subprocess.Popen):
         print("[iq] pipeline ended on its own - muting")
         tx_alarm["fault"] = "the transmit chain stopped by itself"
         atsc3_mute()
+
+
+def ramp_power(target: float, proc=None):
+    """Bring the SDR's output up to target gently: from 30 dB below it in
+    ten steps over pa.ramp_s seconds, rather than one jump from the mute
+    level. Stops if TX Off arrives meanwhile (tx_proc changes)."""
+    ramp_s = float(pa.cfg(config).get("ramp_s", 1.0))
+    start = max(target - 30.0, -89.75)
+    steps = 10 if ramp_s > 0 else 1
+    for i in range(1, steps + 1):
+        if proc is not None and tx_proc is not proc:
+            return
+        level = start + (target - start) * i / steps
+        level = round(level * 4) / 4            # the AD9361's 0.25 dB steps
+        _iio(atsc3mod.mute_command(sdr_uri())[:-1] + [f"{level:g}"])
+        if i < steps:
+            time.sleep(ramp_s / steps)
+
+
+def pa_watch():
+    """Read the PA relays every 10 s for the page, in a thread of its own so
+    the page never waits on the Modbus gateway."""
+    while True:
+        try:
+            pa.refresh(config)
+        except Exception as e:
+            print(f"[pa] {e}")
+        time.sleep(10)
 
 
 def tx_lo_command(uri: str, on: bool) -> list:
@@ -1853,6 +1888,9 @@ def start_tx() -> dict:
             if sdr_is_libre():
                 atsc3_release_libre()
             atsc3_mute()
+            # PA relays on (driver, then PA) and settled before any drive:
+            # the power only comes up later, in iq_guard, once IQ flows.
+            pa_power_up()
             atsc3_set_radio(hold_power=True)
             try:
                 cmd = build_pipeline()
@@ -1860,6 +1898,8 @@ def start_tx() -> dict:
                 atsc3_mute()
                 raise HTTPException(500, f"{'ATSC 3.0' if is_atsc3() else 'DVB-S2'} modulator: {e}")
         else:
+            # Relays on before the settings carry the power to the board.
+            pa_power_up()
             write_libre_settings()
             # The board's watcher restarts the modulator on the settings
             # change; give it a moment to be listening before the stream
@@ -1908,6 +1948,17 @@ def stop_tx_locked():
         subprocess.run(["pkill", "-f", pattern], capture_output=True)
 
 
+def pa_power_up():
+    """The PA relays on, in order, before any drive. A gateway that does not
+    answer is reported (page and log) but does not stop the key-up: the
+    relays may already be on, and a repeater off air is worse."""
+    err = pa.power_up(config)
+    if err:
+        tx_alarm["pa_error"] = f"PA relays did not answer: {err}"
+    else:
+        tx_alarm["pa_error"] = ""
+
+
 def stop_tx() -> dict:
     with tx_lock:
         if iq_mode():
@@ -1915,11 +1966,14 @@ def stop_tx() -> dict:
             # DAC is never left at full output once it stops.
             atsc3_mute()
             stop_tx_locked()
-            return {"success": True}
-        stop_tx_locked()
-        # Mute rather than leave a bare carrier: PTT follows the power
-        # setting on this firmware, and below -40 dB it drops out.
-        libre_ssh("sed -i 's/^power .*/power -41/' /www/settings.txt")
+        else:
+            stop_tx_locked()
+            # Mute rather than leave a bare carrier: PTT follows the power
+            # setting on this firmware, and below -40 dB it drops out.
+            libre_ssh("sed -i 's/^power .*/power -41/' /www/settings.txt")
+        # Drive gone: now the PA relays off, PA first, then the driver.
+        err = pa.power_down(config)
+        tx_alarm["pa_error"] = f"PA relays did not answer: {err}" if err else ""
         return {"success": True}
 
 
@@ -1957,6 +2011,7 @@ def mute_on_shutdown():
     if iq_mode() and tx_running():
         print("[iq] shutting down - muting the SDR")
         atsc3_mute()
+        pa.power_down(config)
     stop_mixer()
 
 
@@ -2166,6 +2221,9 @@ def api_status():
         "atsc3_choices": {"constellations": atsc3mod.CONSTELLATIONS,
                           "rates": atsc3mod.CODE_RATES, "ts_rates": atsc3mod.TS_RATES},
         "transmitting": tx_running(),
+        "pa": {"enabled": pa.enabled(config), "ok": pa.state["ok"],
+               "coils": pa.state["coils"], "error": tx_alarm.get("pa_error") or pa.state["error"]},
+        "power_lock": power_lock(),
         "alarm": {"muted": tx_alarm["muted"] and tx_running(),
                   "fault": tx_alarm["fault"],
                   "sdr_ok": tx_alarm["sdr_ok"],
@@ -2304,6 +2362,7 @@ def api_atsc3(req: Atsc3Update):
     for k, v in dump(req).items():
         if v is not None:
             new[k] = v
+    new["power_db"] = check_power(old["power_db"], new["power_db"])
     new = atsc3mod.clean(new)
     if new["constellation"] != req.constellation and req.constellation is not None:
         raise HTTPException(400, f"unknown constellation {req.constellation}")
@@ -2487,6 +2546,36 @@ def api_libre_check():
     return ensure_libre_patched(apply=True)
 
 
+def power_lock() -> dict:
+    return {"locked": False, "max_db": 0.0, **(config.get("power_lock") or {})}
+
+
+def check_power(old: float, new: float) -> float:
+    """The power lock and ceiling, enforced here rather than only on the
+    page, so another tab, Companion or a script cannot get round them."""
+    lk = power_lock()
+    if lk["locked"] and abs(float(new) - float(old)) > 0.01:
+        raise HTTPException(423, "The power is locked. Unlock it on the page first.")
+    return min(float(new), float(lk["max_db"]))
+
+
+class PowerLockUpdate(BaseModel):
+    locked: Optional[bool] = None
+    max_db: Optional[float] = None
+
+
+@app.post("/api/power_lock")
+def api_power_lock(req: PowerLockUpdate):
+    lk = power_lock()
+    if req.locked is not None:
+        lk["locked"] = bool(req.locked)
+    if req.max_db is not None:
+        lk["max_db"] = max(-89.75, min(0.0, float(req.max_db)))
+    config["power_lock"] = lk
+    save_config(config)
+    return {"success": True, "power_lock": lk}
+
+
 @app.post("/api/modulation")
 def api_modulation(req: ModulationUpdate):
     old = dict(config["modulation"])
@@ -2494,6 +2583,7 @@ def api_modulation(req: ModulationUpdate):
     for k, v in dump(req).items():
         if v is not None:
             new[k] = v
+    new["power_db"] = check_power(old["power_db"], new["power_db"])
     if "rolloff" in new:
         new["rolloff"] = dvbs2mod.norm_rolloff(new["rolloff"])
     if dvbs2_rock():
@@ -3002,6 +3092,7 @@ PAGE = """<!DOCTYPE html>
             <button class="btn btn-secondary big-btn" id="btn-txon" onclick="startTx()">TX On</button>
             <button class="btn btn-secondary big-btn" id="btn-txoff" onclick="stopTx()">TX Off</button>
           </div>
+          <div class="small mb-2" id="pa-line" style="display:none">PA relays: &mdash;</div>
           <table class="table table-sm table-borderless mb-0">
             <tr><td class="text-muted">Transport stream</td>
                 <td class="status-value text-end" id="s-ts">—</td></tr>
@@ -3127,7 +3218,11 @@ PAGE = """<!DOCTYPE html>
               &middot; DAC <span class="status-value" id="m-dac">&mdash;</span></div>
           </div>
           </div>
-          <label class="small text-muted">Power (dB)</label>
+          <div class="d-flex justify-content-between align-items-center">
+            <label class="small text-muted mb-0">Power (dB)</label>
+            <button class="btn btn-sm btn-outline-light py-0" id="p-lock" onclick="togglePowerLock()"
+                    title="Lock the power so it cannot be changed by accident">&#x1F513; Unlocked</button>
+          </div>
           <input type="range" class="form-range" id="m-power" min="-40" max="0"
                  step="0.5" oninput="document.getElementById('m-power-v').textContent=this.value+' dB'"
                  onchange="saveMod()">
@@ -3707,6 +3802,11 @@ async function api(method, path, body) {
 }
 
 async function startTx() { await api('POST', '/api/start'); poll(); }
+async function togglePowerLock() {
+  const locked = !(cfg && cfg.power_lock && cfg.power_lock.locked);
+  await api('POST', '/api/power_lock', {locked});
+  poll();
+}
 async function stopTx()  { await api('POST', '/api/stop');  poll(); }
 
 async function setSource(kind, file) {
@@ -4180,6 +4280,22 @@ async function poll() {
   }
   // IQ: the SDR is a plain transmitter (ATSC 3.0, or DVB-S2 from the ROCK).
   const IQ = !!cfg.iq, S = cfg.sdr || {};
+  // The power lock, and the PA relays (pa.py).
+  const LK = cfg.power_lock || {};
+  setText('p-lock', LK.locked ? '🔒 Locked' : '🔓 Unlocked');
+  setClass('p-lock', 'btn btn-sm py-0 ' + (LK.locked ? 'btn-warning' : 'btn-outline-light'));
+  { const sl = document.getElementById('m-power');
+    if (sl.disabled !== !!LK.locked) sl.disabled = !!LK.locked;
+    const mx = String(LK.max_db ?? 0); if (sl.max !== mx) sl.max = mx; }
+  const PA = cfg.pa || {};
+  setStyle('pa-line', 'display', PA.enabled ? '' : 'none');
+  if (PA.enabled) {
+    const names = Object.keys(PA.coils || {});
+    setText('pa-line', PA.ok === false || PA.error
+      ? 'PA relays: not answering — ' + (PA.error || '')
+      : 'PA relays: ' + (names.length ? names.map(n => n + ' ' + (PA.coils[n] ? 'on' : 'off')).join(' \u00b7 ') : '\u2014'));
+    setStyle('pa-line', 'color', PA.ok === false || PA.error ? '#f87171' : '#9fb3d1');
+  }
   setText('m-power-note', IQ
     ? 'Transmit attenuation in the SDR: 0 dB is full output. TX Off sets the most attenuation it has (−89.75 dB).'
     : 'Below −40 dB this firmware drops PTT, which is how TX Off leaves the carrier off.');
@@ -4671,5 +4787,6 @@ if __name__ == "__main__":
     threading.Thread(target=sdr_ref_watch, daemon=True).start()
     threading.Thread(target=mixer_watch, daemon=True).start()
     threading.Thread(target=tx_alarm_watch, daemon=True).start()
+    threading.Thread(target=pa_watch, daemon=True).start()
     threading.Thread(target=epg_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
