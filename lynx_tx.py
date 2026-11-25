@@ -2564,6 +2564,40 @@ class PowerLockUpdate(BaseModel):
     max_db: Optional[float] = None
 
 
+class PaUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    host: Optional[str] = None
+    port: Optional[int] = None
+    unit: Optional[int] = None
+    drive_coil: Optional[int] = None
+    pa_coil: Optional[int] = None
+    settle_s: Optional[float] = None
+
+
+@app.post("/api/pa")
+def api_pa(req: PaUpdate):
+    """The PA relays' Modbus settings, from the page (pa.py). Two relays,
+    switched on driver first, PA second; off the other way round."""
+    c = pa.cfg(config)
+    d = dump(req)
+    for k in ("enabled", "host", "port", "unit", "settle_s"):
+        if d.get(k) is not None:
+            c[k] = d[k]
+    c["host"] = str(c["host"]).strip()
+    if c["enabled"] and not c["host"]:
+        raise HTTPException(400, "Give the Modbus gateway's address first.")
+    coils = {x["name"]: x["coil"] for x in c["coils"]}
+    drive = d["drive_coil"] if d.get("drive_coil") is not None else coils.get("Drive", 0)
+    pa_c = d["pa_coil"] if d.get("pa_coil") is not None else coils.get("PA", 1)
+    if drive == pa_c:
+        raise HTTPException(400, "The drive and PA relays cannot be the same coil.")
+    c["coils"] = [{"name": "Drive", "coil": int(drive)}, {"name": "PA", "coil": int(pa_c)}]
+    c["settle_s"] = max(0.0, min(10.0, float(c["settle_s"])))
+    config["pa"] = c
+    save_config(config)
+    return {"success": True, "pa": c, "state": pa.refresh(config)}
+
+
 @app.post("/api/power_lock")
 def api_power_lock(req: PowerLockUpdate):
     lk = power_lock()
@@ -3093,6 +3127,33 @@ PAGE = """<!DOCTYPE html>
             <button class="btn btn-secondary big-btn" id="btn-txoff" onclick="stopTx()">TX Off</button>
           </div>
           <div class="small mb-2" id="pa-line" style="display:none">PA relays: &mdash;</div>
+          <details class="mb-2">
+            <summary class="small text-muted">PA relays (Modbus)</summary>
+            <div class="small text-muted my-1">TX On: drive relay, then PA relay, then
+              the drive is brought up. TX Off: drive muted, then PA relay, then drive relay.</div>
+            <div class="form-check form-switch mb-1">
+              <input class="form-check-input" type="checkbox" id="pa-en">
+              <label class="form-check-label small" for="pa-en">Switch the PA relays with TX On/Off</label>
+            </div>
+            <div class="row g-1 mb-1">
+              <div class="col-8"><input class="form-control form-control-sm bg-dark text-light border-secondary"
+                   id="pa-host" placeholder="Gateway, e.g. 192.168.60.75"></div>
+              <div class="col-4"><input type="number" class="form-control form-control-sm bg-dark text-light border-secondary"
+                   id="pa-port" title="Port"></div>
+            </div>
+            <div class="row g-1 mb-1 small text-muted">
+              <div class="col-3">Unit</div><div class="col-3">Drive coil</div>
+              <div class="col-3">PA coil</div><div class="col-3">Settle (s)</div>
+            </div>
+            <div class="row g-1 mb-1">
+              <div class="col-3"><input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-unit"></div>
+              <div class="col-3"><input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-drive"></div>
+              <div class="col-3"><input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-pa"></div>
+              <div class="col-3"><input type="number" step="0.1" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-settle"></div>
+            </div>
+            <button class="btn btn-sm btn-outline-light" onclick="savePa()">Save</button>
+            <span class="small ms-2" id="pa-msg"></span>
+          </details>
           <table class="table table-sm table-borderless mb-0">
             <tr><td class="text-muted">Transport stream</td>
                 <td class="status-value text-end" id="s-ts">—</td></tr>
@@ -3802,6 +3863,30 @@ async function api(method, path, body) {
 }
 
 async function startTx() { await api('POST', '/api/start'); poll(); }
+function fillPa(c) {
+  const p = c.pa || {}, coils = {};
+  (p.coils || []).forEach(x => coils[x.name] = x.coil);
+  document.getElementById('pa-en').checked = !!p.enabled;
+  document.getElementById('pa-host').value = p.host || '';
+  document.getElementById('pa-port').value = p.port || 502;
+  document.getElementById('pa-unit').value = p.unit || 1;
+  document.getElementById('pa-drive').value = coils.Drive ?? 0;
+  document.getElementById('pa-pa').value = coils.PA ?? 1;
+  document.getElementById('pa-settle').value = p.settle_s ?? 1;
+}
+async function savePa() {
+  const n = id => parseFloat(document.getElementById(id).value);
+  const r = await fetch('/api/pa', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled: document.getElementById('pa-en').checked,
+      host: document.getElementById('pa-host').value.trim(), port: n('pa-port'), unit: n('pa-unit'),
+      drive_coil: n('pa-drive'), pa_coil: n('pa-pa'), settle_s: n('pa-settle')})});
+  const j = await r.json();
+  const s = j.state || {};
+  document.getElementById('pa-msg').textContent = !r.ok ? (j.detail || 'Not saved')
+    : s.ok === false ? 'Saved, but the gateway did not answer: ' + s.error
+    : s.ok ? 'Saved \u2014 the gateway answered' : 'Saved';
+  poll();
+}
 async function togglePowerLock() {
   const locked = !(cfg && cfg.power_lock && cfg.power_lock.locked);
   await api('POST', '/api/power_lock', {locked});
@@ -4444,6 +4529,7 @@ async function poll() {
   if (firstLoad) {
     const m = cfg.config.modulation, e = cfg.config.encoder;
     fillIdent(cfg.config.identity, cfg.config);
+    fillPa(cfg.config);
     fillMod(cfg.config, cfg.mode);
     document.getElementById('e-format').value = e.width + 'x' + e.height;
     document.getElementById('e-fps').value = e.fps;
