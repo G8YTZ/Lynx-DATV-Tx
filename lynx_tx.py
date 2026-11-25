@@ -4264,7 +4264,7 @@ PAGE = """<!DOCTYPE html>
       <div class="card">
         <div class="card-header">&#x1F310; Network &mdash; the ROCK's own address</div>
         <div class="card-body">
-          <div class="small mb-2" id="n-now">&mdash;</div>
+          <div class="small mb-2" id="n-now" style="color:#9fb3d1">&mdash;</div>
           <div class="row g-3 align-items-end">
             <div class="col-md-2">
               <label class="small text-muted">Address from</label>
@@ -4382,7 +4382,7 @@ PAGE = """<!DOCTYPE html>
             <div class="col-md-4">
               <div class="form-check form-switch mb-2">
                 <input class="form-check-input" type="checkbox" id="c-on" onchange="saveChat()">
-                <label class="form-check-label" for="c-on">Show BATC chat on the programme</label>
+                <label class="form-check-label" style="color:#e8eef9" for="c-on">Show BATC chat on the programme</label>
               </div>
               <label class="small text-muted">BATC stream</label>
               <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary"
@@ -4419,7 +4419,7 @@ PAGE = """<!DOCTYPE html>
             <div class="col-md-4">
               <div class="form-check form-switch mb-2">
                 <input class="form-check-input" type="checkbox" id="e-time" onchange="saveEpg()">
-                <label class="form-check-label" for="e-time">Send the time (TDT and TOT)</label>
+                <label class="form-check-label" style="color:#e8eef9" for="e-time">Send the time (TDT and TOT)</label>
               </div>
               <label class="small text-muted">Time zone</label>
               <input type="text" list="e-zones" class="form-control form-control-sm bg-dark text-light border-secondary"
@@ -4458,7 +4458,7 @@ PAGE = """<!DOCTYPE html>
             <div class="col-md-4">
               <div class="form-check form-switch mb-2">
                 <input class="form-check-input" type="checkbox" id="e-guide" onchange="saveEpg()">
-                <label class="form-check-label" for="e-guide">Programme guide (EIT)</label>
+                <label class="form-check-label" style="color:#e8eef9" for="e-guide">Programme guide (EIT)</label>
               </div>
               <label class="small text-muted">Guide from</label>
               <select class="form-select form-select-sm bg-dark text-light border-secondary mb-1"
