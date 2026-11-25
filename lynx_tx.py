@@ -4987,8 +4987,15 @@ try:
     def _save_monitor(on: bool) -> None:
         config.setdefault("monitor", {})["enabled"] = on
         save_config(config)
-    tx_monitor.install(app, lambda: {**config, "libre": {**config["libre"], "host": libre_host()}},
-                       _save_monitor)
+    def _monitor_config() -> dict:
+        # Watch the SDR that is actually transmitting (the one chosen on the
+        # Transmit card, a PlutoSky as readily as a LibreSDR), unless a
+        # separate receiver is configured under monitor.uri.
+        mon = dict(config.get("monitor") or {})
+        mon["uri"] = mon.get("uri") or sdr_uri()
+        return {**config, "monitor": mon,
+                "libre": {**config["libre"], "host": libre_host()}}
+    tx_monitor.install(app, _monitor_config, _save_monitor)
 except Exception as e:
     print(f"[monitor] not available: {e}")
 
