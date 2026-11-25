@@ -47,13 +47,25 @@ DEFAULTS = {
     "off_delay_s": 0.3,
     "ramp_s": 1.0,                # SDR power ramp at key-up (any SDR in IQ mode)
     "require_confirm": True,      # no drive unless the relays read back as on
+    # Forward power, from the same relay board's analogue input (input
+    # register 4 at GB3JT and GB3OO: 0-10 V as 0-65535). The detector gives
+    # a voltage proportional to RF volts after a 30 dB coupler and a 10 dB
+    # pad, so W = (V - zero)^2 / 50 * 10^4, i.e. 200 W per volt squared,
+    # exactly as Home Assistant's template sensor works it out.
+    "fwd_register": 4,            # None or -1 for no forward power reading
+    "fwd_zero_v": 0.0375,         # detector output with no RF (raw 246)
+    "fwd_w_per_v2": 200.0,
+    "fwd_check": True,            # after key-up, prove the PA is producing
+    "fwd_check_s": 5.0,           # how long after the drive comes up
+    "fwd_min_w": 2.0,             # below this, it is not
     "timeout_s": 2.0,
     "retries": 3,
 }
 
 _lock = threading.Lock()          # one sequence at a time
 _tid = 0
-state = {"coils": {}, "ok": None, "error": "", "checked": 0.0, "last": ""}
+state = {"coils": {}, "ok": None, "error": "", "checked": 0.0, "last": "",
+         "fwd_w": None, "fwd_at": 0.0}
 
 
 def cfg(config: dict) -> dict:
@@ -104,6 +116,32 @@ def _recv(s: socket.socket, n: int) -> bytes:
             raise IOError("connection closed")
         data += chunk
     return data
+
+
+def read_inputs(c: dict, first: int, count: int) -> list:
+    reply = _request(c, struct.pack(">BHH", 4, first, count))
+    return list(struct.unpack(">" + "H" * count, reply[2:2 + 2 * count]))
+
+
+def fwd_enabled(config: dict) -> bool:
+    c = cfg(config)
+    return enabled(config) and c.get("fwd_register") not in (None, -1, "")
+
+
+def forward_w(config: dict):
+    """Forward power in watts, or None if it cannot be read."""
+    if not fwd_enabled(config):
+        return None
+    c = cfg(config)
+    try:
+        raw = read_inputs(c, int(c["fwd_register"]), 1)[0]
+    except Exception as e:
+        state["error"] = str(e)
+        return None
+    volts = max(raw * 10.0 / 65535.0 - float(c["fwd_zero_v"]), 0.0)
+    w = round(volts * volts * float(c["fwd_w_per_v2"]), 1)
+    state.update(fwd_w=w, fwd_at=time.time())
+    return w
 
 
 def write_coil(c: dict, coil: int, on: bool):

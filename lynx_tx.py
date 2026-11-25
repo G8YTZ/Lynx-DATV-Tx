@@ -983,6 +983,7 @@ def iq_guard(proc: subprocess.Popen):
             _iio(tx_lo_command(sdr_uri(), True))
             ramp_power(iq_power_db(), proc)
             print(f"[iq] on air at {iq_power_db():g} dB")
+            threading.Thread(target=fwd_check, args=(proc,), daemon=True).start()
         except Exception as e:
             print(f"[iq] power up: {e}")
     while proc.poll() is None:
@@ -1012,14 +1013,57 @@ def ramp_power(target: float, proc=None):
 
 
 def pa_watch():
-    """Read the PA relays every 10 s for the page, in a thread of its own so
-    the page never waits on the Modbus gateway."""
+    """Read the PA relays every 10 s and the forward power every 2 s for the
+    page, in a thread of its own so the page never waits on the gateway."""
+    n = 0
     while True:
         try:
-            pa.refresh(config)
+            if n % 5 == 0:
+                pa.refresh(config)
+            pa.forward_w(config)
         except Exception as e:
             print(f"[pa] {e}")
-        time.sleep(10)
+        n += 1
+        time.sleep(2)
+
+
+def fwd_check(proc):
+    """Prove the PA is producing: a few seconds after the drive comes up,
+    the forward power must be there. If it is not - a contactor that did
+    not pull in, a PA that has failed - mute the drive, drop the relays and
+    say so, rather than drive into a dead amplifier. A gateway that cannot
+    be read is reported but not acted on."""
+    c = pa.cfg(config)
+    if not (pa.fwd_enabled(config) and c.get("fwd_check", True)):
+        return
+    time.sleep(float(c.get("fwd_check_s", 5.0)))
+    if tx_proc is not proc:
+        return
+    w = None
+    for _ in range(3):
+        w = pa.forward_w(config)
+        if w is not None:
+            break
+        time.sleep(1)
+    if tx_proc is not proc:
+        return
+    if w is None:
+        tx_alarm["pa_error"] = "Forward power could not be read after key-up"
+        print("[pa] forward power unreadable after key-up - carrying on")
+        return
+    if w < float(c.get("fwd_min_w", 2.0)):
+        msg = (f"no forward power after key-up ({w:g} W, under {c.get('fwd_min_w', 2.0):g} W): "
+               "drive muted and PA switched off")
+        print(f"[pa] {msg}")
+        tx_alarm["fault"] = msg
+        tx_alarm["pa_error"] = msg
+        tx_alarm["wanted"] = False      # no auto-recover into a dead PA
+        try:
+            stop_tx()
+        except Exception as e:
+            print(f"[pa] stopping: {e}")
+    else:
+        print(f"[pa] forward power {w:g} W - PA confirmed")
 
 
 def tx_lo_command(uri: str, on: bool) -> list:
@@ -1915,6 +1959,9 @@ def start_tx() -> dict:
         tx_started_at = time.time()
         if iq_mode():
             threading.Thread(target=iq_guard, args=(tx_proc,), daemon=True).start()
+        else:
+            # The board brings its own power up; check the PA all the same.
+            threading.Thread(target=fwd_check, args=(tx_proc,), daemon=True).start()
         if config.get("use_switcher", True):
             threading.Thread(target=mixer_keyframe, args=(4.0 if fresh else 1.0,),
                              daemon=True).start()
@@ -2228,6 +2275,7 @@ def api_status():
                           "rates": atsc3mod.CODE_RATES, "ts_rates": atsc3mod.TS_RATES},
         "transmitting": tx_running(),
         "pa": {"enabled": pa.enabled(config), "ok": pa.state["ok"],
+               "fwd_w": pa.state["fwd_w"] if pa.fwd_enabled(config) else None,
                "coils": pa.state["coils"], "error": tx_alarm.get("pa_error") or pa.state["error"]},
         "power_lock": power_lock(),
         "alarm": {"muted": tx_alarm["muted"] and tx_running(),
@@ -2579,6 +2627,11 @@ class PaUpdate(BaseModel):
     pa_coil: Optional[int] = None
     settle_s: Optional[float] = None
     require_confirm: Optional[bool] = None
+    fwd_register: Optional[int] = None
+    fwd_zero_v: Optional[float] = None
+    fwd_w_per_v2: Optional[float] = None
+    fwd_check: Optional[bool] = None
+    fwd_min_w: Optional[float] = None
 
 
 @app.post("/api/pa")
@@ -2587,7 +2640,8 @@ def api_pa(req: PaUpdate):
     switched on driver first, PA second; off the other way round."""
     c = pa.cfg(config)
     d = dump(req)
-    for k in ("enabled", "host", "port", "unit", "settle_s", "require_confirm"):
+    for k in ("enabled", "host", "port", "unit", "settle_s", "require_confirm",
+              "fwd_register", "fwd_zero_v", "fwd_w_per_v2", "fwd_check", "fwd_min_w"):
         if d.get(k) is not None:
             c[k] = d[k]
     c["host"] = str(c["host"]).strip()
@@ -3142,6 +3196,8 @@ PAGE = """<!DOCTYPE html>
                 <td class="status-value text-end" id="s-under">—</td></tr>
             <tr><td class="text-muted">On air for</td>
                 <td class="status-value text-end" id="s-up">—</td></tr>
+            <tr id="s-fwd-row" style="display:none"><td class="text-muted">Forward power</td>
+                <td class="status-value text-end" id="s-fwd">—</td></tr>
           </table>
           <div class="small mt-2" id="buffer-line" style="display:none">Buffer: &mdash;</div>
           <div id="buffer-graph" style="display:none;margin-top:4px">
@@ -3201,6 +3257,31 @@ PAGE = """<!DOCTYPE html>
               <label class="small text-muted">Settle (s)</label>
               <input type="number" step="0.1" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-settle">
             </div>
+          </div>
+          <div class="small text-muted mb-1">Forward power: an input register on the same board,
+            0&ndash;10 V as 0&ndash;65535. Watts = (V &minus; zero)&sup2; &times; W per V&sup2;.</div>
+          <div class="row g-2 mb-2">
+            <div class="col-3">
+              <label class="small text-muted">Register</label>
+              <input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-fwdreg">
+            </div>
+            <div class="col-3">
+              <label class="small text-muted">Zero (V)</label>
+              <input type="number" step="0.0001" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-fwdzero">
+            </div>
+            <div class="col-3">
+              <label class="small text-muted">W per V&sup2;</label>
+              <input type="number" step="1" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-fwdk">
+            </div>
+            <div class="col-3">
+              <label class="small text-muted">Minimum (W)</label>
+              <input type="number" step="0.5" class="form-control form-control-sm bg-dark text-light border-secondary" id="pa-fwdmin">
+            </div>
+          </div>
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="pa-fwdcheck">
+            <label class="form-check-label small" for="pa-fwdcheck" style="color:#e8eef9">After key-up, check the
+              forward power; if it is under the minimum, mute the drive and switch the PA off</label>
           </div>
           <div class="form-check form-switch mb-2">
             <input class="form-check-input" type="checkbox" id="pa-confirm">
@@ -3904,6 +3985,11 @@ function fillPa(c) {
   document.getElementById('pa-pa').value = coils.PA ?? 1;
   document.getElementById('pa-settle').value = p.settle_s ?? 1;
   document.getElementById('pa-confirm').checked = p.require_confirm !== false;
+  document.getElementById('pa-fwdreg').value = p.fwd_register ?? 4;
+  document.getElementById('pa-fwdzero').value = p.fwd_zero_v ?? 0.0375;
+  document.getElementById('pa-fwdk').value = p.fwd_w_per_v2 ?? 200;
+  document.getElementById('pa-fwdmin').value = p.fwd_min_w ?? 2;
+  document.getElementById('pa-fwdcheck').checked = p.fwd_check !== false;
 }
 async function savePa() {
   const n = id => parseFloat(document.getElementById(id).value);
@@ -3916,7 +4002,9 @@ async function savePa() {
       body: JSON.stringify({enabled: document.getElementById('pa-en').checked,
         host: document.getElementById('pa-host').value.trim(), port: n('pa-port'), unit: n('pa-unit'),
         drive_coil: n('pa-drive'), pa_coil: n('pa-pa'), settle_s: n('pa-settle'),
-        require_confirm: document.getElementById('pa-confirm').checked})});
+        require_confirm: document.getElementById('pa-confirm').checked,
+        fwd_register: n('pa-fwdreg'), fwd_zero_v: n('pa-fwdzero'), fwd_w_per_v2: n('pa-fwdk'),
+        fwd_min_w: n('pa-fwdmin'), fwd_check: document.getElementById('pa-fwdcheck').checked})});
     j = await r.json();
   } catch (e) { say('Not saved: ' + e, '#f87171'); return; }
   const s = j.state || {};
@@ -4413,6 +4501,11 @@ async function poll() {
     if (sl.disabled !== !!LK.locked) sl.disabled = !!LK.locked;
     const mx = String(LK.max_db ?? 0); if (sl.max !== mx) sl.max = mx; }
   const PA = cfg.pa || {};
+  setStyle('s-fwd-row', 'display', PA.fwd_w === null || PA.fwd_w === undefined ? 'none' : '');
+  if (PA.fwd_w !== null && PA.fwd_w !== undefined) {
+    setText('s-fwd', PA.fwd_w.toFixed(1) + ' W');
+    setStyle('s-fwd', 'color', PA.fwd_w >= 2 ? '#4ade80' : '#9fb3d1');
+  }
   if (!PA.enabled) {
     setText('pa-line', 'PA relays: not switched by Lynx-Tx');
     setStyle('pa-line', 'color', '#9fb3d1');
