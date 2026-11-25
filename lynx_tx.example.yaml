@@ -69,3 +69,19 @@ pa:
 power_lock:
   locked: false
   max_db: 0.0
+
+# Automatic Drive Control (drive_control.py): holds the forward power at
+# target_w as the PA warms and cools. The power slider becomes the MAXIMUM
+# drive; the loop only trims below it, down to range_db under it. IQ mode
+# only, and it needs the forward power reading under pa: above. It holds the
+# drive (Resume on the page) on a sudden drop of drop_db, a lost reading,
+# or, with a reflected power register, return loss under rl_min_db.
+drive_control:
+  enabled: false
+  target_w: 40
+  tau_s: 120          # time constant, 60 to 300 s
+  range_db: 6
+  deadband_db: 0.2
+  drop_db: 2
+  rl_register: -1     # -1: no reflected power probe on this PA
+  rl_min_db: 14

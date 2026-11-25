@@ -75,6 +75,7 @@ import signal
 import subprocess
 import threading
 import ipaddress
+import math
 import time
 from pathlib import Path
 from typing import Optional
@@ -91,6 +92,7 @@ import uvicorn
 import atsc3mod
 import dvbs2mod
 import pa
+import drive_control as adc
 import sdrs
 import tezuka_prep
 
@@ -213,6 +215,7 @@ DEFAULT_CONFIG = {
     # The power slider's lock, and a ceiling it can never exceed, whether
     # the change comes from the page, Companion or anything else.
     "power_lock": {"locked": False, "max_db": 0.0},
+    "drive_control": dict(adc.DEFAULTS),
 }
 CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
 # The guide: eitinject reads EPG_XML (rewritten when the schedule changes);
@@ -900,6 +903,12 @@ def atsc3_set_radio(live_only: bool = False, hold_power: bool = False):
         cmds = (dvbs2mod.radio_live_commands(uri, m) if live_only
                 else dvbs2mod.iio_commands(uri, m))
         what = "DVB-S2"
+    if adc_loop.running and adc_loop.applied is not None:
+        # Automatic Drive Control is trimming the drive: the slider is now
+        # its ceiling, so a live change never raises the drive above where
+        # the loop has it, and lowers it only if the new ceiling is below.
+        level = min(adc_loop.applied, adc.quant(iq_power_db()))
+        cmds = [c[:-1] + [f"{level:g}"] if c[-2] == "hardwaregain" else c for c in cmds]
     if hold_power:
         # Key-up: everything but the power. It stays at the mute level until
         # IQ is actually flowing (see iq_guard), so the DAC never sits at
@@ -981,9 +990,17 @@ def iq_guard(proc: subprocess.Popen):
     if not tx_alarm["fault"] and proc.poll() is None and tx_proc is proc:
         try:
             _iio(tx_lo_command(sdr_uri(), True))
-            ramp_power(iq_power_db(), proc)
-            print(f"[iq] on air at {iq_power_db():g} dB")
+            start = iq_power_db()
+            if adc_active():
+                # Automatic Drive Control: from the last settled drive.
+                start = adc_loop.start_db(adc.cfg(config), iq_power_db())
+            ramp_power(start, proc)
+            print(f"[iq] on air at {start:g} dB")
             threading.Thread(target=fwd_check, args=(proc,), daemon=True).start()
+            if adc_active() and tx_proc is proc:
+                adc_loop.start(start, iq_power_db())
+                adc_run.update(proc=proc, arm_at=time.time()
+                               + float(pa.cfg(config).get("fwd_check_s", 5.0)) + 5.0)
         except Exception as e:
             print(f"[iq] power up: {e}")
     while proc.poll() is None:
@@ -1025,6 +1042,96 @@ def pa_watch():
             print(f"[pa] {e}")
         n += 1
         time.sleep(2)
+
+
+# ── Automatic Drive Control (drive_control.py) ──────────────────────
+
+adc_loop = adc.Loop()
+adc_run = {"proc": None, "arm_at": 0.0, "saved": None}
+_adc_lock = threading.Lock()
+
+
+def adc_active() -> bool:
+    c = adc.cfg(config)
+    return bool(c["enabled"] and c["target_w"] > 0 and iq_mode() and pa.fwd_enabled(config))
+
+
+def adc_reflected_db():
+    """Return loss from the reflected power register, if there is one: the
+    same calibration as forward. None when not fitted or unreadable."""
+    c, p = adc.cfg(config), pa.cfg(config)
+    reg = int(c.get("rl_register", -1))
+    fwd = pa.state.get("fwd_w")
+    if reg < 0 or not fwd:
+        return None
+    try:
+        raw = pa.read_inputs(p, reg, 1)[0]
+    except Exception:
+        return None
+    volts = max(raw * 10.0 / 65535.0 - float(p["fwd_zero_v"]), 0.0)
+    ref = volts * volts * float(p["fwd_w_per_v2"])
+    return 99.0 if ref <= 0.01 else 10.0 * math.log10(fwd / ref)
+
+
+def adc_save_last(force: bool = False):
+    """Remember the drive for the next key-up, unless the loop was held
+    (a fault is no starting point)."""
+    if adc_loop.applied is None or adc_loop.held:
+        return
+    if not force and adc_run["saved"] == adc_loop.applied:
+        return
+    c = dict(config.get("drive_control") or adc.DEFAULTS)
+    c["last_db"] = adc_loop.applied
+    config["drive_control"] = c
+    adc_run["saved"] = adc_loop.applied
+    try:
+        save_config(config)
+    except Exception as e:
+        print(f"[adc] saving: {e}")
+
+
+def adc_stop():
+    with _adc_lock:
+        if adc_loop.running:
+            adc_save_last()
+        adc_loop.reset()
+        adc_run.update(proc=None, arm_at=0.0)
+
+
+def drive_loop():
+    """Every 2 s: the forward power (read by pa_watch) into the loop, and any
+    new drive straight to the SDR's attenuator."""
+    last = time.time()
+    while True:
+        time.sleep(2)
+        now = time.time()
+        dt, last = now - last, now
+        try:
+            proc = adc_run["proc"]
+            if not adc_loop.running or proc is None or tx_proc is not proc or not tx_running():
+                continue
+            if now < adc_run["arm_at"]:
+                continue
+            c = adc.cfg(config)
+            if not adc_active():
+                adc_loop.status = "off (switched off or no forward power reading configured)"
+                continue
+            fresh = now - float(pa.state.get("fwd_at") or 0) < 5
+            fwd = pa.state.get("fwd_w") if fresh else None
+            was_held = bool(adc_loop.held)
+            new = adc_loop.step(c, iq_power_db(), fwd, adc_reflected_db(), dt, now)
+            if adc_loop.held and not was_held:
+                print(f"[adc] {adc_loop.status}")
+                tx_alarm["pa_error"] = "Automatic Drive Control " + adc_loop.status
+            if new is not None:
+                with _adc_lock:
+                    if tx_proc is proc and adc_loop.running:
+                        _iio(atsc3mod.mute_command(sdr_uri())[:-1] + [f"{new:g}"])
+                        print(f"[adc] drive {new:g} dB ({fwd:g} W, target {c['target_w']:g} W)")
+            if (adc_loop.settled_since and now - adc_loop.settled_since > 60):
+                adc_save_last()
+        except Exception as e:
+            print(f"[adc] {e}")
 
 
 def fwd_check(proc):
@@ -1911,6 +2018,7 @@ def start_tx() -> dict:
             # A restart: mute while the old IQ is still flowing.
             atsc3_mute()
         stop_tx_locked()
+        adc_stop()
         # Whatever the source is, make sure it is actually being fed.
         # Starting the encoder against a loopback nothing is writing to
         # gives a pipeline that opens and then sits there.
@@ -2014,6 +2122,7 @@ def pa_power_up(board: bool = False):
 
 def stop_tx() -> dict:
     with tx_lock:
+        adc_stop()
         if iq_mode():
             # Attenuate first, while the IQ stream is still flowing, so the
             # DAC is never left at full output once it stops.
@@ -2278,6 +2387,7 @@ def api_status():
                "fwd_w": pa.state["fwd_w"] if pa.fwd_enabled(config) else None,
                "coils": pa.state["coils"], "error": tx_alarm.get("pa_error") or pa.state["error"]},
         "power_lock": power_lock(),
+        "drive": adc_status(),
         "alarm": {"muted": tx_alarm["muted"] and tx_running(),
                   "fault": tx_alarm["fault"],
                   "sdr_ok": tx_alarm["sdr_ok"],
@@ -2657,6 +2767,58 @@ def api_pa(req: PaUpdate):
     config["pa"] = c
     save_config(config)
     return {"success": True, "pa": c, "state": pa.refresh(config)}
+
+
+def adc_status() -> dict:
+    c = adc.cfg(config)
+    on = adc_loop.running and tx_running()
+    return {"enabled": bool(c["enabled"]), "active": adc_active(), "running": on,
+            "drive_db": adc_loop.applied if on else None, "max_db": iq_power_db(),
+            "floor_db": iq_power_db() - c["range_db"], "target_w": c["target_w"],
+            "status": (adc_loop.status if on else
+                       "board mode: not available" if c["enabled"] and not iq_mode() else
+                       "needs forward power configured" if c["enabled"] and not pa.fwd_enabled(config) else
+                       "no target set" if c["enabled"] and c["target_w"] <= 0 else
+                       "ready" if c["enabled"] else "off"),
+            "held": adc_loop.held if on else "", "last_db": c.get("last_db")}
+
+
+class DriveUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    target_w: Optional[float] = None
+    tau_s: Optional[float] = None
+    range_db: Optional[float] = None
+    deadband_db: Optional[float] = None
+    drop_db: Optional[float] = None
+    rl_register: Optional[int] = None
+    rl_min_db: Optional[float] = None
+
+
+@app.post("/api/drive_control")
+def api_drive_control(req: DriveUpdate):
+    """Automatic Drive Control's settings (drive_control.py)."""
+    c = dict(config.get("drive_control") or adc.DEFAULTS)
+    for k, v in dump(req).items():
+        if v is not None:
+            c[k] = v
+    if c.get("enabled") and float(c.get("target_w") or 0) <= 0:
+        raise HTTPException(400, "Give the target forward power first.")
+    if c.get("enabled") and not pa.fwd_enabled(config):
+        raise HTTPException(400, "Automatic Drive Control needs the forward power reading: "
+                                 "switch on PA control and give its register first.")
+    clean = adc.cfg({"drive_control": c})
+    clean["last_db"] = c.get("last_db")
+    config["drive_control"] = clean
+    save_config(config)
+    return {"success": True, "drive_control": clean, "status": adc_status()}
+
+
+@app.post("/api/drive_control/resume")
+def api_drive_resume():
+    """Release a held loop, once whatever held it has been looked at."""
+    adc_loop.resume()
+    tx_alarm["pa_error"] = ""
+    return {"success": True, "status": adc_status()}
 
 
 @app.post("/api/power_lock")
@@ -3198,6 +3360,8 @@ PAGE = """<!DOCTYPE html>
                 <td class="status-value text-end" id="s-up">—</td></tr>
             <tr id="s-fwd-row" style="display:none"><td class="text-muted">Forward power</td>
                 <td class="status-value text-end" id="s-fwd">—</td></tr>
+            <tr id="s-drive-row" style="display:none"><td class="text-muted">Drive</td>
+                <td class="status-value text-end" id="s-drive">—</td></tr>
           </table>
           <div class="small mt-2" id="buffer-line" style="display:none">Buffer: &mdash;</div>
           <div id="buffer-graph" style="display:none;margin-top:4px">
@@ -3292,6 +3456,52 @@ PAGE = """<!DOCTYPE html>
             <button class="btn btn-sm btn-warning flex-fill" onclick="savePa()">Save and check the gateway</button>
           </div>
           <div class="small mt-2 fw-semibold" id="pa-msg"></div>
+
+          <hr class="border-secondary my-3">
+          <div class="fw-semibold mb-1" style="color:#e8eef9">&#x1F321;&#xFE0F; Automatic Drive Control</div>
+          <div class="mb-2" id="adc-line" style="color:#9fb3d1">Off</div>
+          <div class="small text-muted mb-2">Holds the forward power at the target as the PA warms and cools.
+            The power slider becomes the <b>maximum</b> drive: the loop only trims below it, never above.
+            Slow on purpose, and it holds the drive (and says why) on a sudden drop in power or a lost reading,
+            rather than chase a fault. ROCK-made DVB-S2 and ATSC 3.0 only.</div>
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="adc-en">
+            <label class="form-check-label" for="adc-en" style="color:#e8eef9">Trim the drive to hold the forward power</label>
+          </div>
+          <div class="row g-2 mb-2">
+            <div class="col-4">
+              <label class="small text-muted">Target (W)</label>
+              <input type="number" step="0.5" class="form-control form-control-sm bg-dark text-light border-secondary" id="adc-target">
+            </div>
+            <div class="col-4">
+              <label class="small text-muted">Time constant (s)</label>
+              <input type="number" step="10" min="60" max="300" class="form-control form-control-sm bg-dark text-light border-secondary" id="adc-tau">
+            </div>
+            <div class="col-4">
+              <label class="small text-muted">Range (dB)</label>
+              <input type="number" step="0.5" class="form-control form-control-sm bg-dark text-light border-secondary" id="adc-range">
+            </div>
+          </div>
+          <div class="row g-2 mb-2">
+            <div class="col-4">
+              <label class="small text-muted">Hold on drop (dB)</label>
+              <input type="number" step="0.5" class="form-control form-control-sm bg-dark text-light border-secondary" id="adc-drop">
+            </div>
+            <div class="col-4">
+              <label class="small text-muted">Reflected register</label>
+              <input type="number" class="form-control form-control-sm bg-dark text-light border-secondary" id="adc-rlreg" placeholder="-1 = none">
+            </div>
+            <div class="col-4">
+              <label class="small text-muted">Min return loss (dB)</label>
+              <input type="number" step="1" class="form-control form-control-sm bg-dark text-light border-secondary" id="adc-rlmin">
+            </div>
+          </div>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-warning flex-fill" onclick="saveAdc()">Save drive control</button>
+            <button class="btn btn-sm btn-outline-warning" id="adc-resume" style="display:none"
+                    onclick="resumeAdc()">Resume</button>
+          </div>
+          <div class="small mt-2 fw-semibold" id="adc-msg"></div>
         </div>
       </div>
 
@@ -4015,6 +4225,38 @@ async function savePa() {
   else say('Saved. PA switching is off, so the gateway was not asked.', '#9fb3d1');
   poll();
 }
+function fillAdc(c) {
+  const d = c.drive_control || {};
+  document.getElementById('adc-en').checked = !!d.enabled;
+  document.getElementById('adc-target').value = d.target_w || '';
+  document.getElementById('adc-tau').value = d.tau_s ?? 120;
+  document.getElementById('adc-range').value = d.range_db ?? 6;
+  document.getElementById('adc-drop').value = d.drop_db ?? 2;
+  document.getElementById('adc-rlreg').value = d.rl_register ?? -1;
+  document.getElementById('adc-rlmin').value = d.rl_min_db ?? 14;
+}
+async function saveAdc() {
+  const n = id => parseFloat(document.getElementById(id).value);
+  const msg = document.getElementById('adc-msg');
+  const say = (t, c) => { msg.textContent = t; msg.style.color = c; };
+  say('Saving\u2026', '#fbbf24');
+  let r, j;
+  try {
+    r = await fetch('/api/drive_control', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: document.getElementById('adc-en').checked,
+        target_w: n('adc-target') || 0, tau_s: n('adc-tau'), range_db: n('adc-range'),
+        drop_db: n('adc-drop'), rl_register: Math.round(n('adc-rlreg')), rl_min_db: n('adc-rlmin')})});
+    j = await r.json();
+  } catch (e) { say('Not saved: ' + e, '#f87171'); return; }
+  if (!r.ok) { say('Not saved: ' + (typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)), '#f87171'); return; }
+  const d = j.drive_control;
+  fillAdc({drive_control: d});
+  say(d.enabled ? 'Saved. Holding ' + d.target_w + ' W, time constant ' + d.tau_s + ' s'
+                  + (j.status && j.status.running ? '.' : ', from the next TX On.')
+                : 'Saved. Drive control is off: the drive is the slider setting.', '#4ade80');
+  poll();
+}
+async function resumeAdc() { await api('POST', '/api/drive_control/resume'); poll(); }
 async function togglePowerLock() {
   const locked = !(cfg && cfg.power_lock && cfg.power_lock.locked);
   await api('POST', '/api/power_lock', {locked});
@@ -4506,6 +4748,15 @@ async function poll() {
     setText('s-fwd', PA.fwd_w.toFixed(1) + ' W');
     setStyle('s-fwd', 'color', PA.fwd_w >= 2 ? '#4ade80' : '#9fb3d1');
   }
+  const DR = cfg.drive || {};
+  setStyle('s-drive-row', 'display', DR.running ? '' : 'none');
+  if (DR.running && DR.drive_db !== null && DR.drive_db !== undefined)
+    setText('s-drive', DR.drive_db.toFixed(2) + ' dB (max ' + DR.max_db + ')');
+  setText('adc-line', DR.running
+    ? 'Drive ' + (DR.drive_db ?? 0).toFixed(2) + ' dB of max ' + DR.max_db + ' dB, target ' + DR.target_w + ' W: ' + DR.status
+    : 'Drive control: ' + DR.status);
+  setStyle('adc-line', 'color', DR.held ? '#f87171' : DR.running ? '#4ade80' : '#9fb3d1');
+  setStyle('adc-resume', 'display', DR.held ? '' : 'none');
   if (!PA.enabled) {
     setText('pa-line', 'PA relays: not switched by Lynx-Tx');
     setStyle('pa-line', 'color', '#9fb3d1');
@@ -4665,6 +4916,7 @@ async function poll() {
     const m = cfg.config.modulation, e = cfg.config.encoder;
     fillIdent(cfg.config.identity, cfg.config);
     fillPa(cfg.config);
+    fillAdc(cfg.config);
     fillMod(cfg.config, cfg.mode);
     document.getElementById('e-format').value = e.width + 'x' + e.height;
     document.getElementById('e-fps').value = e.fps;
@@ -5016,5 +5268,6 @@ if __name__ == "__main__":
     threading.Thread(target=mixer_watch, daemon=True).start()
     threading.Thread(target=tx_alarm_watch, daemon=True).start()
     threading.Thread(target=pa_watch, daemon=True).start()
+    threading.Thread(target=drive_loop, daemon=True).start()
     threading.Thread(target=epg_watch, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
