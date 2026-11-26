@@ -2833,11 +2833,32 @@ def update_version():
     update_state["branch"] = b if ok and b != "HEAD" else "main"
 
 
+SNMP_AGENT_INSTALLED = Path("/usr/local/lib/lynx-tx/lynx-snmp-agent.py")
+SNMP_MIB_INSTALLED = Path("/usr/share/snmp/mibs/LYNX-MIB.txt")
+
+
+def snmp_agent_state() -> str:
+    """The installer copies the SNMP agent and the MIB into root's places,
+    and an update (git pull) does not touch those copies: deliberately, so
+    nothing the web page can do runs new code as root. This only spots a
+    copy that has fallen behind, so the page can say so. "absent" when SNMP
+    was never installed, "stale" or "current"."""
+    if not SNMP_AGENT_INSTALLED.exists():
+        return "absent"
+    try:
+        same = SNMP_AGENT_INSTALLED.read_bytes() == (APP_DIR / "tools/lynx-snmp-agent.py").read_bytes()
+        if same and SNMP_MIB_INSTALLED.exists():
+            same = SNMP_MIB_INSTALLED.read_bytes() == (APP_DIR / "mibs/LYNX-MIB.txt").read_bytes()
+    except OSError:
+        return "current"
+    return "current" if same else "stale"
+
+
 @app.get("/api/update/status")
 def api_update_status():
     if update_state["version"] is None:
         update_version()
-    return update_state
+    return {**update_state, "snmp_agent": snmp_agent_state()}
 
 
 @app.post("/api/update/check")
@@ -2854,7 +2875,7 @@ def api_update_check():
     ok, log = git("log", "--oneline", "--max-count=20", f"HEAD..origin/{b}")
     update_state.update(error=None, behind=behind,
                         commits=log.splitlines() if ok and log else [])
-    return update_state
+    return {**update_state, "snmp_agent": snmp_agent_state()}
 
 
 @app.post("/api/update/apply")
@@ -3680,6 +3701,8 @@ PAGE = """<!DOCTYPE html>
     <span class="ms-auto d-flex gap-2 align-items-center">
       <span class="btn btn-sm" id="version-badge" title="Not yet checked: click Check updates"
             style="background:#3a4a63;color:#fff;cursor:default">version ?</span>
+      <span class="btn btn-sm" id="snmp-badge" style="background:#b45309;color:#fff;cursor:help;display:none"
+            title="">SNMP agent out of date</span>
       <button class="btn btn-sm btn-outline-light" id="update-check-btn" onclick="checkUpdates()">Check updates</button>
       <button class="btn btn-sm btn-warning" id="update-apply-btn" onclick="applyUpdate()" style="display:none">&#x2B06;&#xFE0F; Update</button>
     </span>
@@ -5051,6 +5074,17 @@ function renderUpdate(u) {
   const b = $('version-badge'), apply = $('update-apply-btn');
   b.textContent = (u.version || '?') + (u.branch && u.branch !== 'main' ? ' (' + u.branch + ')' : '');
   apply.style.display = 'none';
+  const sb = $('snmp-badge');
+  if (sb) {
+    sb.style.display = u.snmp_agent === 'stale' ? '' : 'none';
+    sb.title = 'An update does not refresh the SNMP agent (it runs as root), so Home Assistant '
+      + 'may be missing the newest objects. On the ROCK:\\n\\n'
+      + 'cd ~/lynx-tx\\n'
+      + 'sudo install -D -m 755 tools/lynx-snmp-agent.py /usr/local/lib/lynx-tx/lynx-snmp-agent.py\\n'
+      + 'sudo install -D -m 644 mibs/LYNX-MIB.txt /usr/share/snmp/mibs/LYNX-MIB.txt\\n'
+      + 'sudo systemctl restart snmpd\\n\\n'
+      + 'or run the installer again.';
+  }
   if (u.error) {
     b.style.background = '#b45309'; b.title = u.error;
   } else if (u.behind > 0) {
