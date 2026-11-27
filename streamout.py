@@ -28,7 +28,7 @@ from collections import deque
 
 UDP_PORT = 5600
 LOG = "/tmp/lynx-stream.log"
-DEFAULTS = {"on": False, "url": "rtmp://rtmp.batc.org.uk/live", "key": ""}
+DEFAULTS = {"on": False, "always": False, "url": "rtmp://rtmp.batc.org.uk/live", "key": ""}
 
 _proc = None
 _lock = threading.Lock()

@@ -1764,8 +1764,11 @@ def mixer_keyframe(delay: float):
     switcher_call("POST", "/keyframe")
 
 
-def build_pipeline() -> str:
+def build_pipeline(dry: bool = False) -> str:
     """The whole chain as one shell command.
+
+    dry: For stream out with the transmitter off. The same stream, paced
+    by the clock and thrown away after the tap: no SDR, no PA, no RF.
 
     Built fresh each time rather than kept as a template: the rates
     depend on the modulation, the source depends on what is selected,
@@ -2184,8 +2187,16 @@ def build_pipeline() -> str:
     # stream and reports the live slack for the Transmit card.
     monitor = APP_DIR / "tsbuffer.py"
     # It also hands stream out (streamout.py) a fire-and-forget UDP copy.
-    tap_cmd = f"python3 {monitor} {ident['video_pid']} --udp 127.0.0.1:{streamout.UDP_PORT}"
+    # Dry (stream out only): its slack goes to a file of its own, so the
+    # Transmit card never shows a live buffer with the transmitter off.
+    tap_cmd = (("env LYNX_BUFFER_JSON=/tmp/lynx-buffer-dry.json " if dry else "")
+               + f"python3 {monitor} {ident['video_pid']} --udp 127.0.0.1:{streamout.UDP_PORT}")
     tap = f"-P fork {shlex.quote(tap_cmd)} " if monitor.exists() else ""
+    if dry:
+        parts.append(
+            f" | tsp --realtime --buffer-size-mb 0.05 -I file - "
+            f"{nit_stage}{carousel_merge(rate)}{tap}-P regulate --bitrate {paced} -O drop")
+        return "".join(parts)
     if atsc3:
         # No regulate: the modulator's pull is the pace (see atsc3mod.py),
         # and tsprio above has already made the stream constant-rate.
@@ -2341,6 +2352,64 @@ def stop_tx() -> dict:
 
 def tx_running() -> bool:
     return tx_proc is not None and tx_proc.poll() is None
+
+
+# ── Stream out with the transmitter off ───────────────────────────────
+# With "always" set, a dry pipeline (build_pipeline(dry=True)) feeds stream
+# out whenever the transmitter is off. TX On kills it (stop_tx_locked's
+# pattern kill) and takes over the feed; TX Off brings it back within a few
+# seconds. It is only ever stopped by its own process group, never by
+# pattern, so it can never take the transmitter down with it.
+dry_proc = None
+
+
+def dry_running() -> bool:
+    return dry_proc is not None and dry_proc.poll() is None
+
+
+def stop_dry_locked():
+    global dry_proc
+    if dry_proc is not None:
+        try:
+            os.killpg(os.getpgid(dry_proc.pid), signal.SIGTERM)
+            dry_proc.wait(timeout=5)
+        except Exception:
+            try:
+                os.killpg(os.getpgid(dry_proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        dry_proc = None
+
+
+def stream_feed_watch():
+    global dry_proc
+    time.sleep(10)                   # let the mixer start first
+    next_try = 0.0
+    while True:
+        time.sleep(2)
+        try:
+            c = {**streamout.DEFAULTS, **(config.get("stream") or {})}
+            want = c["on"] and c.get("always") and c["key"]
+            with tx_lock:
+                if tx_running() or not want:
+                    stop_dry_locked()
+                    continue
+                if dry_running() or time.time() < next_try:
+                    continue
+                if dry_proc is not None:
+                    print("[stream] feed stopped - restarting; see /tmp/lynx-stream-feed.log")
+                cmd = build_pipeline(dry=True)
+                if config.get("use_switcher", True):
+                    ensure_mixer()
+                dry_proc = subprocess.Popen(
+                    cmd, shell=True, preexec_fn=os.setsid,
+                    stdout=subprocess.DEVNULL,
+                    stderr=open("/tmp/lynx-stream-feed.log", "ab"))
+                next_try = time.time() + 30   # a feed that keeps dying: every 30 s
+            if config.get("use_switcher", True):
+                threading.Thread(target=mixer_keyframe, args=(2.0,), daemon=True).start()
+        except Exception as e:
+            print(f"[stream] feed: {e}")
 
 
 # ── API ───────────────────────────────────────────────────────
@@ -3580,6 +3649,7 @@ def api_chat_set(req: ChatRequest):
 
 class StreamRequest(BaseModel):
     on: bool
+    always: bool = False   # also while the transmitter is off
     url: str = ""
     key: str = ""          # empty: keep the one saved
 
@@ -3589,7 +3659,8 @@ def api_stream():
     """Stream out: the settings (never the key itself) and how it is going."""
     c = {**streamout.DEFAULTS, **(config.get("stream") or {})}
     v = streamout.ffmpeg_version()
-    return {"on": bool(c["on"]), "url": c["url"], "has_key": bool(c["key"]),
+    return {"on": bool(c["on"]), "always": bool(c.get("always")),
+            "url": c["url"], "has_key": bool(c["key"]), "tx_on": tx_running(),
             **{k: streamout.status[k] for k in ("state", "detail", "kbps")},
             "for_s": int(time.time() - streamout.status["since"]) if streamout.status["since"] else 0,
             "ffmpeg": ".".join(map(str, v)) if v else "unknown"}
@@ -3604,7 +3675,8 @@ def api_stream_set(req: StreamRequest):
     if re.search(r"\s", key):
         raise HTTPException(400, "the stream key has no spaces")
     old = {**streamout.DEFAULTS, **(config.get("stream") or {})}
-    config["stream"] = {"on": req.on, "url": url or old["url"], "key": key or old["key"]}
+    config["stream"] = {"on": req.on, "always": req.always,
+                        "url": url or old["url"], "key": key or old["key"]}
     save_config(config)
     streamout.restart()
     return {"success": True}
@@ -4524,7 +4596,11 @@ PAGE = """<!DOCTYPE html>
             <div class="col-md-5">
               <div class="form-check form-switch mb-2">
                 <input class="form-check-input" type="checkbox" id="so-on" onchange="saveStream()">
-                <label class="form-check-label" style="color:#e8eef9" for="so-on">Stream what is on air</label>
+                <label class="form-check-label" style="color:#e8eef9" for="so-on">Stream</label>
+              </div>
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="so-always" onchange="saveStream()">
+                <label class="form-check-label" style="color:#e8eef9" for="so-always">Also while the transmitter is off</label>
               </div>
               <label class="small text-muted">Server</label>
               <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
@@ -4540,7 +4616,9 @@ PAGE = """<!DOCTYPE html>
               <div class="text-muted small">The H.265 goes out exactly as transmitted, with no second encode,
                 as Enhanced RTMP. Needs ffmpeg 6.1 or later (this ROCK: <span id="so-ff">?</span>), and a server
                 that accepts H.265: classic RTMP servers take only H.264, and refuse it. Stereo sound is
-                copied; 5.1 becomes stereo AAC. It runs apart from the transmitter: if the internet or the
+                copied; 5.1 becomes stereo AAC. With the transmitter off (and the second switch on) the
+                same programme is encoded and streamed with no RF at all: the SDR and PA are left
+                alone. TX On and TX Off each interrupt the stream for a few seconds. It runs apart from the transmitter: if the internet or the
                 server goes, only the stream stops, and it retries on its own (5 s, doubling to a minute).
                 The key is kept on the ROCK and never shown; leave the box empty to keep the saved one.
                 Log: /tmp/lynx-stream.log.</div>
@@ -4771,6 +4849,7 @@ async function streamPoll() {
   const url = document.getElementById('so-url'), key = document.getElementById('so-key');
   if (document.activeElement !== url && document.activeElement !== key) {
     document.getElementById('so-on').checked = !!j.on;
+    document.getElementById('so-always').checked = !!j.always;
     url.value = j.url || '';
     key.placeholder = j.has_key ? 'Saved (type to replace)' : 'From your BATC account';
   }
@@ -4781,15 +4860,16 @@ async function streamPoll() {
   const st = document.getElementById('so-status');
   const mins = s => s < 120 ? s + ' s' : Math.round(s / 60) + ' min';
   if (j.state === 'off') st.innerHTML = '<span class="text-muted">Off</span>';
-  else if (j.state === 'waiting') st.innerHTML = '<span style="color:#e8a33d">On; starts when the transmitter is on</span>';
+  else if (j.state === 'waiting') st.innerHTML = '<span style="color:#e8a33d">' + (j.always ? 'On; starting the feed&hellip;' : 'On; starts when the transmitter is on') + '</span>';
   else if (j.state === 'connecting') st.innerHTML = '<span style="color:#e8a33d">Connecting&hellip;</span>';
-  else if (j.state === 'streaming') st.innerHTML = '<span style="color:#4ade80">Streaming, ' + j.kbps + ' kb/s, for ' + mins(j.for_s) + '</span>';
+  else if (j.state === 'streaming') st.innerHTML = '<span style="color:#4ade80">Streaming, ' + j.kbps + ' kb/s, for ' + mins(j.for_s) + (j.tx_on ? '' : ' (transmitter off)') + '</span>';
   else st.innerHTML = '<span style="color:#f87171">' + esc(j.detail || j.state) + '</span>';
 }
 
 async function saveStream() {
   const key = document.getElementById('so-key');
   await api('POST', '/api/stream', {on: document.getElementById('so-on').checked,
+                                    always: document.getElementById('so-always').checked,
                                     url: document.getElementById('so-url').value.trim(),
                                     key: key.value.trim()});
   key.value = '';
@@ -5998,8 +6078,9 @@ if __name__ == "__main__":
     threading.Thread(target=drive_loop, daemon=True).start()
     threading.Thread(target=epg_watch, daemon=True).start()
     threading.Thread(target=streamout.watch, daemon=True, args=(
-        lambda: config.get("stream"), tx_running,
+        lambda: config.get("stream"), lambda: tx_running() or dry_running(),
         lambda: config["identity"]["service_id"],
         lambda: config["encoder"].get("audio_format") == "5.1")).start()
+    threading.Thread(target=stream_feed_watch, daemon=True).start()
     threading.Thread(target=fit_library, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
