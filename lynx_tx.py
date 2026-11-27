@@ -3650,6 +3650,9 @@ def api_chat_set(req: ChatRequest):
 class StreamRequest(BaseModel):
     on: bool
     always: bool = False   # also while the transmitter is off
+    video: str = "h265"    # "h265": as transmitted; "h264": re-encoded in hardware
+    height: int = 1080     # H.264 only: 720, 1080 or 2160
+    kbps: int = 4000       # H.264 only
     url: str = ""
     key: str = ""          # empty: keep the one saved
 
@@ -3660,6 +3663,7 @@ def api_stream():
     c = {**streamout.DEFAULTS, **(config.get("stream") or {})}
     v = streamout.ffmpeg_version()
     return {"on": bool(c["on"]), "always": bool(c.get("always")),
+            "video": c["video"], "height": c["height"], "kbps": c["kbps"],
             "url": c["url"], "has_key": bool(c["key"]), "tx_on": tx_running(),
             **{k: streamout.status[k] for k in ("state", "detail", "kbps")},
             "for_s": int(time.time() - streamout.status["since"]) if streamout.status["since"] else 0,
@@ -3675,7 +3679,12 @@ def api_stream_set(req: StreamRequest):
     if re.search(r"\s", key):
         raise HTTPException(400, "the stream key has no spaces")
     old = {**streamout.DEFAULTS, **(config.get("stream") or {})}
-    config["stream"] = {"on": req.on, "always": req.always,
+    if req.video not in ("h265", "h264"):
+        raise HTTPException(400, "video is h265 or h264")
+    if req.height not in streamout.HEIGHTS:
+        raise HTTPException(400, "height is 720, 1080 or 2160")
+    config["stream"] = {"on": req.on, "always": req.always, "video": req.video,
+                        "height": req.height, "kbps": max(500, min(req.kbps, 40000)),
                         "url": url or old["url"], "key": key or old["key"]}
     save_config(config)
     streamout.restart()
@@ -4590,7 +4599,7 @@ PAGE = """<!DOCTYPE html>
   <div class="row g-3 mt-1">
     <div class="col-12">
       <div class="card">
-        <div class="card-header">&#x1F4E1; Stream out (RTMP, H.265)</div>
+        <div class="card-header">&#x1F4E1; Stream out (RTMP)</div>
         <div class="card-body">
           <div class="row g-3">
             <div class="col-md-5">
@@ -4601,6 +4610,28 @@ PAGE = """<!DOCTYPE html>
               <div class="form-check form-switch mb-2">
                 <input class="form-check-input" type="checkbox" id="so-always" onchange="saveStream()">
                 <label class="form-check-label" style="color:#e8eef9" for="so-always">Also while the transmitter is off</label>
+              </div>
+              <div class="row g-2 mb-2">
+                <div class="col-5">
+                  <label class="small text-muted">Video</label>
+                  <select class="form-select form-select-sm bg-dark text-light border-secondary" id="so-video" onchange="saveStream()">
+                    <option value="h265">H.265 as transmitted</option>
+                    <option value="h264">H.264 (hardware)</option>
+                  </select>
+                </div>
+                <div class="col-4">
+                  <label class="small text-muted">H.264 size</label>
+                  <select class="form-select form-select-sm bg-dark text-light border-secondary" id="so-height" onchange="saveStream()">
+                    <option value="720">720p</option>
+                    <option value="1080">1080p</option>
+                    <option value="2160">2160p (4K)</option>
+                  </select>
+                </div>
+                <div class="col-3">
+                  <label class="small text-muted">kb/s</label>
+                  <input type="number" min="500" max="40000" step="100" id="so-kbps" onchange="saveStream()"
+                         class="form-control form-control-sm bg-dark text-light border-secondary">
+                </div>
               </div>
               <label class="small text-muted">Server</label>
               <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
@@ -4613,7 +4644,12 @@ PAGE = """<!DOCTYPE html>
             </div>
             <div class="col-md-7">
               <div class="small mb-2" id="so-status">&mdash;</div>
-              <div class="text-muted small">The H.265 goes out exactly as transmitted, with no second encode,
+              <div class="text-muted small"><b>H.264:</b> For the BATC streamer, which keeps the sound but
+                drops H.265 pictures. Decoded and re-encoded on the ROCK's video hardware (almost no CPU),
+                sharing the encoder with the on-air picture: watch the Transmit card's slack and late count
+                when you first try it. About 2,500 kb/s suits 720p, 4,000 to 6,000 1080p; 4K needs 15,000 or
+                more and an upload to match.<br>
+                <b>H.265:</b> Goes out exactly as transmitted, with no second encode,
                 as Enhanced RTMP. Needs ffmpeg 6.1 or later (in use: <span id="so-ff">?</span>; Debian's 5.1 is too old, so
                 stream out has its own: sudo bash tools/install-stream-ffmpeg.sh), and a server
                 that accepts H.265: classic RTMP servers take only H.264, and refuse it. Stereo sound is
@@ -4851,6 +4887,10 @@ async function streamPoll() {
   if (document.activeElement !== url && document.activeElement !== key) {
     document.getElementById('so-on').checked = !!j.on;
     document.getElementById('so-always').checked = !!j.always;
+    document.getElementById('so-video').value = j.video || 'h265';
+    document.getElementById('so-height').value = String(j.height || 1080);
+    if (document.activeElement !== document.getElementById('so-kbps'))
+      document.getElementById('so-kbps').value = j.kbps || 4000;
     url.value = j.url || '';
     key.placeholder = j.has_key ? 'Saved (type to replace)' : 'From your BATC account';
   }
@@ -4871,6 +4911,9 @@ async function saveStream() {
   const key = document.getElementById('so-key');
   await api('POST', '/api/stream', {on: document.getElementById('so-on').checked,
                                     always: document.getElementById('so-always').checked,
+                                    video: document.getElementById('so-video').value,
+                                    height: parseInt(document.getElementById('so-height').value),
+                                    kbps: parseInt(document.getElementById('so-kbps').value) || 4000,
                                     url: document.getElementById('so-url').value.trim(),
                                     key: key.value.trim()});
   key.value = '';
@@ -6079,7 +6122,8 @@ if __name__ == "__main__":
     threading.Thread(target=drive_loop, daemon=True).start()
     threading.Thread(target=epg_watch, daemon=True).start()
     threading.Thread(target=streamout.watch, daemon=True, args=(
-        lambda: config.get("stream"), lambda: tx_running() or dry_running(),
+        lambda: config.get("stream"),
+        lambda: "tx" if tx_running() else ("dry" if dry_running() else ""),
         lambda: config["identity"]["service_id"],
         lambda: config["encoder"].get("audio_format") == "5.1")).start()
     threading.Thread(target=stream_feed_watch, daemon=True).start()

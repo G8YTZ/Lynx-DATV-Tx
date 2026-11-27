@@ -13,6 +13,13 @@ the HEVC FourCC, hvc1). ffmpeg muxes that from 6.1 on; older versions
 refuse, and the card says so. Whether a server takes it is the server's
 business: classic RTMP servers accept only H.264.
 
+Or H.264 (video "h264"): For servers that take only H.264, the BATC
+streamer among them (it keeps the sound and drops H.265 pictures, tested
+27 Nov 2026). GStreamer on the ROCK's own hardware: mppvideodec decodes
+and scales the H.265, mpph264enc encodes it. Almost no CPU, so the IQ
+modulator is never starved, but it shares the video encoder with the
+on-air encode: watch the Transmit card's slack and late count.
+
 Sound: Stereo AAC is copied. AC-3 (the 5.1 mode) has no place in classic
 FLV, so it becomes stereo AAC, which is cheap.
 
@@ -37,7 +44,9 @@ OWN_FFMPEG = "/usr/local/lib/lynx-tx/ffmpeg-stream/ffmpeg"
 def ffmpeg_bin() -> str:
     return OWN_FFMPEG if os.access(OWN_FFMPEG, os.X_OK) else "ffmpeg"
 LOG = "/tmp/lynx-stream.log"
-DEFAULTS = {"on": False, "always": False, "url": "rtmp://rtmp.batc.org.uk/live", "key": ""}
+DEFAULTS = {"on": False, "always": False, "url": "rtmp://rtmp.batc.org.uk/live", "key": "",
+            "video": "h265", "height": 1080, "kbps": 4000}
+HEIGHTS = {720: (1280, 41), 1080: (1920, 42), 2160: (3840, 52)}   # width, H.264 level
 
 _proc = None
 _lock = threading.Lock()
@@ -85,6 +94,37 @@ def build_cmd(cfg: dict, service_id: int, five_one: bool) -> list:
              "-progress", "pipe:1", "-stats_period", "2", url])
 
 
+def rtmp_sink() -> str:
+    """rtmp2sink (gst-plugins-bad) if present, else the older rtmpsink."""
+    try:
+        if subprocess.run(["gst-inspect-1.0", "rtmp2sink"], capture_output=True,
+                          timeout=10).returncode == 0:
+            return "rtmp2sink"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "rtmpsink"
+
+
+def build_h264_cmd(cfg: dict, service_id: int, five_one: bool) -> list:
+    url = cfg["url"].rstrip("/") + "/" + cfg["key"]
+    h = int(cfg["height"]) if int(cfg["height"]) in HEIGHTS else 1080
+    w, level = HEIGHTS[h]
+    bps = max(500, min(int(cfg["kbps"]), 40000)) * 1000
+    audio = ("d. ! queue ! ac3parse ! avdec_ac3 ! audioconvert ! audioresample ! "
+             "audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=160000 ! aacparse"
+             if five_one else "d. ! queue ! aacparse")
+    pipe = (f"udpsrc port={UDP_PORT} buffer-size=4000000 "
+            f"caps=video/mpegts,systemstream=true,packetsize=188 ! "
+            f"tsdemux name=d program-number={service_id} "
+            f"d. ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! "
+            f"h265parse ! mppvideodec format=NV12 width={w} height={h} ! queue ! "
+            f"mpph264enc rc-mode=cbr bps={bps} bps-max={bps} gop=50 level={level} ! "
+            f"h264parse config-interval=-1 ! queue ! mux. "
+            f"{audio} ! queue ! mux. "
+            f"flvmux name=mux streamable=true ! {rtmp_sink()} location={url}")
+    return ["gst-launch-1.0", "-e", "-q"] + pipe.split()
+
+
 def _set(state: str, detail: str = ""):
     if state != status["state"]:
         status["since"] = time.time()
@@ -121,11 +161,14 @@ def _stop():
     status["kbps"] = 0
 
 
-def watch(get_cfg, on_air, service_id, five_one):
+def watch(get_cfg, feed, service_id, five_one):
     """The supervisor: runs forever in its own thread. get_cfg() gives the
-    stream settings, on_air() whether the transmitter is running."""
+    stream settings; feed() what is making the stream: "tx" (on air),
+    "dry" (stream only) or "" (nothing). A change of feed restarts the
+    stream cleanly, rather than leaving it to cope with the jump in time."""
     global _proc
     backoff, next_try = 5, 0.0
+    last_feed = ""
     while True:
         time.sleep(1)
         cfg = {**DEFAULTS, **(get_cfg() or {})}
@@ -139,13 +182,19 @@ def watch(get_cfg, on_air, service_id, five_one):
                 _stop()
                 _set("error", "Needs a server address and a stream key")
                 continue
-            if not on_air():
+            now_feed = feed()
+            if now_feed != last_feed and _proc is not None:
+                _stop()                  # the feed handed over: start afresh
+                next_try = 0.0
+            last_feed = now_feed
+            if not now_feed:
                 _stop()
                 _set("waiting", "Starts when the transmitter is on")
                 backoff, next_try = 5, 0.0
                 continue
+            h264 = cfg.get("video") == "h264"
             v = ffmpeg_version()
-            if v and v < (6, 1):
+            if not h264 and v and v < (6, 1):
                 _set("error", f"ffmpeg {v[0]}.{v[1]} cannot send H.265 over RTMP: "
                               "it needs 6.1 or later. Run sudo bash tools/install-stream-ffmpeg.sh")
                 continue
@@ -166,15 +215,24 @@ def watch(get_cfg, on_air, service_id, five_one):
                                  + (f": {why}" if why else ""))
                 backoff = min(backoff * 2, 60)
                 continue
+            if (h264 and _proc is not None and status["state"] == "connecting"
+                    and time.time() - status["started"] > 8):
+                # gst-launch reports nothing while it works: still running
+                # after 8 s means the server took it.
+                status["kbps"] = int(cfg["kbps"])
+                _set("streaming")
             if _proc is None and time.time() >= next_try:
                 with open(LOG, "w") as log:
                     log.write("")
+                build = build_h264_cmd if h264 else build_cmd
                 _proc = subprocess.Popen(
-                    build_cmd(cfg, service_id(), five_one()),
-                    stdout=subprocess.PIPE, stderr=open(LOG, "a"), text=True)
+                    build(cfg, service_id(), five_one()),
+                    stdout=subprocess.PIPE if not h264 else subprocess.DEVNULL,
+                    stderr=open(LOG, "a"), text=True)
                 status["started"] = time.time()
                 _set("connecting", "Connecting to the server")
-                threading.Thread(target=_read_progress, args=(_proc,), daemon=True).start()
+                if not h264:
+                    threading.Thread(target=_read_progress, args=(_proc,), daemon=True).start()
 
 
 def restart():
