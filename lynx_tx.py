@@ -3665,7 +3665,8 @@ def api_stream():
     return {"on": bool(c["on"]), "always": bool(c.get("always")),
             "video": c["video"], "height": c["height"], "kbps": c["kbps"],
             "url": c["url"], "has_key": bool(c["key"]), "tx_on": tx_running(),
-            **{k: streamout.status[k] for k in ("state", "detail", "kbps")},
+            "state": streamout.status["state"], "detail": streamout.status["detail"],
+            "rate_kbps": streamout.status["kbps"],
             "for_s": int(time.time() - streamout.status["since"]) if streamout.status["since"] else 0,
             "ffmpeg": ".".join(map(str, v)) if v else "unknown"}
 
@@ -4879,18 +4880,20 @@ async function hideChat(name, hide) {
 chatPoll();
 setInterval(chatPoll, 4000);
 
-let streamTyping = false;
+let streamTyping = false, streamSaved = 0;
 async function streamPoll() {
   let j;
   try { j = await (await fetch('/api/stream')).json(); } catch (e) { return; }
   const url = document.getElementById('so-url'), key = document.getElementById('so-key');
-  if (document.activeElement !== url && document.activeElement !== key) {
+  // Never overwrite a control while it is being used (an open menu included).
+  const busy = ['so-url', 'so-key', 'so-video', 'so-height', 'so-kbps', 'so-on', 'so-always']
+    .some(id => document.activeElement === document.getElementById(id));
+  if (!busy && Date.now() - streamSaved > 4000) {
     document.getElementById('so-on').checked = !!j.on;
     document.getElementById('so-always').checked = !!j.always;
     document.getElementById('so-video').value = j.video || 'h265';
     document.getElementById('so-height').value = String(j.height || 1080);
-    if (document.activeElement !== document.getElementById('so-kbps'))
-      document.getElementById('so-kbps').value = j.kbps || 4000;
+    document.getElementById('so-kbps').value = j.kbps || 4000;
     url.value = j.url || '';
     key.placeholder = j.has_key ? 'Saved (type to replace)' : 'From your BATC account';
   }
@@ -4903,11 +4906,12 @@ async function streamPoll() {
   if (j.state === 'off') st.innerHTML = '<span class="text-muted">Off</span>';
   else if (j.state === 'waiting') st.innerHTML = '<span style="color:#e8a33d">' + (j.always ? 'On; starting the feed&hellip;' : 'On; starts when the transmitter is on') + '</span>';
   else if (j.state === 'connecting') st.innerHTML = '<span style="color:#e8a33d">Connecting&hellip;</span>';
-  else if (j.state === 'streaming') st.innerHTML = '<span style="color:#4ade80">Streaming, ' + j.kbps + ' kb/s, for ' + mins(j.for_s) + (j.tx_on ? '' : ' (transmitter off)') + '</span>';
+  else if (j.state === 'streaming') st.innerHTML = '<span style="color:#4ade80">Streaming ' + (j.video === 'h264' ? 'H.264 ' + j.height + 'p' : 'H.265 as transmitted') + ', ' + j.rate_kbps + ' kb/s, for ' + mins(j.for_s) + (j.tx_on ? '' : ' (transmitter off)') + '</span>';
   else st.innerHTML = '<span style="color:#f87171">' + esc(j.detail || j.state) + '</span>';
 }
 
 async function saveStream() {
+  streamSaved = Date.now();
   const key = document.getElementById('so-key');
   await api('POST', '/api/stream', {on: document.getElementById('so-on').checked,
                                     always: document.getElementById('so-always').checked,
