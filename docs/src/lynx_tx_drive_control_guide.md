@@ -193,7 +193,7 @@ Lynx-Tx reports all of this over SNMP (objects 19 to 24), so Home Assistant can 
 | 23 lynxPowerLock | 1 locked, 2 unlocked |
 | 24 lynxPaFault | 1 none, 2 fault |
 
-The Monitoring Guide has the details, and `docs/home-assistant/lynx_tx.yaml` is a ready-made Home Assistant package with every sensor and alarm. Worth graphing: **Drive** over months. At the same forward power, a slow rise is the PA losing gain, long before anything fails.
+The Monitoring Guide has the details, and `docs/home-assistant/` holds GB3OO's working Home Assistant set-up: the sensors, a complete dashboard page and every alarm. Worth graphing: **Drive** over months. At the same forward power, a slow rise is the PA losing gain, long before anything fails.
 
 # 9. In the Configuration File
 

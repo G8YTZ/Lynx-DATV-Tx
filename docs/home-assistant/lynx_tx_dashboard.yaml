@@ -1,0 +1,906 @@
+# Lynx-Tx: Home Assistant example dashboard page (GB3OO)
+# ============================================================================
+# One whole view (page): Lynx-Tx, PA and drive control, the Lynx Deck, the
+# PA's temperatures and forward power, and the UPS. It needs the sensors in
+# lynx_tx_configuration.yaml.
+#
+# To add it: open the dashboard, Edit, three dots, Raw configuration editor,
+# and paste this as one entry under "views:" (indent it to match).
+#
+# SEARCH FOR  CHANGE-ME  for the values specific to GB3OO. The entity IDs
+# all start gb3oo_: replace gb3oo with your callsign in lower case, as in
+# the configuration file. Leave out the Lynx Deck or UPS sections if you
+# have not set those up.
+# ============================================================================
+type: sections
+max_columns: 3
+title: GB3OO Lynx-Tx
+icon: mdi:radio-tower
+header:
+  layout: center
+  badges_position: bottom
+  badges_wrap: wrap
+sections:
+  - type: grid
+    cards:
+      - type: heading
+        heading: Lynx-Tx
+        icon: mdi:broadcast
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_state
+        name: Transmitter
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_state
+            state: On Air
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_state
+        name: Transmitter
+        color: amber
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_state
+            state:
+              - Muted by SDR
+              - Fault
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_state
+        name: Transmitter
+        color: red
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_state
+            state: Lockout
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_state
+        name: Transmitter
+        color: grey
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_state
+            state_not:
+              - On Air
+              - Muted by SDR
+              - Fault
+              - Lockout
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_reference_state
+        name: 10 MHz Reference
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_reference_state
+            state: Locked
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_reference_state
+        name: 10 MHz Reference
+        color: amber
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_reference_state
+            state:
+              - Holdover
+              - Acquiring
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_reference_state
+        name: 10 MHz Reference
+        color: grey
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_reference_state
+            state_not:
+              - Locked
+              - Holdover
+              - Acquiring
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_sdr_state
+        name: SDR
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_sdr_state
+            state: Reachable
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_sdr_state
+        name: SDR
+        color: red
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_sdr_state
+            state_not: Reachable
+      - type: tile
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_camera_state
+            state: Live
+        entity: sensor.gb3oo_lynx_tx_camera_state
+        name: ATEM
+        color: green
+        vertical: false
+        features_position: bottom
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_camera_state
+        name: Camera
+        color: amber
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_camera_state
+            state: HDMI unstable
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_camera_state
+        name: Camera
+        color: grey
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_camera_state
+            state_not:
+              - Live
+              - HDMI unstable
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_mixer_state
+        name: Vision mixer
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_mixer_state
+            state: Running
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_mixer_state
+        name: Vision mixer
+        color: red
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_mixer_state
+            state_not: Running
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_hdmi_input
+        name: HDMI input
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_hdmi_input
+            state: Signal
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_hdmi_input
+        name: HDMI input
+        color: grey
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_hdmi_input
+            state_not: Signal
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_mode
+        name: Mode
+        icon: mdi:sine-wave
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_frequency
+        name: Frequency
+        icon: mdi:radio-tower
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_power_setting
+        name: Power setting
+        icon: mdi:signal
+        grid_options:
+          columns: 4
+      - type: heading
+        heading: PA and drive control
+        icon: mdi:tune-variant
+        heading_style: subtitle
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_forward_power
+        name: Forward power
+        icon: mdi:flash
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_drive
+        name: Drive
+        icon: mdi:tune-vertical
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_drive_control_state
+        name: Drive control
+        icon: mdi:target
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_drive_control_state
+            state:
+              - On target
+              - Tracking
+              - Settling
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_drive_control_state
+        name: Drive control
+        icon: mdi:target
+        color: amber
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_drive_control_state
+            state:
+              - At maximum drive
+              - At minimum drive
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_drive_control_state
+        name: Drive control
+        icon: mdi:target
+        color: red
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_drive_control_state
+            state: Held
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_drive_control_state
+        name: Drive control
+        icon: mdi:target
+        color: grey
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_drive_control_state
+            state_not:
+              - On target
+              - Tracking
+              - Settling
+              - At maximum drive
+              - At minimum drive
+              - Held
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_pa_relays_state
+        name: PA relays
+        icon: mdi:power-plug
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_pa_relays_state
+            state: On
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_pa_relays_state
+        name: PA relays
+        icon: mdi:power-plug
+        color: grey
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_pa_relays_state
+            state: Off
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_pa_relays_state
+        name: PA relays
+        icon: mdi:power-plug
+        color: red
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_pa_relays_state
+            state_not:
+              - On
+              - Off
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_pa_fault_state
+        name: PA fault
+        icon: mdi:alert-octagon
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_pa_fault_state
+            state: OK
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_pa_fault_state
+        name: PA fault
+        icon: mdi:alert-octagon
+        color: red
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_pa_fault_state
+            state_not: OK
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_power_lock_state
+        name: Power lock
+        icon: mdi:lock
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_power_lock_state
+            state: Locked
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_power_lock_state
+        name: Power lock
+        icon: mdi:lock
+        color: amber
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.gb3oo_lynx_tx_power_lock_state
+            state_not: Locked
+      - type: tile
+        grid_options:
+          columns: 4
+        entity: sensor.gb3oo_lynx_tx_rock_temperature
+        name: Core Temperature
+        icon: mdi:thermometer
+        vertical: false
+        features_position: bottom
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_rock_fan
+        name: Fan
+        icon: mdi:fan
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.gb3oo_lynx_tx_rock_load
+        name: Processor load
+        icon: mdi:cpu-64-bit
+        grid_options:
+          columns: 4
+      - type: entities
+        entities:
+          - entity: sensor.gb3oo_lynx_tx_auto_recoveries
+            name: Auto-recoveries
+            icon: mdi:restart
+          - entity: sensor.gb3oo_lynx_tx_sdr_mutes
+            name: SDR mutes
+            icon: mdi:volume-off
+          - entity: sensor.gb3oo_lynx_tx_memory
+            name: RAM in use
+            icon: mdi:memory
+          - entity: sensor.gb3oo_lynx_tx_4k_buffer_memory
+            name: 4K buffer memory free
+            icon: mdi:memory-arrow-down
+          - entity: sensor.gb3oo_lynx_tx_rock_uptime
+            name: ROCK Uptime
+            icon: mdi:timer-outline
+          - entity: sensor.gb3oo_lynx_tx_rock_free_space
+            name: Free HDD space
+            icon: mdi:sd
+        grid_options:
+          columns: full
+      - type: history-graph
+        grid_options:
+          columns: full
+          rows: 4
+        entities:
+          - entity: sensor.gb3oo_lynx_tx_state
+            name: Tx On Air
+          - entity: sensor.gb3oo_lynx_tx_reference_state
+            name: GNSS Ref.
+          - entity: sensor.gb3oo_lynx_tx_camera_state
+            name: HDMI In
+          - entity: sensor.gb3oo_lynx_tx_drive_control_state
+            name: Drive control
+          - entity: sensor.gb3oo_lynx_tx_pa_relays_state
+            name: PA relays
+        title: Last 24 hours
+        hours_to_show: 24
+      - type: history-graph
+        grid_options:
+          columns: full
+          rows: 5
+        entities:
+          - entity: sensor.gb3oo_lynx_tx_forward_power
+            name: Forward power
+          - entity: sensor.gb3oo_lynx_tx_drive
+            name: Drive
+          - entity: sensor.gb3oo_pa_heatsink_held
+            name: PA heatsink
+        title: Power, drive and heatsink, last 48 hours
+        hours_to_show: 48
+  - type: grid
+    cards:
+      - type: heading
+        heading: Lynx Deck
+        icon: mdi:play-box-multiple
+      - type: tile
+        entity: sensor.lynx_deck_state
+        name: Lynx Deck
+        icon: mdi:play-box
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_state
+            state: playing
+      - type: tile
+        entity: sensor.lynx_deck_state
+        name: Lynx Deck
+        icon: mdi:play-box
+        color: teal
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_state
+            state: stopped
+      - type: tile
+        entity: sensor.lynx_deck_state
+        name: Lynx Deck
+        icon: mdi:play-box
+        color: red
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_state
+            state_not:
+              - playing
+              - stopped
+      - type: tile
+        entity: sensor.lynx_deck_player
+        name: Player
+        icon: mdi:motion-play
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_player
+            state: ok
+      - type: tile
+        entity: sensor.lynx_deck_player
+        name: Player
+        icon: mdi:motion-play
+        color: amber
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_player
+            state_not: ok
+      - type: tile
+        entity: sensor.lynx_deck_hdmi
+        name: HDMI out
+        icon: mdi:hdmi-port
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_hdmi
+            state: connected
+      - type: tile
+        entity: sensor.lynx_deck_hdmi
+        name: HDMI out
+        icon: mdi:hdmi-port
+        color: red
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_hdmi
+            state_not: connected
+      - type: tile
+        entity: sensor.lynx_deck_clock_synchronised
+        name: NTP
+        icon: mdi:clock-check
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_clock_synchronised
+            state: 'yes'
+      - type: tile
+        entity: sensor.lynx_deck_clock_synchronised
+        name: NTP
+        icon: mdi:clock-check
+        color: amber
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_clock_synchronised
+            state_not: 'yes'
+      - type: tile
+        entity: sensor.lynx_deck_missed_cuts
+        name: Missed cuts
+        icon: mdi:calendar-alert
+        color: green
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_missed_cuts
+            state: '0'
+      - type: tile
+        entity: sensor.lynx_deck_missed_cuts
+        name: Missed cuts
+        icon: mdi:calendar-alert
+        color: red
+        grid_options:
+          columns: 4
+        visibility:
+          - condition: state
+            entity: sensor.lynx_deck_missed_cuts
+            state_not: '0'
+      - type: tile
+        entity: sensor.lynx_deck_clip_number
+        name: Clip number
+        icon: mdi:numeric
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.lynx_deck_clip
+        name: On the output
+        icon: mdi:filmstrip
+      - type: tile
+        entity: sensor.lynx_deck_schedule_on_air
+        name: Schedule says
+        icon: mdi:calendar-clock
+      - type: tile
+        entity: sensor.lynx_deck_clips
+        name: Clips
+        icon: mdi:folder-play
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.lynx_deck_schedule_entries
+        name: Entries on
+        icon: mdi:calendar-check
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.lynx_deck_scheduled_cuts
+        name: Cuts made
+        icon: mdi:content-cut
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.lynx_deck_decoder_drops
+        name: Decoder drops
+        icon: mdi:filmstrip-off
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.lynx_deck_late_frames
+        name: Late frames
+        icon: mdi:timer-alert-outline
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.lynx_deck_player_restarts
+        name: Player restarts
+        icon: mdi:restart
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.lynx_deck_clock_ahead_by
+        name: Clock ahead by
+        icon: mdi:clock-fast
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.lynx_deck_free_space
+        name: Free space
+        icon: mdi:sd
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.lynx_deck_uptime
+        name: Pi uptime
+        icon: mdi:timer-outline
+        grid_options:
+          columns: 4
+      - type: tile
+        entity: sensor.lynx_deck_version
+        name: Version
+        icon: mdi:tag-outline
+        grid_options:
+          columns: 4
+      - type: gauge
+        entity: sensor.lynx_deck_cpu_temperature
+        name: Deck Core
+        min: 20
+        max: 90
+        needle: true
+        severity:
+          green: 40
+          yellow: 70
+          red: 80
+        grid_options:
+          columns: 6
+      - type: gauge
+        entity: sensor.lynx_deck_cpu_load
+        name: Deck Load
+        needle: true
+        severity:
+          green: 0
+          yellow: 60
+          red: 80
+        grid_options:
+          columns: 6
+          rows: auto
+      - type: history-graph
+        grid_options:
+          columns: full
+          rows: 4
+        entities:
+          - entity: sensor.lynx_deck_state
+            name: Deck
+          - entity: sensor.lynx_deck_clip
+            name: Clip
+        title: Last 24 hours
+        hours_to_show: 24
+  - type: grid
+    cards:
+      - type: heading
+        heading: PA and case
+        icon: mdi:amplifier
+      - show_name: true
+        show_icon: true
+        type: button
+        entity: switch.gb3oo_pa          # CHANGE-ME: your PA relay switch
+        hold_action:
+          action: none
+        icon: ''
+        show_state: true
+        grid_options:
+          columns: 6
+          rows: 2
+        tap_action:
+          action: toggle
+          confirmation: true
+      - show_name: true
+        show_icon: true
+        type: button
+        entity: switch.gb3oo_atem        # CHANGE-ME: your ATEM power relay, or delete this button
+        hold_action:
+          action: none
+        icon: ''
+        show_state: true
+        grid_options:
+          columns: 6
+          rows: 2
+        tap_action:
+          action: toggle
+          confirmation: true
+      - type: gauge
+        entity: sensor.gb3oo_pa_case_held
+        needle: true
+        severity:
+          green: 0
+          yellow: 40
+          red: 50
+        max: 60
+        grid_options:
+          columns: 4
+          rows: auto
+        name: GB3OO PA Case
+      - type: gauge
+        entity: sensor.gb3oo_pa_heatsink_held
+        needle: true
+        severity:
+          green: 0
+          yellow: 40
+          red: 50
+        max: 60
+        grid_options:
+          columns: 4
+          rows: auto
+        name: GB3OO PA Heatsink
+      - type: gauge
+        entity: sensor.gb3oo_forward_power_watts
+        needle: true
+        severity:          # CHANGE-ME: to suit your PA's power
+          green: 20
+          yellow: 30
+          red: 40
+        max: 50
+        grid_options:
+          columns: 4
+          rows: auto
+        name: GB3OO Fwd. Power
+      - type: gauge
+        entity: sensor.gb3oo_drive_held
+        needle: true
+        severity:
+          green: 0
+          yellow: 40
+          red: 50
+        max: 60
+        grid_options:
+          columns: 4
+          rows: auto
+        name: GB3OO Drive Case
+      - type: gauge
+        entity: sensor.gb3oo_lynx_tx_rock_temperature
+        name: ROCK Core
+        min: 20
+        max: 80
+        needle: true
+        severity:
+          green: 40
+          yellow: 60
+          red: 75
+        grid_options:
+          columns: 4
+          rows: auto
+      - type: gauge
+        entity: sensor.gb3oo_lynx_tx_rock_fan
+        grid_options:
+          columns: 4
+          rows: auto
+        needle: true
+        severity:
+          green: 40
+          yellow: 70
+          red: 80
+        name: Rock Fan
+      - type: heading
+        heading: UPS
+        icon: mdi:battery-charging
+      - type: button
+        entity: sensor.ups_state
+        name: UPS Status
+        show_state: true
+        icon_height: 80px
+        grid_options:
+          columns: 4
+          rows: 2
+      - show_name: true
+        show_icon: true
+        type: button
+        entity: sensor.ups_battery_health
+        show_state: true
+        icon_height: 80px
+        grid_options:
+          columns: 4
+          rows: 2
+        name: Battery Health
+      - show_name: true
+        show_icon: true
+        type: button
+        entity: sensor.ups_transfer_reason
+        show_state: true
+        icon_height: 80px
+        grid_options:
+          columns: 4
+          rows: 2
+        name: Last Transfer
+      - type: gauge
+        entity: sensor.ups_runtime
+        needle: true
+        severity:
+          green: 20
+          yellow: 10
+          red: 0
+        grid_options:
+          columns: 4
+          rows: auto
+      - type: gauge
+        entity: sensor.ups_battery
+        grid_options:
+          columns: 4
+          rows: auto
+        needle: true
+        severity:
+          green: 20
+          yellow: 10
+          red: 0
+      - type: gauge
+        entity: sensor.ups_load
+        needle: true
+        severity:
+          green: 0
+          yellow: 50
+          red: 80
+        grid_options:
+          columns: 4
+          rows: auto
+      - type: gauge
+        entity: sensor.ups_battery_temperature
+        needle: true
+        severity:
+          green: 20
+          yellow: 30
+          red: 35
+        grid_options:
+          columns: 4
+          rows: auto
+        min: 10
+        max: 40
+      - type: gauge
+        entity: sensor.ups_input_voltage
+        needle: true
+        severity:
+          green: 216
+          yellow: 2
+          red: 253
+        grid_options:
+          columns: 4
+          rows: auto
+        max: 260
+        min: 200
+      - type: gauge
+        entity: sensor.ups_output_voltage
+        needle: true
+        severity:
+          green: 216
+          yellow: 2
+          red: 253
+        grid_options:
+          columns: 4
+          rows: auto
+        max: 260
+        min: 200
+      - type: gauge
+        entity: sensor.ups_input_frequency
+        grid_options:
+          columns: 4
+          rows: auto
+        needle: true
+        severity:
+          green: 0
+          yellow: 0
+          red: -1
+        min: 49
+        max: 51
+      - type: gauge
+        entity: sensor.ups_output_frequency
+        grid_options:
+          columns: 4
+          rows: auto
+        needle: true
+        severity:
+          green: 0
+          yellow: 0
+          red: -1
+        min: 49
+        max: 51
+cards: []
