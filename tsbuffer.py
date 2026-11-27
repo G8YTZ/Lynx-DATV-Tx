@@ -14,15 +14,25 @@ sound and pictures. late counts frames sent with no slack left.
 
 It only reads and counts, and reads in large blocks, so it keeps up easily
 (a 3 Mb/s stream is about 2,000 packets a second).
+
+--udp host:port: Also sends every packet on as UDP (seven to a datagram),
+for stream out (streamout.py). Non-blocking and fire-and-forget: with
+nobody listening the datagrams are simply lost, and the transmitter never
+waits for them.
 """
 import json
 import os
+import socket
 import sys
 import time
 from collections import deque
 
 OUT = os.environ.get("LYNX_BUFFER_JSON", "/tmp/lynx-buffer.json")
-VIDEO_PID = int(sys.argv[1], 0) if len(sys.argv) > 1 else 0x101
+VIDEO_PID = int(sys.argv[1], 0) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else 0x101
+UDP = None
+if "--udp" in sys.argv:
+    _h, _, _p = sys.argv[sys.argv.index("--udp") + 1].rpartition(":")
+    UDP = (_h, int(_p))
 WRAP = 1 << 33                      # 90 kHz timestamps are 33 bits
 
 
@@ -40,12 +50,22 @@ def main():
     slack = None
     buf = b""
     stdin = sys.stdin.buffer
+    sock = None
+    if UDP:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setblocking(False)
     while True:
         chunk = stdin.read(188 * 512)
         if not chunk:
             break
         buf += chunk
         n = len(buf) // 188
+        if sock:
+            for off in range(0, n * 188, 1316):
+                try:
+                    sock.sendto(buf[off:min(off + 1316, n * 188)], UDP)
+                except OSError:
+                    pass                # nobody listening, or full: never wait
         for i in range(n):
             p = buf[i * 188:(i + 1) * 188]
             if p[0] != 0x47:

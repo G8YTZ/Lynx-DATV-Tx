@@ -93,6 +93,7 @@ import atsc3mod
 import dvbs2mod
 import pa
 import drive_control as adc
+import streamout
 import sdrs
 import tezuka_prep
 
@@ -235,6 +236,9 @@ DEFAULT_CONFIG = {
     # the change comes from the page, Companion or anything else.
     "power_lock": {"locked": False, "max_db": 0.0},
     "drive_control": dict(adc.DEFAULTS),
+    # Stream out (27 Nov 2026): what is on air, H.265 untouched, over
+    # Enhanced RTMP. See streamout.py. Off by default.
+    "stream": dict(streamout.DEFAULTS),
 }
 CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
 # The guide: eitinject reads EPG_XML (rewritten when the schedule changes);
@@ -2179,7 +2183,8 @@ def build_pipeline() -> str:
     # The buffer monitor (tsbuffer.py, beside this file) gets a copy of the
     # stream and reports the live slack for the Transmit card.
     monitor = APP_DIR / "tsbuffer.py"
-    tap_cmd = f"python3 {monitor} {ident['video_pid']}"
+    # It also hands stream out (streamout.py) a fire-and-forget UDP copy.
+    tap_cmd = f"python3 {monitor} {ident['video_pid']} --udp 127.0.0.1:{streamout.UDP_PORT}"
     tap = f"-P fork {shlex.quote(tap_cmd)} " if monitor.exists() else ""
     if atsc3:
         # No regulate: the modulator's pull is the pace (see atsc3mod.py),
@@ -3573,6 +3578,38 @@ def api_chat_set(req: ChatRequest):
     return {"success": True, "live": live, "room": chat_room()}
 
 
+class StreamRequest(BaseModel):
+    on: bool
+    url: str = ""
+    key: str = ""          # empty: keep the one saved
+
+
+@app.get("/api/stream")
+def api_stream():
+    """Stream out: the settings (never the key itself) and how it is going."""
+    c = {**streamout.DEFAULTS, **(config.get("stream") or {})}
+    v = streamout.ffmpeg_version()
+    return {"on": bool(c["on"]), "url": c["url"], "has_key": bool(c["key"]),
+            **{k: streamout.status[k] for k in ("state", "detail", "kbps")},
+            "for_s": int(time.time() - streamout.status["since"]) if streamout.status["since"] else 0,
+            "ffmpeg": ".".join(map(str, v)) if v else "unknown"}
+
+
+@app.post("/api/stream")
+def api_stream_set(req: StreamRequest):
+    url = req.url.strip()
+    if url and not re.match(r"^rtmps?://[^\s/]+(/[^\s]*)?$", url):
+        raise HTTPException(400, "the server address starts rtmp:// or rtmps://")
+    key = req.key.strip()
+    if re.search(r"\s", key):
+        raise HTTPException(400, "the stream key has no spaces")
+    old = {**streamout.DEFAULTS, **(config.get("stream") or {})}
+    config["stream"] = {"on": req.on, "url": url or old["url"], "key": key or old["key"]}
+    save_config(config)
+    streamout.restart()
+    return {"success": True}
+
+
 class ChatHideRequest(BaseModel):
     name: str
     hide: bool = True
@@ -4481,6 +4518,41 @@ PAGE = """<!DOCTYPE html>
   <div class="row g-3 mt-1">
     <div class="col-12">
       <div class="card">
+        <div class="card-header">&#x1F4E1; Stream out (RTMP, H.265)</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-5">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="so-on" onchange="saveStream()">
+                <label class="form-check-label" style="color:#e8eef9" for="so-on">Stream what is on air</label>
+              </div>
+              <label class="small text-muted">Server</label>
+              <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
+                     id="so-url" maxlength="200" placeholder="rtmp://rtmp.batc.org.uk/live">
+              <label class="small text-muted">Stream key</label>
+              <input type="password" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
+                     id="so-key" maxlength="200" autocomplete="off">
+              <button class="btn btn-outline-light btn-sm" onclick="saveStream()">Save</button>
+            </div>
+            <div class="col-md-7">
+              <div class="small mb-2" id="so-status">&mdash;</div>
+              <div class="text-muted small">The H.265 goes out exactly as transmitted, with no second encode,
+                as Enhanced RTMP. Needs ffmpeg 6.1 or later (this ROCK: <span id="so-ff">?</span>), and a server
+                that accepts H.265: classic RTMP servers take only H.264, and refuse it. Stereo sound is
+                copied; 5.1 becomes stereo AAC. It runs apart from the transmitter: if the internet or the
+                server goes, only the stream stops, and it retries on its own (5 s, doubling to a minute).
+                The key is kept on the ROCK and never shown; leave the box empty to keep the saved one.
+                Log: /tmp/lynx-stream.log.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mt-1">
+    <div class="col-12">
+      <div class="card">
         <div class="card-header">&#x1F552; EPG and time</div>
         <div class="card-body">
           <div class="row g-3">
@@ -4690,6 +4762,38 @@ async function hideChat(name, hide) {
 
 chatPoll();
 setInterval(chatPoll, 4000);
+
+let streamTyping = false;
+async function streamPoll() {
+  let j;
+  try { j = await (await fetch('/api/stream')).json(); } catch (e) { return; }
+  const url = document.getElementById('so-url'), key = document.getElementById('so-key');
+  if (document.activeElement !== url && document.activeElement !== key) {
+    document.getElementById('so-on').checked = !!j.on;
+    url.value = j.url || '';
+    key.placeholder = j.has_key ? 'Saved (type to replace)' : 'From your BATC account';
+  }
+  document.getElementById('so-ff').textContent = j.ffmpeg;
+  const st = document.getElementById('so-status');
+  const mins = s => s < 120 ? s + ' s' : Math.round(s / 60) + ' min';
+  if (j.state === 'off') st.innerHTML = '<span class="text-muted">Off</span>';
+  else if (j.state === 'waiting') st.innerHTML = '<span style="color:#e8a33d">On; starts when the transmitter is on</span>';
+  else if (j.state === 'connecting') st.innerHTML = '<span style="color:#e8a33d">Connecting&hellip;</span>';
+  else if (j.state === 'streaming') st.innerHTML = '<span style="color:#4ade80">Streaming, ' + j.kbps + ' kb/s, for ' + mins(j.for_s) + '</span>';
+  else st.innerHTML = '<span style="color:#f87171">' + esc(j.detail || j.state) + '</span>';
+}
+
+async function saveStream() {
+  const key = document.getElementById('so-key');
+  await api('POST', '/api/stream', {on: document.getElementById('so-on').checked,
+                                    url: document.getElementById('so-url').value.trim(),
+                                    key: key.value.trim()});
+  key.value = '';
+  setTimeout(streamPoll, 1500);
+}
+
+streamPoll();
+setInterval(streamPoll, 3000);
 
 let epgTyping = false;
 async function epgPoll() {
@@ -5888,5 +5992,9 @@ if __name__ == "__main__":
     threading.Thread(target=pa_watch, daemon=True).start()
     threading.Thread(target=drive_loop, daemon=True).start()
     threading.Thread(target=epg_watch, daemon=True).start()
+    threading.Thread(target=streamout.watch, daemon=True, args=(
+        lambda: config.get("stream"), tx_running,
+        lambda: config["identity"]["service_id"],
+        lambda: config["encoder"].get("audio_format") == "5.1")).start()
     threading.Thread(target=fit_library, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
