@@ -15,10 +15,13 @@ sound and pictures. late counts frames sent with no slack left.
 It only reads and counts, and reads in large blocks, so it keeps up easily
 (a 3 Mb/s stream is about 2,000 packets a second).
 
---udp host:port: Also sends every packet on as UDP (seven to a datagram),
-for stream out (streamout.py). Non-blocking and fire-and-forget: with
-nobody listening the datagrams are simply lost, and the transmitter never
-waits for them.
+--udp host:port (repeatable): Also sends every packet on as UDP (seven to
+a datagram) to each, for stream out (streamout.py: one port per output).
+Non-blocking and fire-and-forget: with nobody listening the datagrams are
+simply lost, and the transmitter never waits for them.
+
+It sits in the on-air pipeline, so it must never stop reading: if anything
+in it fails, it carries on draining its input (see the end of the file).
 """
 import json
 import os
@@ -29,10 +32,14 @@ from collections import deque
 
 OUT = os.environ.get("LYNX_BUFFER_JSON", "/tmp/lynx-buffer.json")
 VIDEO_PID = int(sys.argv[1], 0) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else 0x101
-UDP = None
-if "--udp" in sys.argv:
-    _h, _, _p = sys.argv[sys.argv.index("--udp") + 1].rpartition(":")
-    UDP = (_h, int(_p))
+UDP = []
+for _i, _a in enumerate(sys.argv):
+    if _a == "--udp" and _i + 1 < len(sys.argv):
+        try:
+            _h, _, _p = sys.argv[_i + 1].rpartition(":")
+            UDP.append((_h, int(_p)))
+        except ValueError:
+            pass
 WRAP = 1 << 33                      # 90 kHz timestamps are 33 bits
 
 
@@ -52,8 +59,11 @@ def main():
     stdin = sys.stdin.buffer
     sock = None
     if UDP:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setblocking(False)
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setblocking(False)
+        except OSError:
+            sock = None
     while True:
         chunk = stdin.read(188 * 512)
         if not chunk:
@@ -62,10 +72,11 @@ def main():
         n = len(buf) // 188
         if sock:
             for off in range(0, n * 188, 1316):
-                try:
-                    sock.sendto(buf[off:min(off + 1316, n * 188)], UDP)
-                except OSError:
-                    pass                # nobody listening, or full: never wait
+                for dest in UDP:
+                    try:
+                        sock.sendto(buf[off:min(off + 1316, n * 188)], dest)
+                    except OSError:
+                        pass            # nobody listening, or full: never wait
         for i in range(n):
             p = buf[i * 188:(i + 1) * 188]
             if p[0] != 0x47:
@@ -113,8 +124,24 @@ def main():
             os.replace(tmp, OUT)
 
 
+def drain():
+    """Something went wrong: keep the pipeline flowing by reading and
+    discarding until the stream ends. The buffer reading goes stale (the
+    Transmit card shows none) and stream out stops; the transmitter does
+    not notice."""
+    stdin = sys.stdin.buffer
+    while stdin.read(188 * 512):
+        pass
+
+
 if __name__ == "__main__":
     try:
         main()
     except (BrokenPipeError, KeyboardInterrupt):
         pass
+    except Exception as e:
+        print(f"tsbuffer: {e!r}; draining", file=sys.stderr)
+        try:
+            drain()
+        except Exception:
+            pass

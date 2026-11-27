@@ -239,6 +239,9 @@ DEFAULT_CONFIG = {
     # Stream out (27 Nov 2026): what is on air, H.265 untouched, over
     # Enhanced RTMP. See streamout.py. Off by default.
     "stream": dict(streamout.DEFAULTS),
+    # SRT out (27 Nov 2026): the transport stream as transmitted, to an edge
+    # server. See streamout.py.
+    "srt": dict(streamout.SRT_DEFAULTS),
 }
 CHAT_HIDDEN = APP_DIR / "config" / "chat_hidden.json"
 # The guide: eitinject reads EPG_XML (rewritten when the schedule changes);
@@ -2190,7 +2193,8 @@ def build_pipeline(dry: bool = False) -> str:
     # Dry (stream out only): its slack goes to a file of its own, so the
     # Transmit card never shows a live buffer with the transmitter off.
     tap_cmd = (("env LYNX_BUFFER_JSON=/tmp/lynx-buffer-dry.json " if dry else "")
-               + f"python3 {monitor} {ident['video_pid']} --udp 127.0.0.1:{streamout.UDP_PORT}")
+               + f"python3 {monitor} {ident['video_pid']} --udp 127.0.0.1:{streamout.UDP_PORT}"
+               f" --udp 127.0.0.1:{streamout.SRT_UDP_PORT}")
     tap = f"-P fork {shlex.quote(tap_cmd)} " if monitor.exists() else ""
     if dry:
         parts.append(
@@ -2389,7 +2393,9 @@ def stream_feed_watch():
         time.sleep(2)
         try:
             c = {**streamout.DEFAULTS, **(config.get("stream") or {})}
-            want = c["on"] and c.get("always") and c["key"]
+            t = {**streamout.SRT_DEFAULTS, **(config.get("srt") or {})}
+            want = ((c["on"] and c.get("always") and c["key"]) or
+                    (t["on"] and t.get("always") and t["host"]))
             with tx_lock:
                 if tx_running() or not want:
                     stop_dry_locked()
@@ -3692,6 +3698,53 @@ def api_stream_set(req: StreamRequest):
     return {"success": True}
 
 
+class SrtRequest(BaseModel):
+    on: bool
+    always: bool = False
+    host: str = ""
+    port: int = 9000
+    latency_ms: int = 500
+    passphrase: str = ""     # empty: keep the one saved
+    clear_passphrase: bool = False
+    streamid: str = ""
+
+
+@app.get("/api/srt")
+def api_srt():
+    """SRT out: the settings (never the passphrase) and how it is going."""
+    c = {**streamout.SRT_DEFAULTS, **(config.get("srt") or {})}
+    st = streamout.srt.status
+    return {"on": bool(c["on"]), "always": bool(c.get("always")), "host": c["host"],
+            "port": c["port"], "latency_ms": c["latency_ms"], "streamid": c["streamid"],
+            "has_passphrase": bool(c["passphrase"]), "tx_on": tx_running(),
+            "state": st["state"], "detail": st["detail"], "rate_kbps": st["kbps"],
+            "tool": st.get("tool", ""),
+            "for_s": int(time.time() - st["since"]) if st["since"] else 0}
+
+
+@app.post("/api/srt")
+def api_srt_set(req: SrtRequest):
+    host = req.host.strip()
+    if host and not re.match(r"^[A-Za-z0-9.\-:\[\]]+$", host):
+        raise HTTPException(400, "the far end is a host name or IP address")
+    if not 1 <= req.port <= 65535:
+        raise HTTPException(400, "port 1 to 65535")
+    pw = req.passphrase.strip()
+    if pw and not 10 <= len(pw) <= 79:
+        raise HTTPException(400, "an SRT passphrase is 10 to 79 characters")
+    sid = req.streamid.strip()
+    if re.search(r"\s", sid + pw):
+        raise HTTPException(400, "no spaces in the passphrase or stream ID")
+    old = {**streamout.SRT_DEFAULTS, **(config.get("srt") or {})}
+    config["srt"] = {"on": req.on, "always": req.always, "host": host, "port": req.port,
+                     "latency_ms": max(20, min(req.latency_ms, 8000)),
+                     "passphrase": "" if req.clear_passphrase else (pw or old["passphrase"]),
+                     "streamid": sid}
+    save_config(config)
+    streamout.srt.restart()
+    return {"success": True}
+
+
 class ChatHideRequest(BaseModel):
     name: str
     hide: bool = True
@@ -4670,6 +4723,69 @@ PAGE = """<!DOCTYPE html>
   <div class="row g-3 mt-1">
     <div class="col-12">
       <div class="card">
+        <div class="card-header">&#x1F310; SRT out (as transmitted, to an edge server)</div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-5">
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="srt-on" onchange="saveSrt()">
+                <label class="form-check-label" style="color:#e8eef9" for="srt-on">Send</label>
+              </div>
+              <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="srt-always" onchange="saveSrt()">
+                <label class="form-check-label" style="color:#e8eef9" for="srt-always">Also while the transmitter is off</label>
+              </div>
+              <div class="row g-2 mb-2">
+                <div class="col-8">
+                  <label class="small text-muted">Far end (host or IP)</label>
+                  <input type="text" id="srt-host" maxlength="120"
+                         class="form-control form-control-sm bg-dark text-light border-secondary">
+                </div>
+                <div class="col-4">
+                  <label class="small text-muted">Port</label>
+                  <input type="number" min="1" max="65535" id="srt-port"
+                         class="form-control form-control-sm bg-dark text-light border-secondary">
+                </div>
+              </div>
+              <div class="row g-2 mb-2">
+                <div class="col-4">
+                  <label class="small text-muted">Latency (ms)</label>
+                  <input type="number" min="20" max="8000" step="10" id="srt-lat"
+                         class="form-control form-control-sm bg-dark text-light border-secondary">
+                </div>
+                <div class="col-8">
+                  <label class="small text-muted">Stream ID (if the far end wants one)</label>
+                  <input type="text" id="srt-sid" maxlength="200"
+                         class="form-control form-control-sm bg-dark text-light border-secondary">
+                </div>
+              </div>
+              <label class="small text-muted">Passphrase (10 to 79 characters; optional)</label>
+              <input type="password" id="srt-pw" maxlength="79" autocomplete="off"
+                     class="form-control form-control-sm bg-dark text-light border-secondary mb-2">
+              <button class="btn btn-outline-light btn-sm" onclick="saveSrt()">Save</button>
+              <button class="btn btn-outline-secondary btn-sm ms-1" onclick="saveSrt(true)">Clear passphrase</button>
+              <span class="small ms-2" id="srt-pwst"></span>
+            </div>
+            <div class="col-md-7">
+              <div class="small mb-2" id="srt-status">&mdash;</div>
+              <div class="text-muted small">The transport stream exactly as transmitted (both programmes, the
+                EPG, the NIT and the time), with the modulator's padding left out: no encoding at all. Lynx-Tx
+                calls the far end (SRT caller), so nothing needs opening at the site. Point it at an edge
+                server that serves the viewers; never at viewers directly. Latency: about four times the
+                round trip to the far end, 500 ms to be safe on the internet. It runs apart from the
+                transmitter: if the far end or the internet goes, only this stops, and it retries on its own.
+                The passphrase is kept on the ROCK and never shown; leave the box empty to keep the saved
+                one. Log: /tmp/lynx-srt.log.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mt-1">
+    <div class="col-12">
+      <div class="card">
         <div class="card-header">&#x1F552; EPG and time</div>
         <div class="card-body">
           <div class="row g-3">
@@ -4927,6 +5043,52 @@ async function saveStream() {
 
 streamPoll();
 setInterval(streamPoll, 3000);
+
+let srtSaved = 0;
+async function srtPoll() {
+  let j;
+  try { j = await (await fetch('/api/srt')).json(); } catch (e) { return; }
+  const ids = ['srt-on', 'srt-always', 'srt-host', 'srt-port', 'srt-lat', 'srt-sid', 'srt-pw'];
+  const busy = ids.some(id => document.activeElement === document.getElementById(id));
+  if (!busy && Date.now() - srtSaved > 4000) {
+    document.getElementById('srt-on').checked = !!j.on;
+    document.getElementById('srt-always').checked = !!j.always;
+    document.getElementById('srt-host').value = j.host || '';
+    document.getElementById('srt-port').value = j.port || 9000;
+    document.getElementById('srt-lat').value = j.latency_ms || 500;
+    document.getElementById('srt-sid').value = j.streamid || '';
+  }
+  document.getElementById('srt-pwst').innerHTML = j.has_passphrase
+    ? '<span style="color:#4ade80">&#x2714; Passphrase saved</span>'
+    : '<span class="text-muted">No passphrase (unencrypted)</span>';
+  const st = document.getElementById('srt-status');
+  const mins = s => s < 120 ? s + ' s' : Math.round(s / 60) + ' min';
+  const via = j.tool ? ' (' + esc(j.tool) + ')' : '';
+  if (j.state === 'off') st.innerHTML = '<span class="text-muted">Off</span>';
+  else if (j.state === 'waiting') st.innerHTML = '<span style="color:#e8a33d">' + (j.always ? 'On; starting the feed&hellip;' : 'On; starts when the transmitter is on') + '</span>';
+  else if (j.state === 'connecting') st.innerHTML = '<span style="color:#e8a33d">Connecting&hellip;</span>';
+  else if (j.state === 'streaming') st.innerHTML = '<span style="color:#4ade80">Sending to ' + esc(j.host) + ':' + j.port +
+    (j.rate_kbps ? ', ' + j.rate_kbps + ' kb/s' : '') + ', for ' + mins(j.for_s) + (j.tx_on ? '' : ' (transmitter off)') + via + '</span>';
+  else st.innerHTML = '<span style="color:#f87171">' + esc(j.detail || j.state) + '</span>';
+}
+
+async function saveSrt(clearPw) {
+  srtSaved = Date.now();
+  const pw = document.getElementById('srt-pw');
+  await api('POST', '/api/srt', {on: document.getElementById('srt-on').checked,
+                                 always: document.getElementById('srt-always').checked,
+                                 host: document.getElementById('srt-host').value.trim(),
+                                 port: parseInt(document.getElementById('srt-port').value) || 9000,
+                                 latency_ms: parseInt(document.getElementById('srt-lat').value) || 500,
+                                 streamid: document.getElementById('srt-sid').value.trim(),
+                                 passphrase: pw.value.trim(), clear_passphrase: !!clearPw});
+  pw.value = '';
+  srtPoll();
+  setTimeout(srtPoll, 1500);
+}
+
+srtPoll();
+setInterval(srtPoll, 3000);
 
 let epgTyping = false;
 async function epgPoll() {
@@ -6125,11 +6287,13 @@ if __name__ == "__main__":
     threading.Thread(target=pa_watch, daemon=True).start()
     threading.Thread(target=drive_loop, daemon=True).start()
     threading.Thread(target=epg_watch, daemon=True).start()
-    threading.Thread(target=streamout.watch, daemon=True, args=(
-        lambda: config.get("stream"),
-        lambda: "tx" if tx_running() else ("dry" if dry_running() else ""),
-        lambda: config["identity"]["service_id"],
-        lambda: config["encoder"].get("audio_format") == "5.1")).start()
+    feed = lambda: "tx" if tx_running() else ("dry" if dry_running() else "")
+    sid = lambda: config["identity"]["service_id"]
+    five_one = lambda: config["encoder"].get("audio_format") == "5.1"
+    threading.Thread(target=streamout.rtmp.watch, daemon=True, args=(
+        lambda: config.get("stream"), feed, sid, five_one)).start()
+    threading.Thread(target=streamout.srt.watch, daemon=True, args=(
+        lambda: config.get("srt"), feed, sid, five_one)).start()
     threading.Thread(target=stream_feed_watch, daemon=True).start()
     threading.Thread(target=fit_library, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
