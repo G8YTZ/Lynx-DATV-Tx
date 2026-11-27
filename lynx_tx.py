@@ -4533,6 +4533,7 @@ PAGE = """<!DOCTYPE html>
               <input type="password" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
                      id="so-key" maxlength="200" autocomplete="off">
               <button class="btn btn-outline-light btn-sm" onclick="saveStream()">Save</button>
+              <span class="small ms-2" id="so-keyst"></span>
             </div>
             <div class="col-md-7">
               <div class="small mb-2" id="so-status">&mdash;</div>
@@ -4774,6 +4775,9 @@ async function streamPoll() {
     key.placeholder = j.has_key ? 'Saved (type to replace)' : 'From your BATC account';
   }
   document.getElementById('so-ff').textContent = j.ffmpeg;
+  document.getElementById('so-keyst').innerHTML = j.has_key
+    ? '<span style="color:#4ade80">&#x2714; Stream key saved</span>'
+    : '<span style="color:#e8a33d">No stream key saved</span>';
   const st = document.getElementById('so-status');
   const mins = s => s < 120 ? s + ' s' : Math.round(s / 60) + ' min';
   if (j.state === 'off') st.innerHTML = '<span class="text-muted">Off</span>';
@@ -4789,6 +4793,7 @@ async function saveStream() {
                                     url: document.getElementById('so-url').value.trim(),
                                     key: key.value.trim()});
   key.value = '';
+  streamPoll();
   setTimeout(streamPoll, 1500);
 }
 
