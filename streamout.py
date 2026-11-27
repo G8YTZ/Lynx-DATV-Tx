@@ -20,6 +20,7 @@ The stream key never appears in the page, the log or /api/stream.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import threading
@@ -27,6 +28,14 @@ import time
 from collections import deque
 
 UDP_PORT = 5600
+# Its own ffmpeg when installed (tools/install-stream-ffmpeg.sh): Debian
+# Bookworm's 5.1 cannot mux H.265 into FLV, and the transmitter's own
+# pipeline stays on the system ffmpeg it was proven with.
+OWN_FFMPEG = "/usr/local/lib/lynx-tx/ffmpeg-stream/ffmpeg"
+
+
+def ffmpeg_bin() -> str:
+    return OWN_FFMPEG if os.access(OWN_FFMPEG, os.X_OK) else "ffmpeg"
 LOG = "/tmp/lynx-stream.log"
 DEFAULTS = {"on": False, "always": False, "url": "rtmp://rtmp.batc.org.uk/live", "key": ""}
 
@@ -42,10 +51,14 @@ def ffmpeg_version() -> tuple:
     global _ffmpeg_version
     if _ffmpeg_version is None:
         try:
-            out = subprocess.run(["ffmpeg", "-version"], capture_output=True,
+            out = subprocess.run([ffmpeg_bin(), "-version"], capture_output=True,
                                  text=True, timeout=10).stdout
             m = re.search(r"ffmpeg version n?(\d+)\.(\d+)", out)
             _ffmpeg_version = (int(m[1]), int(m[2])) if m else ()
+            if _ffmpeg_version and _ffmpeg_version < (6, 1):
+                ver = _ffmpeg_version
+                _ffmpeg_version = None       # look again next time: it may be installed
+                return ver
         except (OSError, subprocess.SubprocessError):
             _ffmpeg_version = ()
     return _ffmpeg_version
@@ -59,7 +72,7 @@ def build_cmd(cfg: dict, service_id: int, five_one: bool) -> list:
     url = cfg["url"].rstrip("/") + "/" + cfg["key"]
     audio = (["-c:a", "aac", "-ac", "2", "-b:a", "160k"] if five_one
              else ["-c:a", "copy"])
-    return (["ffmpeg", "-nostdin", "-loglevel", "error",
+    return ([ffmpeg_bin(), "-nostdin", "-loglevel", "error",
              "-fflags", "+genpts+discardcorrupt",
              "-analyzeduration", "3000000", "-probesize", "5000000",
              "-f", "mpegts", "-i",
@@ -134,7 +147,7 @@ def watch(get_cfg, on_air, service_id, five_one):
             v = ffmpeg_version()
             if v and v < (6, 1):
                 _set("error", f"ffmpeg {v[0]}.{v[1]} cannot send H.265 over RTMP: "
-                              "it needs 6.1 or later")
+                              "it needs 6.1 or later. Run sudo bash tools/install-stream-ffmpeg.sh")
                 continue
             if _proc is not None and _proc.poll() is not None:
                 # It stopped: the server refused, or the network went.

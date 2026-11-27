@@ -4614,7 +4614,8 @@ PAGE = """<!DOCTYPE html>
             <div class="col-md-7">
               <div class="small mb-2" id="so-status">&mdash;</div>
               <div class="text-muted small">The H.265 goes out exactly as transmitted, with no second encode,
-                as Enhanced RTMP. Needs ffmpeg 6.1 or later (this ROCK: <span id="so-ff">?</span>), and a server
+                as Enhanced RTMP. Needs ffmpeg 6.1 or later (in use: <span id="so-ff">?</span>; Debian's 5.1 is too old, so
+                stream out has its own: sudo bash tools/install-stream-ffmpeg.sh), and a server
                 that accepts H.265: classic RTMP servers take only H.264, and refuse it. Stereo sound is
                 copied; 5.1 becomes stereo AAC. With the transmitter off (and the second switch on) the
                 same programme is encoded and streamed with no RF at all: the SDR and PA are left
