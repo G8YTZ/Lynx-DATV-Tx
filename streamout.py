@@ -46,7 +46,7 @@ def ffmpeg_bin() -> str:
 LOG = "/tmp/lynx-stream.log"
 DEFAULTS = {"on": False, "always": False, "url": "rtmp://rtmp.batc.org.uk/live", "key": "",
             "video": "h265", "height": 1080, "kbps": 4000}
-HEIGHTS = {720: (1280, 41), 1080: (1920, 42), 2160: (3840, 52)}   # width, H.264 level
+HEIGHTS = {720: (1280, 41), 1080: (1920, 42), 2160: (3840, 51)}   # width, H.264 level (5.1: 4K to 30 fps, the widely decoded one)
 
 _proc = None
 _lock = threading.Lock()
