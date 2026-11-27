@@ -1,0 +1,134 @@
+# Lynx-Tx: Home Assistant example alarms (GB3OO)
+# ============================================================================
+# One automation: every Lynx-Tx, PA and ROCK alarm, sent to a phone. Service-
+# affecting ones arrive as time-sensitive notifications (they break through
+# Focus on an iPhone); warnings as ordinary ones. Each has its own tag, so a
+# repeat replaces the last rather than piling up.
+#
+# To add it: Settings, Automations, Create automation, three dots, Edit in
+# YAML, select all, paste, Save. It needs the sensors in
+# lynx_tx_configuration.yaml.
+#
+# SEARCH FOR  CHANGE-ME  for the values specific to GB3OO, and replace gb3oo /
+# GB3OO with your callsign as in the configuration file.
+# ============================================================================
+alias: GB3OO Lynx-Tx alarms
+description: Service and health alarms for the Lynx-Tx exciter at GB3OO (LYNX-MIB over SNMP, PA over Modbus)
+triggers:
+  # ── Service affecting ──────────────────────────────────────────────
+  - trigger: template
+    value_template: "{{ states('sensor.gb3oo_lynx_tx_status') in ['unavailable', 'unknown'] }}"
+    for: "00:03:00"
+    id: offline
+  - trigger: state
+    entity_id: sensor.gb3oo_lynx_tx_state
+    from: On Air
+    for: "00:01:00"
+    id: tx_off
+  - trigger: state
+    entity_id: sensor.gb3oo_lynx_tx_state
+    to: Lockout
+    id: lockout
+  - trigger: state
+    entity_id: sensor.gb3oo_lynx_tx_state
+    to:
+      - Muted by SDR
+      - Fault
+    for: "00:01:30"
+    id: muted
+  - trigger: state
+    entity_id: sensor.gb3oo_lynx_tx_pa_fault_state
+    to: Fault
+    id: pa_fault
+  - trigger: state
+    entity_id: sensor.gb3oo_lynx_tx_drive_control_state
+    to: Held
+    id: drive_held
+  - trigger: template
+    value_template: |-
+      {{ is_state('sensor.gb3oo_lynx_tx_state', 'On Air')
+         and has_value('sensor.gb3oo_forward_power_watts')
+         and states('sensor.gb3oo_forward_power_watts') | float(0) < 30 }}
+    # CHANGE-ME: 30 W is about three quarters of GB3OO's 40 W target
+    for: "00:02:00"
+    id: power_low
+  - trigger: state
+    entity_id: sensor.gb3oo_lynx_tx_pa_relays_state
+    to:
+      - Not answering
+      - Partly on
+    for: "00:02:00"
+    id: relays
+  - trigger: numeric_state
+    entity_id: sensor.gb3oo_lynx_tx_rock_temperature
+    above: 75
+    for: "00:01:00"
+    id: temp_hot
+  # ── Warnings ───────────────────────────────────────────────────────
+  - trigger: state
+    entity_id: sensor.gb3oo_lynx_tx_reference_state
+    to: Holdover
+    for: "00:01:00"
+    id: holdover
+  - trigger: state
+    entity_id: sensor.gb3oo_lynx_tx_camera_state
+    to: HDMI unstable
+    for: "00:01:00"
+    id: camera
+  - trigger: state
+    entity_id: sensor.gb3oo_lynx_tx_drive_control_state
+    to: At maximum drive
+    for: "00:30:00"
+    id: drive_max
+  - trigger: numeric_state
+    entity_id: sensor.gb3oo_lynx_tx_rock_temperature
+    above: 60
+    for: "00:05:00"
+    id: temp_warm
+  - trigger: numeric_state
+    entity_id: sensor.gb3oo_lynx_tx_rock_free_space
+    below: 2
+    id: disk
+  - trigger: numeric_state
+    entity_id: sensor.gb3oo_lynx_tx_rock_load
+    above: 80
+    for: "00:10:00"
+    id: load
+actions:
+  - variables:
+      service_hit: |-
+        {{ trigger.id in ['offline', 'tx_off', 'lockout', 'muted', 'pa_fault',
+                          'drive_held', 'power_low', 'relays', 'temp_hot'] }}
+      msg: >-
+        {% set fwd = states('sensor.gb3oo_forward_power_watts') %}
+        {% set drv = states('sensor.gb3oo_lynx_tx_drive') %}
+        {% set t = states('sensor.gb3oo_lynx_tx_rock_temperature') %}
+        {% set texts = {
+          'offline': 'ROCK not answering for 3 minutes. GB3OO is probably off air.',
+          'tx_off': 'Transmitter went off air and stayed off for a minute.',
+          'lockout': 'Lockout: Lynx-Tx has given up restarting itself. It needs a person.',
+          'muted': 'Transmitter muted or in fault for 90 s: auto-recover has not put it right.',
+          'pa_fault': 'PA fault: TX On refused or the PA shut down (relays did not confirm, or no forward power at key-up).',
+          'drive_held': 'Drive control held at ' ~ drv ~ ' dB: sudden fall in power, lost reading or poor return loss. Forward power ' ~ fwd ~ ' W.',
+          'power_low': 'Forward power low: ' ~ fwd ~ ' W while on air. Check the PA and its supply.',
+          'relays': 'PA relay board: ' ~ states('sensor.gb3oo_lynx_tx_pa_relays_state') ~ ' for 2 minutes.',
+          'temp_hot': 'ROCK at ' ~ t ~ ' °C. Close to throttling; check the case fans.',
+          'holdover': '10 MHz reference in holdover: the GNSS reference is lost. Still on air, drifting slowly.',
+          'camera': 'Camera HDMI unstable for a minute.',
+          'drive_max': 'Drive control at maximum drive for 30 minutes (' ~ drv ~ ' dB, ' ~ fwd ~ ' W): the PA cannot reach its target.',
+          'temp_warm': 'ROCK running warm: ' ~ t ~ ' °C for 5 minutes.',
+          'disk': 'Free space down to ' ~ states('sensor.gb3oo_lynx_tx_rock_free_space') ~ ' GB.',
+          'load': 'CPU load ' ~ states('sensor.gb3oo_lynx_tx_rock_load') ~ ' % for 10 minutes.'
+        } %}
+        {{ texts.get(trigger.id, 'Unknown alarm: ' ~ trigger.id) }}
+  - action: notify.mobile_app_justin_iphone_18   # CHANGE-ME: your phone's notify service
+    data:
+      title: >-
+        {{ 'GB3OO: Service affected' if service_hit else 'GB3OO Lynx-Tx: Warning' }}
+      message: "{{ msg }}"
+      data:
+        tag: gb3oo-lynx-tx-{{ trigger.id }}
+        push:
+          interruption-level: "{{ 'time-sensitive' if service_hit else 'active' }}"
+mode: queued
+max: 10

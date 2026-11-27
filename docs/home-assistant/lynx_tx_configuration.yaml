@@ -1,0 +1,818 @@
+# Lynx-Tx: Home Assistant example configuration
+# ============================================================================
+# The configuration.yaml sections behind GB3OO's Lynx-Tx dashboard page
+# (lynx_tx_dashboard.yaml) and alarms (lynx_tx_alarms.yaml). Working, tested
+# values from GB3OO; copy the sections you need into your own configuration.yaml.
+#
+# SEARCH FOR  CHANGE-ME  in all three files: every value specific to GB3OO
+# is marked with it.
+#
+# The callsign: Names here start "GB3OO", and Home Assistant makes the entity
+# IDs from the names (sensor.gb3oo_lynx_tx_state and so on), which the
+# dashboard and the alarms use. To use your own callsign, search and replace
+# in all three files at once, matching case:
+#     GB3OO -> your callsign in capitals     gb3oo -> in lower case
+#
+# Merge rather than paste: if your configuration.yaml already has "modbus:",
+# "sensor:" or "template:", add these entries under your existing key; a key
+# may appear only once.
+#
+# After editing: Developer tools, YAML, Check configuration, then
+# Settings, System, Restart (the SNMP and Modbus sensors load only at start).
+# ============================================================================
+
+# ── The PA's Modbus relay board (ComWinTop, Modbus TCP) ─────────────────────
+modbus:
+  - name: GB3OO                # CHANGE-ME: your callsign (see the note at the top)
+    type: tcp
+    host: 192.168.60.75        # CHANGE-ME: your Modbus relay board's address
+    port: 502
+    # CHANGE-ME: the register and coil numbers below are GB3OO's wiring:
+    # inputs 0 drive temperature, 2 PA case, 3 heatsink, 4 forward power,
+    # 5 return loss (no probe fitted yet); coils 0 drive, 1 PA, 2 ATEM.
+    sensors:
+      - name: GB3OO PA Heatsink
+        slave: 1
+        address: 3
+        input_type: input
+        unit_of_measurement: °C
+        state_class: measurement
+        scale: 0.1
+        offset: 0
+        precision: 0.01
+      - name: GB3OO PA Case
+        slave: 1
+        address: 2
+        input_type: input
+        unit_of_measurement: °C
+        state_class: measurement
+        scale: 0.1
+        offset: 0
+        precision: 0.01
+      - name: GB3OO Drive
+        slave: 1
+        address: 0
+        input_type: input
+        state_class: measurement
+        unit_of_measurement: °C
+        scale: 0.1
+        offset: 0
+        precision: 0.01
+      - name: GB3OO Forward Power
+        slave: 1
+        address: 4
+        input_type: input
+        unit_of_measurement: ""
+        state_class: measurement
+        scale: 1
+        offset: 0
+        precision: 0
+      - name: GB3OO Return Loss
+        slave: 1
+        address: 5
+        input_type: input
+        unit_of_measurement: dB
+        state_class: measurement
+        scale: 1
+        offset: 0
+        precision: 0.01
+    switches:
+      - name: GB3OO Drive
+        slave: 1
+        address: 0
+        write_type: coil
+        verify:
+      - name: GB3OO PA
+        slave: 1
+        address: 1
+        write_type: coil
+        verify:
+      - name: GB3OO ATEM
+        slave: 1
+        address: 2
+        write_type: coil
+        verify:
+
+sensor:
+
+  # ── APC Smart-UPS 2200 (optional: delete this block if you have no SNMP UPS) ──
+  # PowerNet MIB, SNMP v1, community public.
+
+  - platform: snmp
+    name: UPS Status
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.4.1.1.0
+    version: "1"
+    community: public
+    scan_interval: 60
+
+  - platform: snmp
+    name: UPS Runtime
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.2.2.3.0
+    version: "1"
+    community: public
+    unit_of_measurement: min
+    value_template: "{{ (value | int / 6000) | round(1) }}"
+    scan_interval: 60
+
+  - platform: snmp
+    name: UPS Battery
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.2.2.1.0
+    version: "1"
+    community: public
+    unit_of_measurement: "%"
+
+  - platform: snmp
+    name: UPS Load
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.4.2.3.0
+    version: "1"
+    community: public
+    unit_of_measurement: "%"
+
+  - platform: snmp
+    name: UPS Input Voltage
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.3.2.1.0
+    version: "1"
+    community: public
+    unit_of_measurement: V
+    scan_interval: 60
+
+  - platform: snmp
+    name: UPS Input Voltage Min
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.3.2.3.0
+    version: "1"
+    community: public
+    unit_of_measurement: V
+    scan_interval: 60
+
+  - platform: snmp
+    name: UPS Input Frequency
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.3.2.4.0
+    version: "1"
+    community: public
+    unit_of_measurement: Hz
+    scan_interval: 60
+
+  - platform: snmp
+    name: UPS Output Frequency
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.4.2.2.0
+    version: "1"
+    community: public
+    unit_of_measurement: Hz
+    scan_interval: 60
+
+  - platform: snmp
+    name: UPS Output Voltage
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.4.2.1.0
+    version: "1"
+    community: public
+    unit_of_measurement: V
+    scan_interval: 60
+
+  - platform: snmp
+    name: UPS Output Current
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.4.2.4.0
+    version: "1"
+    community: public
+    unit_of_measurement: A
+    scan_interval: 60
+
+  - platform: snmp
+    name: UPS Battery Voltage
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.2.2.8.0
+    version: "1"
+    community: public
+    unit_of_measurement: V
+    scan_interval: 60
+
+  - platform: snmp
+    name: UPS Battery Temperature
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.2.2.2.0
+    version: "1"
+    community: public
+    unit_of_measurement: "°C"
+    scan_interval: 300
+
+  - platform: snmp
+    name: UPS Battery Replace
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.2.2.4.0
+    version: "1"
+    community: public
+    scan_interval: 3600
+
+  - platform: snmp
+    name: UPS Last Transfer Reason
+    host: 192.168.60.11        # CHANGE-ME: your UPS's network card address
+    baseoid: .1.3.6.1.4.1.318.1.1.1.3.2.5.0
+    version: "1"
+    community: public
+    scan_interval: 300
+
+  # ── Lynx-Tx (ROCK 5T): LYNX-MIB, community lynx, SNMP v2c ──
+  # The anchor (&oo_tx) holds the address once; every sensor below reuses it.
+
+  - &oo_tx
+    platform: snmp
+    host: 192.168.60.100       # CHANGE-ME: your ROCK's LAN address
+    community: lynx
+    version: "2c"
+    scan_interval: 30
+    name: GB3OO Lynx-Tx Status
+    unique_id: gb3oo_lynx_tx_status
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.1.0
+    scan_interval: 15
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx SDR Reachable
+    unique_id: gb3oo_lynx_tx_sdr_reachable
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.2.0
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Reference
+    unique_id: gb3oo_lynx_tx_reference
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.3.0
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Mixer
+    unique_id: gb3oo_lynx_tx_mixer
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.4.0
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx HDMI
+    unique_id: gb3oo_lynx_tx_hdmi
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.5.0
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Frequency
+    unique_id: gb3oo_lynx_tx_frequency
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.6.0
+    unit_of_measurement: MHz
+    value_template: "{{ (value | int / 1000) | round(3) }}"
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Power Setting
+    unique_id: gb3oo_lynx_tx_power_setting
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.7.0
+    unit_of_measurement: dB
+    value_template: "{{ (value | int / 100) | round(2) }}"
+    scan_interval: 60
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Mode
+    unique_id: gb3oo_lynx_tx_mode
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.8.0
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx SDR Mutes
+    unique_id: gb3oo_lynx_tx_sdr_mutes
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.9.0
+    scan_interval: 60
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Memory
+    unique_id: gb3oo_lynx_tx_memory
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.10.0
+    unit_of_measurement: MB
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx 4K Buffer Memory
+    unique_id: gb3oo_lynx_tx_4k_buffer_memory
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.11.0
+    unit_of_measurement: MB
+    scan_interval: 60
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx ROCK Temperature
+    unique_id: gb3oo_lynx_tx_rock_temperature
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.12.0
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_template: "{{ (value | int / 10) | round(1) }}"
+    scan_interval: 60
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Camera
+    unique_id: gb3oo_lynx_tx_camera
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.13.0
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Auto Recoveries
+    unique_id: gb3oo_lynx_tx_auto_recoveries
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.14.0
+    scan_interval: 60
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx ROCK Fan
+    unique_id: gb3oo_lynx_tx_rock_fan
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.15.0
+    unit_of_measurement: "%"
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx ROCK Uptime
+    unique_id: gb3oo_lynx_tx_rock_uptime
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.16.0
+    unit_of_measurement: "h"
+    value_template: "{{ (value | int / 3600) | round(1) }}"
+    scan_interval: 120
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx ROCK Load
+    unique_id: gb3oo_lynx_tx_rock_load
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.17.0
+    unit_of_measurement: "%"
+    state_class: measurement
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx ROCK Free Space
+    unique_id: gb3oo_lynx_tx_rock_free_space
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.18.0
+    unit_of_measurement: "GB"
+    value_template: "{{ (value | int / 1024) | round(1) }}"
+    scan_interval: 120
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx PA Relays
+    unique_id: gb3oo_lynx_tx_pa_relays
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.19.0
+    scan_interval: 15
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Forward Power
+    unique_id: gb3oo_lynx_tx_forward_power
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.20.0
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    value_template: "{{ (value | int / 10) | round(1) }}"
+    scan_interval: 15
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Drive Control
+    unique_id: gb3oo_lynx_tx_drive_control
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.21.0
+    scan_interval: 15
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Drive
+    unique_id: gb3oo_lynx_tx_drive
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.22.0
+    unit_of_measurement: dB
+    state_class: measurement
+    value_template: "{{ (value | int / 100) | round(2) }}"
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx Power Lock
+    unique_id: gb3oo_lynx_tx_power_lock
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.23.0
+    scan_interval: 60
+
+  - <<: *oo_tx
+    name: GB3OO Lynx-Tx PA Fault
+    unique_id: gb3oo_lynx_tx_pa_fault
+    baseoid: 1.3.6.1.4.1.8072.9999.1.1.24.0
+    scan_interval: 15
+
+  # ── Lynx Deck (optional: delete this block if you have no Lynx Deck) ──
+
+  - &lynx_deck
+    platform: snmp
+    host: 192.168.60.117       # CHANGE-ME: your Lynx Deck's address
+    community: lynx
+    version: "2c"
+    name: Lynx Deck clip
+    unique_id: lynx_deck_clip
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.3.0
+
+  - <<: *lynx_deck
+    name: Lynx Deck state
+    unique_id: lynx_deck_state
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.1.0
+    value_template: >-
+      {{ {'1': 'playing', '2': 'stopped', '3': 'player fault', '4': 'not answering'}.get(value, 'unknown') }}
+
+  - <<: *lynx_deck
+    name: Lynx Deck player
+    unique_id: lynx_deck_player_state
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.2.0
+    value_template: >-
+      {{ {'1': 'ok', '2': 'stalled', '3': 'restarting'}.get(value, 'unknown') }}
+
+  - <<: *lynx_deck
+    name: Lynx Deck clip number
+    unique_id: lynx_deck_clip_index
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.4.0
+
+  - <<: *lynx_deck
+    name: Lynx Deck clips
+    unique_id: lynx_deck_clip_count
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.5.0
+
+  - <<: *lynx_deck
+    name: Lynx Deck decoder drops
+    unique_id: lynx_deck_decoder_drops
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.6.0
+    state_class: total_increasing
+
+  - <<: *lynx_deck
+    name: Lynx Deck late frames
+    unique_id: lynx_deck_late_frames
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.7.0
+    state_class: total_increasing
+
+  - <<: *lynx_deck
+    name: Lynx Deck player restarts
+    unique_id: lynx_deck_player_restarts
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.8.0
+    state_class: total_increasing
+
+  - <<: *lynx_deck
+    name: Lynx Deck clock synchronised
+    unique_id: lynx_deck_time_synced
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.9.0
+    value_template: "{{ 'yes' if value == '1' else 'no' }}"
+
+  - <<: *lynx_deck
+    name: Lynx Deck schedule entries
+    unique_id: lynx_deck_schedule_entries
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.10.0
+
+  - <<: *lynx_deck
+    name: Lynx Deck schedule on air
+    unique_id: lynx_deck_schedule_on_air
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.11.0
+
+  - <<: *lynx_deck
+    name: Lynx Deck scheduled cuts
+    unique_id: lynx_deck_schedule_cuts
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.12.0
+    state_class: total_increasing
+
+  - <<: *lynx_deck
+    name: Lynx Deck missed cuts
+    unique_id: lynx_deck_schedule_misses
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.13.0
+    state_class: total_increasing
+
+  - <<: *lynx_deck
+    name: Lynx Deck HDMI
+    unique_id: lynx_deck_hdmi
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.14.0
+    value_template: "{{ 'connected' if value == '1' else 'nothing' }}"
+
+  - <<: *lynx_deck
+    name: Lynx Deck CPU temperature
+    unique_id: lynx_deck_cpu_temp
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.15.0
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_template: "{{ (value | int / 10) | round(1) }}"
+
+  - <<: *lynx_deck
+    name: Lynx Deck uptime
+    unique_id: lynx_deck_uptime
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.16.0
+    unit_of_measurement: "d"
+    value_template: "{{ (value | int / 86400) | round(1) }}"
+
+  - <<: *lynx_deck
+    name: Lynx Deck CPU load
+    unique_id: lynx_deck_cpu_load
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.17.0
+    unit_of_measurement: "%"
+    state_class: measurement
+
+  - <<: *lynx_deck
+    name: Lynx Deck free space
+    unique_id: lynx_deck_disk_free
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.18.0
+    unit_of_measurement: "GB"
+    device_class: data_size
+    state_class: measurement
+    value_template: "{{ (value | int / 1024) | round(1) }}"
+
+  - <<: *lynx_deck
+    name: Lynx Deck version
+    unique_id: lynx_deck_version
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.19.0
+
+  - <<: *lynx_deck
+    name: Lynx Deck clock ahead by
+    unique_id: lynx_deck_clock_offset
+    baseoid: 1.3.6.1.4.1.8072.9999.1.3.20.0
+    unit_of_measurement: "ms"
+
+template:
+  - sensor:
+
+      # ── The PA's forward power and temperatures, from the Modbus board ──
+      - name: "GB3OO Forward Power Watts"
+        unique_id: gb3oo_forward_power_watts
+        unit_of_measurement: "W"
+        state_class: measurement
+        device_class: power
+        state: >
+          {% set raw = states('sensor.gb3oo_forward_power') | float(0) %}
+          {% set offset = 0.0375 %}   {# CHANGE-ME: your detector's zero, V #}
+          {% set volts = (raw * 10.0 / 65535.0) - offset %}
+          {% set volts = [volts, 0] | max %}
+          {% set power_at_meter = (volts * volts) / 50.0 %}
+          {% set forward_power = power_at_meter * 10000 %}   {# CHANGE-ME: coupler factor; 10000 x V^2/50 = 200 W per V^2 #}
+          {{ forward_power | round(1) }}
+
+      - name: "GB3OO PA Heatsink (Held)"
+        unique_id: gb3oo_pa_heatsink_held
+        unit_of_measurement: "°C"
+        state_class: measurement
+        state: >
+          {% set raw = states('sensor.gb3oo_pa_heatsink') %}
+          {% if raw not in ['unknown', 'unavailable', 'none', ''] %}
+            {{ [((raw | float) - 10), 70] | min }}   {# CHANGE-ME: -10 is this sensor's calibration #}
+          {% else %}
+            {{ this.state if this.state not in ['unknown', 'unavailable', 'none', None] else 0 }}
+          {% endif %}
+
+      - name: "GB3OO PA Case (Held)"
+        unique_id: gb3oo_pa_case_held
+        unit_of_measurement: "°C"
+        state_class: measurement
+        state: >
+          {% set raw = states('sensor.gb3oo_pa_case') %}
+          {% if raw not in ['unknown', 'unavailable', 'none', ''] %}
+            {{ raw }}
+          {% else %}
+            {{ this.state if this.state not in ['unknown', 'unavailable', 'none', None] else 0 }}
+          {% endif %}
+
+      - name: "GB3OO Drive (Held)"
+        unique_id: gb3oo_drive_held
+        unit_of_measurement: "°C"
+        state_class: measurement
+        state: >
+          {% set raw = states('sensor.gb3oo_drive') %}
+          {% if raw not in ['unknown', 'unavailable', 'none', ''] %}
+            {{ raw }}
+          {% else %}
+            {{ this.state if this.state not in ['unknown', 'unavailable', 'none', None] else 0 }}
+          {% endif %}
+
+      # ── The UPS in words (optional, with the UPS block) ──
+      - name: UPS State
+        unique_id: ups_state_gb3oo
+        state: >
+          {% set s = states('sensor.ups_status') %}
+          {% if s == '2' %} Online
+          {% elif s == '3' %} On Battery
+          {% elif s == '4' %} Smart Boost
+          {% elif s == '5' %} On Bypass
+          {% elif s == '6' %} Off
+          {% elif s == '7' %} Rebooting
+          {% elif s == '12' %} Smart Trim
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.ups_status') %}
+          {% if s == '2' %} mdi:power-plug
+          {% elif s == '3' %} mdi:battery-alert
+          {% elif s in ['4','12'] %} mdi:sine-wave
+          {% elif s == '5' %} mdi:transit-connection-variant
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: UPS Battery Health
+        unique_id: ups_battery_health_gb3oo
+        state: >
+          {% set s = states('sensor.ups_battery_replace') %}
+          {% if s == '1' %} OK
+          {% elif s == '2' %} Replace battery
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.ups_battery_replace') %}
+          {% if s == '1' %} mdi:battery-check
+          {% elif s == '2' %} mdi:battery-remove
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: UPS Transfer Reason
+        unique_id: ups_transfer_reason_gb3oo
+        state: >
+          {% set s = states('sensor.ups_last_transfer_reason') %}
+          {% if s == '1' %} No transfers
+          {% elif s == '2' %} High line voltage
+          {% elif s == '3' %} Brownout
+          {% elif s == '4' %} Blackout
+          {% elif s == '5' %} Small sag
+          {% elif s == '6' %} Deep sag
+          {% elif s == '7' %} Small spike
+          {% elif s == '8' %} Large spike
+          {% elif s == '9' %} Self test
+          {% elif s == '10' %} Rate of change
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.ups_last_transfer_reason') %}
+          {% if s == '1' %} mdi:check-circle-outline
+          {% elif s in ['2','7','8'] %} mdi:flash-alert
+          {% elif s in ['3','5','6'] %} mdi:trending-down
+          {% elif s == '4' %} mdi:power-plug-off
+          {% elif s == '9' %} mdi:test-tube
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      # ── Lynx-Tx in words: the dashboard's coloured tiles and the alarms use these ──
+      - name: GB3OO Lynx-Tx State
+        unique_id: gb3oo_lynx_tx_state_words
+        state: >
+          {% set s = states('sensor.gb3oo_lynx_tx_status') %}
+          {% if s == '1' %} Idle
+          {% elif s == '2' %} On Air
+          {% elif s == '3' %} Muted by SDR
+          {% elif s == '4' %} Fault
+          {% elif s == '5' %} Lockout
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.gb3oo_lynx_tx_status') %}
+          {% if s == '1' %} mdi:broadcast-off
+          {% elif s == '2' %} mdi:broadcast
+          {% elif s == '3' %} mdi:alert
+          {% elif s == '4' %} mdi:alert
+          {% elif s == '5' %} mdi:lock-alert
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: GB3OO Lynx-Tx Reference State
+        unique_id: gb3oo_lynx_tx_reference_state_words
+        state: >
+          {% set s = states('sensor.gb3oo_lynx_tx_reference') %}
+          {% if s == '1' %} Locked
+          {% elif s == '2' %} Acquiring
+          {% elif s == '3' %} Holdover
+          {% elif s == '4' %} Absent
+          {% elif s == '5' %} Not reported
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.gb3oo_lynx_tx_reference') %}
+          {% if s == '1' %} mdi:crosshairs-gps
+          {% elif s == '2' %} mdi:crosshairs
+          {% elif s == '3' %} mdi:crosshairs-question
+          {% elif s == '4' %} mdi:crosshairs-off
+          {% elif s == '5' %} mdi:crosshairs-off
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: GB3OO Lynx-Tx Camera State
+        unique_id: gb3oo_lynx_tx_camera_state_words
+        state: >
+          {% set s = states('sensor.gb3oo_lynx_tx_camera') %}
+          {% if s == '1' %} Live
+          {% elif s == '2' %} Colour bars
+          {% elif s == '3' %} HDMI unstable
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.gb3oo_lynx_tx_camera') %}
+          {% if s == '1' %} mdi:video
+          {% elif s == '2' %} mdi:television-classic
+          {% elif s == '3' %} mdi:video-off-outline
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: GB3OO Lynx-Tx SDR State
+        unique_id: gb3oo_lynx_tx_sdr_state_words
+        state: >
+          {% set s = states('sensor.gb3oo_lynx_tx_sdr_reachable') %}
+          {% if s == '1' %} Reachable
+          {% elif s == '2' %} Not reached
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.gb3oo_lynx_tx_sdr_reachable') %}
+          {% if s == '1' %} mdi:lan-connect
+          {% elif s == '2' %} mdi:lan-disconnect
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: GB3OO Lynx-Tx Mixer State
+        unique_id: gb3oo_lynx_tx_mixer_state_words
+        state: >
+          {% set s = states('sensor.gb3oo_lynx_tx_mixer') %}
+          {% if s == '1' %} Running
+          {% elif s == '2' %} Stopped
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.gb3oo_lynx_tx_mixer') %}
+          {% if s == '1' %} mdi:video-switch
+          {% elif s == '2' %} mdi:video-switch-outline
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: GB3OO Lynx-Tx HDMI Input
+        unique_id: gb3oo_lynx_tx_hdmi_input_words
+        state: >
+          {% set s = states('sensor.gb3oo_lynx_tx_hdmi') %}
+          {% if s == '1' %} Signal
+          {% elif s == '2' %} No signal
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.gb3oo_lynx_tx_hdmi') %}
+          {% if s == '1' %} mdi:video-input-hdmi
+          {% elif s == '2' %} mdi:video-off
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: GB3OO Lynx-Tx PA Relays State
+        unique_id: gb3oo_lynx_tx_pa_relays_state_words
+        state: >
+          {% set s = states('sensor.gb3oo_lynx_tx_pa_relays') %}
+          {% if s == '1' %} On
+          {% elif s == '2' %} Off
+          {% elif s == '3' %} Not answering
+          {% elif s == '4' %} Not configured
+          {% elif s == '5' %} Partly on
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.gb3oo_lynx_tx_pa_relays') %}
+          {% if s == '1' %} mdi:power-plug
+          {% elif s == '2' %} mdi:power-plug-off
+          {% elif s == '3' %} mdi:lan-disconnect
+          {% elif s == '4' %} mdi:help-circle-outline
+          {% elif s == '5' %} mdi:alert
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: GB3OO Lynx-Tx Drive Control State
+        unique_id: gb3oo_lynx_tx_drive_control_state_words
+        state: >
+          {% set s = states('sensor.gb3oo_lynx_tx_drive_control') %}
+          {% if s == '1' %} Off
+          {% elif s == '2' %} Standby
+          {% elif s == '3' %} Settling
+          {% elif s == '4' %} Tracking
+          {% elif s == '5' %} On target
+          {% elif s == '6' %} At maximum drive
+          {% elif s == '7' %} At minimum drive
+          {% elif s == '8' %} Held
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.gb3oo_lynx_tx_drive_control') %}
+          {% if s == '1' %} mdi:tune-variant
+          {% elif s == '2' %} mdi:tune-variant
+          {% elif s == '3' %} mdi:timer-sand
+          {% elif s == '4' %} mdi:chart-line
+          {% elif s == '5' %} mdi:target
+          {% elif s == '6' %} mdi:arrow-collapse-up
+          {% elif s == '7' %} mdi:arrow-collapse-down
+          {% elif s == '8' %} mdi:hand-back-left
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: GB3OO Lynx-Tx Power Lock State
+        unique_id: gb3oo_lynx_tx_power_lock_state_words
+        state: >
+          {% set s = states('sensor.gb3oo_lynx_tx_power_lock') %}
+          {% if s == '1' %} Locked
+          {% elif s == '2' %} Unlocked
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.gb3oo_lynx_tx_power_lock') %}
+          {% if s == '1' %} mdi:lock
+          {% elif s == '2' %} mdi:lock-open-variant
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+
+      - name: GB3OO Lynx-Tx PA Fault State
+        unique_id: gb3oo_lynx_tx_pa_fault_state_words
+        state: >
+          {% set s = states('sensor.gb3oo_lynx_tx_pa_fault') %}
+          {% if s == '1' %} OK
+          {% elif s == '2' %} Fault
+          {% else %} Unknown ({{ s }})
+          {% endif %}
+        icon: >
+          {% set s = states('sensor.gb3oo_lynx_tx_pa_fault') %}
+          {% if s == '1' %} mdi:check-circle-outline
+          {% elif s == '2' %} mdi:alert-octagon
+          {% else %} mdi:help-circle-outline
+          {% endif %}
+

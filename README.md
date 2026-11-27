@@ -36,7 +36,7 @@ The [Installation Guide](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lyn
 - [`lynx_tx_install_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_install_guide.docx): Blank SD card to working transmitter, the SDR, troubleshooting, NVMe, PlutoSky from flash, bill of materials
 - [`lynx_tx_drive_control_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_drive_control_guide.docx): PA sequencing, forward power, Automatic Drive Control and return loss protection
 - [`lynx_tx_monitoring_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_monitoring_guide.docx): Alarms, auto-recover and lockout, SNMP and Home Assistant
-- [`home-assistant/lynx_tx.yaml`](docs/home-assistant/lynx_tx.yaml): A ready-made Home Assistant package: every sensor and alarm
+- [`home-assistant/`](docs/home-assistant/): GB3OO's working Home Assistant set-up, ready to copy: [the sensors](docs/home-assistant/lynx_tx_configuration.yaml), [a complete dashboard page](docs/home-assistant/lynx_tx_dashboard.yaml) and [the alarms](docs/home-assistant/lynx_tx_alarms.yaml). Search for `CHANGE-ME`
 - [`lynx_tx_media_guide.docx`](https://github.com/G8YTZ/Lynx-DATV-Tx/raw/main/docs/lynx_tx_media_guide.docx): Preparing clips to play out, with a DaVinci Resolve walkthrough
 - [`LYNX-MIB.txt`](mibs/LYNX-MIB.txt): The SNMP MIB
 

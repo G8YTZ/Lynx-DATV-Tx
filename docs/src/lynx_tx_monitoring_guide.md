@@ -1,7 +1,7 @@
 title: Lynx
 subtitle: DATV Transmitter (Lynx-Tx)
 tagline: Monitoring Guide: Alarms, SNMP and Home Assistant
-version: Version 1.2  ·  G8YTZ / EI3IOB  ·  November 2026
+version: Version 1.3  ·  G8YTZ / EI3IOB  ·  November 2026
 
 # 1. Overview
 
@@ -82,56 +82,61 @@ Twenty-four lines, by number. Debian's `snmpwalk` comes without the standard IET
 
 # 5. Home Assistant
 
-Everything is in one ready-made package, `docs/home-assistant/lynx_tx.yaml`: all the sensors below and one alarm automation that sends to your phone.
+Three ready-made files, in `docs/home-assistant/`, are GB3OO's own working Home Assistant set-up, so they are tested on air rather than written for the guide:
 
-- **Once,** in `configuration.yaml`, turn packages on:
-
-```
-homeassistant:
-  packages: !include_dir_named packages
-```
-
-- **Copy** `lynx_tx.yaml` to `/config/packages/`.
-- **Edit two things:** Replace `192.168.0.50` (every `host:`) with the ROCK's LAN address, and `notify.mobile_app_your_iphone` with your own phone's notify service.
-- **Restart** Home Assistant (Settings, System, Restart).
-
-The sensors it makes:
-
-| Sensor | Shows |
-|---|---|
-| `sensor.lynx_tx_state` | idle, on air, muted by the SDR, fault, lockout |
-| `sensor.lynx_tx_reference` | locked, acquiring, holdover, absent |
-| `sensor.lynx_tx_camera` | live, colour bars, unstable |
-| `sensor.lynx_tx_pa_relays` | on, off, not answering, not configured, partly on |
-| `sensor.lynx_tx_forward_power` | W |
-| `sensor.lynx_tx_drive_control` | off, standby, settling, tracking, on target, at maximum drive, at minimum drive, held |
-| `sensor.lynx_tx_drive` | dB |
-| `sensor.lynx_tx_power_lock` | locked, unlocked |
-| `sensor.lynx_tx_pa_fault` | none, fault |
-| `sensor.lynx_tx_rock_temperature`, `_fan`, `_uptime`, `_load`, `_free_space` | The ROCK's own health |
-
-The alarms, and how long each has to hold before it is sent:
-
-| Alarm | Waits | Why |
+| File | What it is | Where it goes |
 |---|---|---|
-| Lockout | At once | It needs you |
-| PA fault | At once | TX On was refused or the PA was shut down: relays did not confirm, or no forward power |
-| Drive control held | At once | Sudden fall in power, lost reading or poor return loss |
-| Muted or faulty | 90 s | Long enough for auto-recover to put it right first |
-| Forward power low on air | 2 min | Under 30 W while on air: set it to about three quarters of your target |
-| PA relay board not answering, or relays partly on | 2 min | |
-| 10 MHz reference in holdover | 1 min | The GPS reference is lost |
-| Camera unstable | 1 min | |
-| At maximum drive | 30 min | The PA cannot reach its target: if it keeps happening, the PA is losing gain |
-| ROCK too hot (over 60 °C) | 5 min | The fan is not coping |
-| ROCK drive nearly full (under 2 GB) | At once | |
-| ROCK flat out (load over 80%) | 10 min | |
+| `lynx_tx_configuration.yaml` | The sensors: Lynx-Tx over SNMP, the PA's Modbus relay board, and optionally the Lynx Deck and an APC UPS; the forward power in watts; and every state in words, for the tiles and alarms | Merged into `configuration.yaml` |
+| `lynx_tx_dashboard.yaml` | One complete dashboard page (below) | A view, in the dashboard's raw configuration editor |
+| `lynx_tx_alarms.yaml` | One automation with every alarm, sent to your phone | Settings, Automations, Edit in YAML |
 
-Each message says which alarm it is, with the sensor's state, for example "PA fault: TX On refused or the PA shut down (relays or forward power) (Lynx-Tx PA fault: fault)".
+![GB3OO's Lynx-Tx page in Home Assistant](img/ha_dashboard.png){6.3}
 
-> The forward power low alarm is the in-service check: Lynx-Tx checks the forward power at key-up, Home Assistant watches it the rest of the time.
+## 5.1 Making Them Yours
 
-Worth graphing: **Lynx-Tx drive** over months. At the same forward power, a slow rise is the PA losing gain, long before anything fails. The Automatic Drive Control Guide explains the PA objects in full.
+- **Search for** `CHANGE-ME` **in all three files.** Every value specific to GB3OO is marked with it: the addresses of the ROCK (192.168.60.100), the Modbus relay board (.75), the Lynx Deck (.117) and the UPS (.11); the Modbus register and coil numbers; the forward power detector's calibration; the gauge ranges; the low-power threshold; and your phone's notify service.
+- **Change the callsign** with search and replace across all three files, matching case: `GB3OO` to yours in capitals, and `gb3oo` to yours in lower case. Home Assistant makes the entity IDs from the names (`sensor.gb3oo_lynx_tx_state`), and the page and the alarms use those IDs, so all three must agree.
+- **Merge, do not paste over:** If your `configuration.yaml` already has `modbus:`, `sensor:` or `template:`, put these entries under your existing ones. Each key may appear only once.
+- **Leave out what you do not have:** The Lynx Deck and UPS blocks are optional. Delete them from the configuration, and their sections from the page.
+- **Then:** Developer tools, YAML, Check configuration, and Settings, System, Restart. The SNMP and Modbus sensors load only when Home Assistant starts. Automations and the page take effect as soon as they are saved.
+
+## 5.2 The Page
+
+Three columns:
+
+- **Lynx-Tx:** Transmitter, 10 MHz reference, SDR, camera, mixer and HDMI input as tiles that change colour with their state (green, amber, red, grey); mode, frequency and power setting; then **PA and drive control**: forward power, drive, drive control, PA fault and power lock; the ROCK's temperature, fan and load; the counters; a 24-hour history of the states; and a 48-hour graph of forward power, drive and the PA heatsink together. That last one is Automatic Drive Control at a glance: as the heatsink warms, the drive rises and the forward power stays flat.
+- **Lynx Deck:** What is playing, what the schedule says, the player's health and counters.
+- **PA and case:** Buttons for the PA and ATEM relays (with a confirmation), gauges for the PA case, heatsink, drive case, forward power, the ROCK's core and fan, and the UPS.
+
+## 5.3 The Alarms
+
+| Alarm | Waits | Notification |
+|---|---|---|
+| ROCK not answering | 3 min | Service affected |
+| Off air (left On Air and stayed off) | 1 min | Service affected |
+| Lockout | At once | Service affected |
+| Muted or faulty | 90 s | Service affected |
+| PA fault | At once | Service affected |
+| Drive control held | At once | Service affected |
+| Forward power low on air (under 30 W) | 2 min | Service affected |
+| PA relay board not answering, or relays partly on | 2 min | Service affected |
+| ROCK at 75 °C | 1 min | Service affected |
+| 10 MHz reference in holdover | 1 min | Warning |
+| Camera HDMI unstable | 1 min | Warning |
+| Drive control at maximum drive | 30 min | Warning |
+| ROCK over 60 °C | 5 min | Warning |
+| ROCK drive nearly full (under 2 GB) | At once | Warning |
+| ROCK flat out (load over 80%) | 10 min | Warning |
+
+"Service affected" arrives as a time-sensitive notification, which gets through Focus on an iPhone; a warning as an ordinary one. Each alarm has its own tag, so a repeat replaces the last rather than piling up. The message says what happened, with the figures, for example "Drive control held at −13.25 dB: sudden fall in power, lost reading or poor return loss. Forward power 22.1 W."
+
+> The forward power low alarm is the in-service check: Lynx-Tx checks the forward power at key-up, Home Assistant watches it the rest of the time. It reads the Modbus board directly, so it works even if Lynx-Tx's own PA settings are wrong.
+
+> A development or bench transmitter alarms every time you key down. Keep a second copy of the automation for it, and disable it except when that transmitter is in service.
+
+## 5.4 The Word Sensors
+
+The tiles and alarms work from words rather than numbers. Each SNMP number is turned into a word by a template sensor in `lynx_tx_configuration.yaml`, for example `sensor.gb3oo_lynx_tx_state`: Idle, On Air, Muted by SDR, Fault or Lockout. The healthy PA fault state is "OK", not "None": Home Assistant reads a template that outputs "None" as having no value at all.
 
 # 6. Document Version History
 
@@ -140,3 +145,4 @@ Worth graphing: **Lynx-Tx drive** over months. At the same forward power, a slow
 | 1.0 | October 2026 | First edition, from the Markdown page: SNMP objects, auto-recover and lockout, Home Assistant sensors and alarm |
 | 1.1 | 23 October 2026 | The ROCK's own health: fan speed, uptime, load and free space (objects 15 to 18), with Home Assistant sensors and alarms |
 | 1.2 | 25 November 2026 | PA control and Automatic Drive Control (objects 19 to 24); Home Assistant as one ready-made package, `docs/home-assistant/lynx_tx.yaml`, with PA, drive control and in-service forward power alarms; updating the agent |
+| 1.3 | 27 November 2026 | Home Assistant from GB3OO's working set-up: the configuration, a complete dashboard page and the alarms, as three files with `CHANGE-ME` marking every value to change |
