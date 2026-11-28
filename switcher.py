@@ -298,8 +298,39 @@ try:
     _Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(CHAT_BLANK)
 except Exception as _e:                              # no Pillow: chat stays off
     with open(CHAT_BLANK, "wb") as _f:
+        # A 1x1 transparent PNG, checksums correct (the earlier bytes had a bad
+        # IDAT checksum, and gdkpixbufoverlay refused them: no programme).
         _f.write(bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
-                               "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"))
+                               "1f15c4890000000d49444154789c6360606060000000050001a5f645400000000049454e44ae426082"))
+
+# ---- the sound hand-over: clock-stamped, so lip sync holds ----------------
+# Pictures cross from an input to the programme through intervideosink/src:
+# the programme takes the latest frame and stamps it when it collects it, so
+# a picture's timestamp is (within a frame) the clock time it was shown on
+# the input side. Sound used to cross through interaudiosink/src, which
+# stamps by counting samples from whenever its buffer happened to start: how
+# full that buffer was at a start, a clip load or a loop became a lip-sync
+# error, and stayed. Measured off air with a flash-and-beep clip (28 Nov
+# 2026): sound 125 ms early, 375 ms after a loop, up to a second over an
+# evening; on the bench, different on every start.
+#
+# Now the sound leaves each input through an appsink that plays it out in
+# real time (sync=true) and is stamped with the CLOCK time it played, the
+# same reference as the pictures, and enters the programme through an
+# appsrc. Every pipeline runs on the one system clock, so the times agree.
+# A frame and a half is added to the sound's stamp, to match the pictures':
+# intervideosrc grabs the latest frame one tick BEFORE the time it stamps on
+# it, and a frame waits on average half a tick to be grabbed. Measured on
+# the bench: a flash shown at 4026.7 ms on the input side was stamped
+# 4095.3 ms. What is left varies with how an input's frames fall against
+# the programme's ticks, within +/-20 ms (half a frame), new at each start,
+# clip load or loop: below what anyone can see.
+SYSCLOCK = Gst.SystemClock.obtain()
+ASINK = ("appsink name=ab_{ch} sync=true emit-signals=true max-buffers=200 drop=false "
+         "qos=false enable-last-sample=false")
+ASRC = ('appsrc name=asrc_{ch} is-live=true format=time do-timestamp=false block=false '
+        'max-bytes=2000000 caps="{caps}"')
+A_LEAD = FRAME + FRAME // 2
 
 LOOK = a.look if a.rc in ("buffer", "hybrid") else 0.0
 LOOK_Q = (f"queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 "
@@ -308,14 +339,60 @@ prog = Gst.parse_launch(
     f"input-selector name=vsel ! gdkpixbufoverlay name=chatov location={CHAT_BLANK} ! "
     f"identity name=vstamp ! {LOOK_Q}{VCAPS} ! {encode} ! "
     f"h265parse config-interval=-1 ! {Q} ! mux. "
-    f"audiomixer name=amix ! {ACAPS} ! {LOOK_Q}audioconvert ! "
+    f"audiomixer name=amix latency=100000000 start-time-selection=first ! {ACAPS} ! {LOOK_Q}audioconvert ! "
     f"{AENC} ! {Q} ! mux. "
     f"mpegtsmux name=mux{' alignment=7' if a.udp else ''} ! {sink} "
     f"intervideosrc name=src_cam channel=cam timeout=10000000000 ! {VCAPS} ! vsel. "
     f"intervideosrc name=src_med channel=med timeout=10000000000 ! {VCAPS} ! vsel. "
-    f"interaudiosrc name=asrc_cam channel=cam_a ! {ACAPS} ! amix.sink_0 "
-    f"interaudiosrc name=asrc_med channel=med_a ! {ACAPS} ! amix.sink_1")
+    + ASRC.format(ch="cam", caps=ACAPS) + f" ! {ACAPS} ! amix.sink_0 "
+    + ASRC.format(ch="med", caps=ACAPS) + f" ! {ACAPS} ! amix.sink_1")
+prog.use_clock(SYSCLOCK)
 vsel, amix, enc = (prog.get_by_name(n) for n in ("vsel", "amix", "enc"))
+asrcs = {ch: prog.get_by_name(f"asrc_{ch}") for ch in ("cam", "med")}
+a_next = {"cam": None, "med": None}
+
+
+def on_audio(sink, data):
+    """An input's sound, just played out on the system clock: stamp it with
+    that clock time, in the programme's running time, and hand it over."""
+    p, ch = data
+    sample = sink.emit("pull-sample")
+    if sample is None:
+        return Gst.FlowReturn.OK
+    buf, seg = sample.get_buffer(), sample.get_segment()
+    pb = prog.get_base_time()
+    if not pb or buf.pts == Gst.CLOCK_TIME_NONE:
+        return Gst.FlowReturn.OK                     # the programme is not running yet
+    rt = seg.to_running_time(Gst.Format.TIME, buf.pts)
+    if rt < 0 or rt == Gst.CLOCK_TIME_NONE:
+        return Gst.FlowReturn.OK
+    pts = p.get_base_time() + rt - pb + A_LEAD
+    if pts < 0:
+        return Gst.FlowReturn.OK                     # from before the programme started
+    nxt = a_next[ch]
+    if nxt is not None and pts < nxt:
+        if nxt - pts > 2 * FRAME:
+            return Gst.FlowReturn.OK                 # behind what was already sent: drop
+        pts = nxt                                    # a hair behind: butt it on
+    out = buf.copy()
+    out.pts, out.dts = pts, Gst.CLOCK_TIME_NONE
+    a_next[ch] = pts + (buf.duration if buf.duration != Gst.CLOCK_TIME_NONE else 0)
+    asrcs[ch].emit("push-buffer", out)
+    return Gst.FlowReturn.OK
+
+
+def launch_input(desc):
+    """Build an input pipeline (camera or media player): on the system clock,
+    its sound handed over by on_audio."""
+    for ch in ("cam", "med"):
+        desc = desc.replace(f"interaudiosink channel={ch}_a", ASINK.format(ch=ch))
+    p = Gst.parse_launch(desc)
+    p.use_clock(SYSCLOCK)
+    for ch in ("cam", "med"):
+        sink = p.get_by_name(f"ab_{ch}")
+        if sink is not None:
+            sink.connect("new-sample", on_audio, (p, ch))
+    return p
 chatov = prog.get_by_name("chatov")
 
 
@@ -446,9 +523,16 @@ except Exception as e:                               # Pillow or the reader miss
     log(f"chat: not available: {e}")
     chat = None
 
-# Anchored, never backwards: each buffer keeps the clock's own timestamp
-# unless that would step back past the previous one.
-stamp = {"v_next": None}
+# Anchored, never backwards: each buffer keeps the clock's own timestamp.
+# A frame that would step back past the previous one (a cut can land on an
+# input whose frames are stamped a little behind) is DROPPED, so the new
+# input keeps its own true timing: a frame or three at a cut, unseen. It was
+# nudged forward instead, and then so was every frame after it, for good:
+# the pictures ran late against the sound by however far behind the input
+# was, about 120 ms after one cut to the camera and back (bench, 28 Nov
+# 2026). A hair behind is still nudged; if frames somehow keep coming in
+# behind for a whole second, they are nudged rather than lost.
+stamp = {"v_next": None, "dropped": 0}
 
 
 def vstamp(pad, info):
@@ -458,7 +542,11 @@ def vstamp(pad, info):
     if pts == Gst.CLOCK_TIME_NONE:
         pts = stamp["v_next"] or 0
     elif stamp["v_next"] is not None and pts < stamp["v_next"]:
-        pts = stamp["v_next"]                         # would go backwards: nudge
+        if stamp["v_next"] - pts > FRAME // 2 and stamp["dropped"] < 25:
+            stamp["dropped"] += 1
+            return Gst.PadProbeReturn.DROP            # behind: let it go
+        pts = stamp["v_next"]                         # a hair behind: nudge
+    stamp["dropped"] = 0
     buf.pts = buf.dts = pts
     buf.duration = FRAME
     stamp["v_next"] = pts + FRAME
@@ -677,7 +765,7 @@ def start_camera(bars=False):
     if pipes["cam"]:
         pipes["cam"].set_state(Gst.State.NULL)
     try:
-        p = Gst.parse_launch(camera_desc(bars))
+        p = launch_input(camera_desc(bars))
     except GLib.Error as e:
         if bars:
             raise                                     # bars must always build
@@ -809,7 +897,7 @@ def load(name):
     if pipes["med"]:
         pipes["med"].set_state(Gst.State.NULL)
     try:
-        p = Gst.parse_launch(desc)
+        p = launch_input(desc)
     except GLib.Error as e:
         log(f"media: {name}: cannot build the player ({e.message})")
         state["media_state"] = f"error: {e.message}"
@@ -826,8 +914,8 @@ def load(name):
 def load_black():
     if pipes["med"]:
         pipes["med"].set_state(Gst.State.NULL)
-    p = Gst.parse_launch(f"videotestsrc is-live=true pattern=black ! {VCAPS} ! "
-                         f"intervideosink channel=med " + silence())
+    p = launch_input(f"videotestsrc is-live=true pattern=black ! {VCAPS} ! "
+                     f"intervideosink channel=med " + silence())
     pipes["med"] = p
     p.set_state(Gst.State.PLAYING)
     return False
