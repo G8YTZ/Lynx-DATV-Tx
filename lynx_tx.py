@@ -2000,6 +2000,8 @@ def build_pipeline(dry: bool = False) -> str:
         else:
             fmt = _hdmi_format()      # fresh at key-up, never the page's cache
             w, h = (fmt["width"], fmt["height"]) if fmt.get("width") else (3840, 2160)
+        # Stream out's H.264 decodes at this size natively, untouched.
+        streamout.programme_size = (w, h)
         clip = src.get("file") or ""
         if clip and not (MEDIA_DIR / clip).is_file():
             clip = ""

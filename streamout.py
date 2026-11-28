@@ -53,6 +53,14 @@ SRT_DEFAULTS = {"on": False, "always": False, "host": "", "port": 9000,
                 "latency_ms": 500, "passphrase": "", "streamid": ""}
 HEIGHTS = {720: (1280, 41), 1080: (1920, 42), 2160: (3840, 51)}   # width, H.264 level (5.1: 4K to 30 fps, the widely decoded one)
 
+# The programme picture size, set by lynx_tx.build_pipeline (None: not
+# known yet). When the H.264 stream is the same size (or asks for more),
+# mppvideodec hands over its frames as decoded: no size or format asked of
+# it, so no trip through its converter. That trip, even 4K to 4K, filtered
+# a 1-pixel grating into coloured beat bands (27 Nov 2026); the H.265 on
+# air was clean. It also means the stream is never scaled up.
+programme_size = None
+
 _ffmpeg_version = None
 _tsp_srt = None
 
@@ -131,6 +139,13 @@ def rtmp_h264_cmd(cfg: dict, service_id: int, five_one: bool) -> list:
     h = int(cfg["height"]) if int(cfg["height"]) in HEIGHTS else 1080
     w, level = HEIGHTS[h]
     bps = max(500, min(int(cfg["kbps"]), 40000)) * 1000
+    native = bool(programme_size) and h >= programme_size[1]
+    if native:
+        ph = programme_size[1]
+        level = 51 if ph > 1080 else (42 if ph > 720 else 41)
+        decode = "mppvideodec"                  # as decoded: no converter
+    else:
+        decode = f"mppvideodec format=NV12 width={w} height={h}"   # scaled down
     audio = ("d. ! queue ! ac3parse ! avdec_ac3 ! audioconvert ! audioresample ! "
              "audio/x-raw,rate=48000,channels=2 ! avenc_aac bitrate=160000 ! aacparse"
              if five_one else "d. ! queue ! aacparse")
@@ -138,7 +153,7 @@ def rtmp_h264_cmd(cfg: dict, service_id: int, five_one: bool) -> list:
             f"caps=video/mpegts,systemstream=true,packetsize=188 ! "
             f"tsdemux name=d program-number={service_id} "
             f"d. ! queue max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! "
-            f"h265parse ! mppvideodec format=NV12 width={w} height={h} ! queue ! "
+            f"h265parse ! {decode} ! queue ! "
             f"mpph264enc rc-mode=cbr bps={bps} bps-max={bps} gop=50 level={level} ! "
             f"h264parse config-interval=-1 ! queue ! mux. "
             f"{audio} ! queue ! mux. "
